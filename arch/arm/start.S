@@ -14,8 +14,16 @@
  *      phase 0: copy the relocation engine ([_start, +ENGINE_SZ)) to its
  *               linked home and continue executing FROM the linked home;
  *      phase 1: from there, copy the rest of the image in two ranges that
- *               exclude the engine home, using the memmove-safe direction
- *               for the global delta.
+ *               exclude the engine home.
+ *
+ *    Copy direction vs delta (memmove overlap rule):
+ *      delta > 0  =>  dst (linked home) is BELOW src (load site): copy
+ *                    ASCENDING so the write cursor trails behind the read
+ *                    cursor and can never clobber a not-yet-read source.
+ *      delta < 0  =>  dst is ABOVE src: copy DESCENDING for the same reason.
+ *    Getting this wrong self-cascades zeros through both the destination
+ *    image and the original loaded image (observed on QEMU smdkc210 which
+ *    loads -kernel at DRAM+0x10000 while TEXT_BASE=0x40008000).
  *
  *    The embedded kernel/dtb/ramdisk blobs (.payload section) are NOT
  *    copied; their runtime addresses are linked + delta.  The delta is
@@ -53,6 +61,7 @@ _start:
 	mrc	p15, 0, r12, c0, c0, 5	/* MPIDR */
 	ands	r12, r12, #0x3
 	bne	95f
+	mov	r10, #0			/* entered_hyp flag survives in r10 */
 
 	.arch_extension	virt
 
@@ -76,6 +85,7 @@ _start:
 	ldr	r1, =entered_hyp
 	mov	r3, #1
 	str	r3, [r1]
+	mov	r10, #1
 	movw	r2, #0x5000
 	movt	r2, #0x57E6
 	movw	r3, #0x00FF
@@ -161,7 +171,7 @@ _start:
 	add	r1, r7, #ENGINE_SZ	/* src end (actual) */
 	add	r0, r8, #ENGINE_SZ	/* dst end (linked home) */
 	cmp	r9, #0
-	blt	21f
+	bgt	21f			/* delta>0: dst<src => ascending */
 11:	ldr	r3, [r1, #-4]!
 	str	r3, [r0, #-4]!
 	cmp	r0, r8
@@ -193,15 +203,10 @@ eng2:
 	movt	r2, #:upper16:__image_end
 	add	r4, r8, #ENGINE_SZ	/* engine home end */
 
-	/* publish the delta for C code (.data is at its linked home now) */
-	movw	r1, #:lower16:delta_value
-	movt	r1, #:upper16:delta_value
-	str	r9, [r1]
-
 	cmp	r9, #0
-	blt	51f
+	bgt	51f			/* delta>0: dst<src => ascending */
 
-	/* delta > 0: dst = src - delta => descending per range */
+	/* delta < 0: dst = src - delta > src => descending per range */
 	/* range B: dst [engine_home_end, E) */
 	mov	r1, r2
 	add	r3, r1, r9
@@ -218,7 +223,7 @@ eng2:
 	bhi	42b
 	b	60f
 
-	/* delta < 0: dst = src - delta > src => ascending per range */
+	/* delta > 0: dst = src - delta < src => ascending per range */
 51:	/* range A: dst [S, engine_home_start) */
 	mov	r1, r0
 	add	r3, r1, r9
@@ -238,6 +243,15 @@ eng2:
 	mov	r12, #0
 	mcr	p15, 0, r12, c7, c5, 0	/* invalidate I-cache */
 	mcr	p15, 0, r12, c7, c5, 6	/* flush BTB */
+
+	/* publish the delta for C code NOW - storing it before the copy
+	 * would be overwritten when .data lands at its linked home. */
+	movw	r1, #:lower16:delta_value
+	movt	r1, #:upper16:delta_value
+	str	r9, [r1]
+	movw	r1, #:lower16:entered_hyp
+	movt	r1, #:upper16:entered_hyp
+	str	r10, [r1]
 
 	/* ---- common path ---- */
 5:	/* D: WHITE @fb+0x11E000 = relocation done (both paths). */
