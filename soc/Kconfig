@@ -63,6 +63,13 @@ config SONY
 		help
 		  Say Y if your device uses Samsung Exynos3475 SoC
 
+	config EXYNOS_4210
+		bool "Support for Exynos 4210"
+		select EXYNOS
+		help
+		  Say Y if your device uses Samsung Exynos4210 SoC (Exynos 4,
+		  dual Cortex-A9, e.g. Galaxy S2 GT-I9100)
+
 	config EXYNOS_3830
 		bool "Support for Exynos 850"
 		select EXYNOS
@@ -241,8 +248,7 @@ config SONY
 		bool "Support for QUALCOMM SM8650"
 		select QUALCOMM
 		help
-		  Say Y if your device uses this Qualcomm SoC
-
+		  Say Y if your device uses this Qualcomm SoC.
 		  WARNING: Due to Gunyah being used on this platform,
 		  stability is not guaranteed when booting mainline.
 		  It should be treated as a PoC SoC.
@@ -251,8 +257,7 @@ config SONY
 		bool "Support for QUALCOMM SM8850"
 		select QUALCOMM
 		help
-		  Say Y if your device uses this Qualcomm SoC
-
+		  Say Y if your device uses this Qualcomm SoC.
 		  WARNING: Due to Gunyah being used on this platform,
 		  stability is not guaranteed when booting mainline.
 		  It should be treated as a PoC SoC.

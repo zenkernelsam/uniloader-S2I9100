@@ -28,9 +28,19 @@ menu "Drivers"
 		  and report its total size.  Read-only: only identify/CSD
 		  commands, no data phase, no writes, never touches eMMC.
 
+	config EXYNOS_SDHCI4210
+		bool "Support for bare-metal SDHCI host on Exynos 4210"
+		depends on SAMSUNG_I9100
+		default n
+		help
+		  Say Y to drive the GT-I9100's external microSD slot through
+		  the standard SDHCI 2.0 host at 0x12530000 (sdhci_2).
+		  Read-only: only identify/RCA + READ_BLOCK commands, no
+		  writes, never touches the eMMC or WiFi hosts.
+
 	config EXYNOS_SD_FAT
 		bool "Read-only FAT32 filesystem on the SD card"
-		depends on EXYNOS_SDMMC3475
+		depends on EXYNOS_SDMMC3475 || EXYNOS_SDHCI4210
 		default n
 		help
 		  Say Y to parse the SD card's MBR + FAT32 boot sector and expose

@@ -1,6 +1,7 @@
 lib-$(CONFIG_APPLE_T7000) += apple/t7000.o
 lib-$(CONFIG_APPLE_T8010) += apple/t8010.o
 lib-$(CONFIG_EXYNOS_3475) += exynos/exynos3475.o
+lib-$(CONFIG_EXYNOS_4210) += exynos/exynos4210.o
 lib-$(CONFIG_EXYNOS_7420) += exynos/exynos7420.o
 lib-$(CONFIG_EXYNOS_7570) += exynos/exynos7570.o
 lib-$(CONFIG_EXYNOS_7885) += exynos/exynos7885.o

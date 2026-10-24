@@ -28,6 +28,7 @@ lib-$(CONFIG_SAMSUNG_DREAMLTE) += samsung/board-dreamlte.o
 lib-$(CONFIG_SAMSUNG_G0S) += samsung/board-g0s.o
 lib-$(CONFIG_SAMSUNG_GTA4XL) += samsung/board-gta4xl.o
 lib-$(CONFIG_SAMSUNG_HEROLTE) += samsung/board-herolte.o
+lib-$(CONFIG_SAMSUNG_I9100) += samsung/board-i9100.o
 lib-$(CONFIG_SAMSUNG_J4LTE) += samsung/board-j4lte.o
 lib-$(CONFIG_SAMSUNG_J1XLTE) += samsung/board-j1xlte.o
 lib-$(CONFIG_SAMSUNG_J5LTE) += samsung/board-j5lte.o

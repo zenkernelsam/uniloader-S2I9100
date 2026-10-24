@@ -248,6 +248,14 @@ menu "Device Support"
 		help
 		  Say Y if you want to include arm32 support for Samsung Galaxy J5 (2015)
 
+	config SAMSUNG_I9100
+		bool "Support for Samsung Galaxy S2 (GT-I9100)"
+		default n
+		depends on EXYNOS_4210
+		help
+		  Say Y if you want to include arm32 support for Samsung
+		  Galaxy S2 (GT-I9100, Exynos 4210)
+
 	config SAMSUNG_J1XLTE
 		bool "Support for Samsung Galaxy J1 (2016)"
 		default n
@@ -407,11 +415,13 @@ menu "Device Specific Addresses"
 	config TEXT_BASE
 		hex "UniLoader Text Base"
 		default 0x20008000 if SAMSUNG_J1XLTE
+		default 0x40008000 if SAMSUNG_I9100
 		default 0x0
 
 	config PAYLOAD_ENTRY
 		hex "Payload Entry Address"
 		default 0x24000000 if SAMSUNG_J1XLTE
+		default 0x40001000 if SAMSUNG_I9100
 		default 0x50000000 if NOTHING_TETRIS
 		default 0x050000000 if SAMSUNG_J4LTE
 		default 0x60000000 if VOLLA_ALGIZ
@@ -420,6 +430,7 @@ menu "Device Specific Addresses"
 	config RAMDISK_ENTRY
 		hex "Ramdisk Entry Address"
 		default 0x22000000 if SAMSUNG_J1XLTE
+		default 0x41000000 if SAMSUNG_I9100
 		default 0x40000000 if NOTHING_TETRIS
 		default 0x51100000 if VOLLA_ALGIZ
 		default 0x48000000 if XIAOMI_BEGONIA
