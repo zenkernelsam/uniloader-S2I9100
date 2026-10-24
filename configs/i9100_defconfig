@@ -1,4 +1,4 @@
-CONFIG_TEXT_BASE=0x40008000
+CONFIG_TEXT_BASE=0x41000000
 CONFIG_EMBED_XNU=y
 # Raw embedded blob for bring-up smoke tests (see tools/ for the stub
 # generator).  Flip to y once a real (LZ4-packed) XNU image exists.
