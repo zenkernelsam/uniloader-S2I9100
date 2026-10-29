@@ -90,22 +90,33 @@ static void i9100_fimd_init(uint32_t fb_pa)
 int i9100_init(void)
 {
 	uint32_t vidcon0 = readl((void *)(FIMD + EXYNOS4210_FIMD_VIDCON0));
-	uint32_t fb_pa;
+	uint32_t fb_pa = FB_FALLBACK;
 
 	i9100_fimd_report();
 
+	/* S3C2410-style watchdog: S-Boot normally leaves it off, but if it
+	 * is running the multi-minute SD staging would reset the board.
+	 * One WTCON write is cheap insurance either way. */
+	writel(0, (void *)(EXYNOS4210_WDT_BASE));
+
+	/* Always scan our own fixed buffer at FB_FALLBACK, even when S-Boot
+	 * left a live splash.  The kernel contract pins Video.v_baseAddr to
+	 * 0x5E000000 (i9100_video_ok validates it, and pmap excludes that
+	 * window from the managed pool), so adopting S-Boot's buffer would
+	 * both break the address contract and hide all kernel console
+	 * output.  Reprogramming window 0 keeps the contract, guarantees
+	 * ARGB8888 regardless of S-Boot's pixel format, and makes kernel
+	 * text visible on the real panel.  Panel/backlight (LD9040 SPI
+	 * init) stay as S-Boot left them; the VIDTCON values written here
+	 * match the timings S-Boot programs anyway. */
+	i9100_fimd_init(fb_pa);
 	if (vidcon0 & (EXYNOS4210_FIMD_VIDCON0_ENVID |
-		       EXYNOS4210_FIMD_VIDCON0_ENVID_F)) {
-		/* S-Boot splash is live: adopt its window-0 buffer. */
-		fb_pa = readl((void *)(FIMD + EXYNOS4210_FIMD_VIDW00ADD0B0));
-		i9100_fb.address = (void *)fb_pa;
-		printk(KERN_INFO, "fimd: adopted S-Boot fb @%08x\n", fb_pa);
-	} else {
-		/* No running scanout (QEMU -kernel boot): own the FIMD. */
-		fb_pa = FB_FALLBACK;
-		i9100_fimd_init(fb_pa);
+		       EXYNOS4210_FIMD_VIDCON0_ENVID_F))
+		printk(KERN_INFO,
+		       "fimd: retargeted live S-Boot scanout to fb @%08x\n",
+		       fb_pa);
+	else
 		printk(KERN_INFO, "fimd: initialized own fb @%08x\n", fb_pa);
-	}
 
 	/* Stage marker I: YELLOW band = board early_init done. */
 	{
