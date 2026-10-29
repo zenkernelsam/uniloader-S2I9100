@@ -79,7 +79,7 @@ extern int sd_chatter;
 #define SD_PHYS_BASE		0x40000000
 #define SD_MEMSIZE		0x30000000
 #define SD_FB_BASE		0x5E000000
-#define SD_CMDLINE		"-v keepsyms=1 kprintf=1 debug=0x14e j1uart=1 init=/sbin/launchd"
+#define SD_CMDLINE		"-v keepsyms=1 kprintf=1 debug=0x14e j1uart=1 serial=1 init=/sbin/launchd"
 #define SD_STAGE_TAG		"I9S%u\n"
 #else
 /* Samsung J1 (SM-J120F) / Exynos 3475 - original values. */
