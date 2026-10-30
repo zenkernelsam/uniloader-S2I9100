@@ -322,6 +322,21 @@ int sd_arch_load_kernel_xnu(unsigned int phys_base,
 	       sizeof(SD_CMDLINE) - 1);
 	ba->CommandLine[sizeof(SD_CMDLINE) - 1] = 0;
 
+	/* iOS6 A/B switch: a zero-touch file named "ios6" on the card makes
+	 * the kernel run its stock (iOS<=6-era) VM ABI instead of the
+	 * iOS7-compat adaptations - same Image, same card, just drop the
+	 * marker file plus the iOS6 ROOTFS.HFS/cacheslice in place. */
+	{
+		uint32_t lba, nsect;
+
+		if (sd_fat_lba("ios6", &lba, &nsect) == 0 &&
+		    strlen(ba->CommandLine) + 16 < sizeof(ba->CommandLine)) {
+			strcat(ba->CommandLine, " ios7lab_vmabi=0");
+			printk(KERN_INFO,
+			       "xnu: ios6 marker found, vmabi=0\n");
+		}
+	}
+
 	/* SD kernel log: hand XNU the card identity plus a raw LBA range to
 	 * push log sectors at with CMD24.  XNU never touches the FAT, the
 	 * directory entry or anything the loader reads.
