@@ -38,6 +38,20 @@ menu "Drivers"
 		  Read-only: only identify/RCA + READ_BLOCK commands, no
 		  writes, never touches the eMMC or WiFi hosts.
 
+	config EXYNOS_CDCACM4210
+		bool "CDC ACM debug console on the Exynos 4210 DWC2 OTG"
+		depends on SAMSUNG_I9100
+		default n
+		help
+		  Say Y to enumerate the GT-I9100's USB OTG device controller
+		  (@0x12480000, DWC2) as a CDC ACM serial port, so a plain
+		  microUSB data cable becomes a COM/ttyACM log channel -
+		  the no-UART-jig debug path.  Polled slave-mode only:
+		  usbcdc_poll() runs from the console write path, TX is
+		  fire-and-forget through a 4 KiB ring, and every wait is
+		  bounded so a dead or absent controller (QEMU has no OTG
+		  model) never stalls the boot.
+
 	config EXYNOS_SD_FAT
 		bool "Read-only FAT32 filesystem on the SD card"
 		depends on EXYNOS_SDMMC3475 || EXYNOS_SDHCI4210

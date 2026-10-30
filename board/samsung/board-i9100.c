@@ -168,15 +168,30 @@ void early_console_init(void)
 
 #if defined(CONFIG_EXYNOS_SDHCI4210)
 extern void sd_host_probe_4210(void);
+#endif
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+extern int usbcdc4210_init(void);
+extern void usbcdc_poll(void);
+#endif
 
 /* Runs after driver_probe_all(): the simplefb console is live, so
  * printk() output lands on the panel. */
 static int i9100_late_init(void)
 {
+#if defined(CONFIG_EXYNOS_SDHCI4210)
 	sd_host_probe_4210();
+#endif
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+	/* Bring the DWC2 device up *before* the multi-minute SD staging:
+	 * the host enumerates us while we stream I9S progress to both
+	 * the panel and the fresh COM port.  usbcdc_poll() is driven
+	 * from the console write path, so every printk services EP0.
+	 * Returns nonzero when the OTG block is absent (QEMU) - the
+	 * console simply never registers. */
+	usbcdc4210_init();
+#endif
 	return 0;
 }
-#endif
 
 static const struct device i9100_devices[] = {
 	{ "simplefb", &i9100_fb, "fb" },

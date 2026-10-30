@@ -23,7 +23,7 @@
 #define PRINTK_BUFFER_SIZE 256
 
 /* earlycon (usually uart) + fb; bump if a third sink appears. */
-#define MAX_CONSOLES 2
+#define MAX_CONSOLES 3
 
 static const struct console *consoles[MAX_CONSOLES];
 static unsigned int n_consoles;
