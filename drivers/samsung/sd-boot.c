@@ -337,6 +337,11 @@ int sd_arch_load_kernel_xnu(unsigned int phys_base,
 		}
 	}
 
+	/* FIMD zero-copy smoke probe — points window 0 at the already-scanned
+	 * scratch FB and counts VSYNC edges; harmless on real panel too. */
+	if (strlen(ba->CommandLine) + 16 < sizeof(ba->CommandLine))
+		strcat(ba->CommandLine, " i9100fimdtest=1");
+
 	/* SD kernel log: hand XNU the card identity plus a raw LBA range to
 	 * push log sectors at with CMD24.  XNU never touches the FAT, the
 	 * directory entry or anything the loader reads.
