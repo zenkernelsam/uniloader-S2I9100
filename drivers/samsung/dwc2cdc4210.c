@@ -53,11 +53,11 @@
 #define IEP(n)		GREG(0x900 + (n) * 0x20)
 #define OEP(n)		GREG(0xB00 + (n) * 0x20)
 #define DIEPCTL(n)	IEP(n)
-#define DIEPINT(n)	IEP(0x08)
-#define DIEPTSIZ(n)	IEP(0x10)
+#define DIEPINT(n)	GREG(0x908 + (n) * 0x20)
+#define DIEPTSIZ(n)	GREG(0x910 + (n) * 0x20)
 #define DOEPCTL(n)	OEP(n)
-#define DOEPINT(n)	OEP(0x08)
-#define DOEPTSIZ(n)	OEP(0x10)
+#define DOEPINT(n)	GREG(0xB08 + (n) * 0x20)
+#define DOEPTSIZ(n)	GREG(0xB10 + (n) * 0x20)
 #define DTXFSTS(n)	GREG(0x918 + (n) * 0x20)	/* INEPTFSPC per EP */
 
 #define PCGCCTL		GREG(0xE00)

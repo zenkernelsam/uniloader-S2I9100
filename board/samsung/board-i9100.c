@@ -96,8 +96,35 @@ int i9100_init(void)
 
 	/* S3C2410-style watchdog: S-Boot normally leaves it off, but if it
 	 * is running the multi-minute SD staging would reset the board.
-	 * One WTCON write is cheap insurance either way. */
+	 * One WTCON write is cheap insurance either way.  (The KERNEL arms
+	 * it later for the unattended-recovery path; staging stays off.) */
 	writel(0, (void *)(EXYNOS4210_WDT_BASE));
+
+	/* Unattended-recovery readback: the kernel leaves a stage marker
+	 * (INFORM6, 0x7766xxxx) that ticks forward as it boots, plus a
+	 * panic reason (INFORM7) and a DDR scratch cell at 0x7FFE0000 on
+	 * panic.  Report whatever the previous run left behind, then
+	 * clear so a clean boot reports nothing. */
+	{
+		uint32_t st = readl((void *)EXYNOS4210_PMU_INFORM6);
+		uint32_t rs = readl((void *)EXYNOS4210_PMU_INFORM7);
+		volatile uint32_t *cell =
+			(volatile uint32_t *)EXYNOS4210_DDRCELL_PA;
+
+		if ((st & 0xffff0000U) == EXYNOS4210_STAGE_MAGIC ||
+		    rs == EXYNOS4210_REASON_PANIC)
+			printk(KERN_INFO,
+			       "i9100: prev-boot marker stage=%08x reason=%08x\n",
+			       st, rs);
+		if (cell[0] == EXYNOS4210_DDRCELL_MAGIC) {
+			printk(KERN_INFO,
+			       "i9100: prev panic caller=%08x inform6=%08x\n",
+			       cell[1], cell[2]);
+			cell[0] = 0;
+		}
+		writel(0, (void *)EXYNOS4210_PMU_INFORM6);
+		writel(0, (void *)EXYNOS4210_PMU_INFORM7);
+	}
 
 	/* Always scan our own fixed buffer at FB_FALLBACK, even when S-Boot
 	 * left a live splash.  The kernel contract pins Video.v_baseAddr to

@@ -69,6 +69,18 @@
 /* System blocks */
 #define EXYNOS4210_CHIPID_BASE		0x10000000
 #define EXYNOS4210_PMU_BASE		0x10020000
+/* PMU sub-registers used by the unattended-recovery protocol:
+ * SWRESET = write-anything reset; INFORM5 = CPU1 trampoline mailbox
+ * (kernel owns it); INFORM6/7 = stage marker / crash reason cells
+ * that survive warm reset and are read back on the next boot. */
+#define EXYNOS4210_PMU_SWRESET		(EXYNOS4210_PMU_BASE + 0x0400)
+#define EXYNOS4210_PMU_INFORM5		(EXYNOS4210_PMU_BASE + 0x0814)
+#define EXYNOS4210_PMU_INFORM6		(EXYNOS4210_PMU_BASE + 0x0818)
+#define EXYNOS4210_PMU_INFORM7		(EXYNOS4210_PMU_BASE + 0x081C)
+#define EXYNOS4210_STAGE_MAGIC		0x77660000U
+#define EXYNOS4210_REASON_PANIC		0x7766DEADU
+#define EXYNOS4210_DDRCELL_PA		0x7FFE0000U
+#define EXYNOS4210_DDRCELL_MAGIC	0xCAFEBABEU
 #define EXYNOS4210_CMU_BASE		0x10030000
 #define EXYNOS4210_WDT_BASE		0x10060000
 
