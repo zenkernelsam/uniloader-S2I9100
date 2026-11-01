@@ -37,6 +37,31 @@ static struct video_info i9100_fb = {
 	.address = (void *)FB_FALLBACK
 };
 
+/* Forensics buffer: a snapshot of the FIMD/clock state as S-Boot left
+ * it, captured in early_init and flushed to a raw SD sector at the end
+ * of the card once the host controller is probed.  With no UART jig
+ * and a possibly-broken panel path, the card is our readback channel. */
+static uint32_t fimd_dump[128];
+static int fimd_dump_dirty;
+
+static void i9100_fimd_capture(void)
+{
+	unsigned int i, o = 0;
+
+	fimd_dump[o++] = 0x46314D44;
+	for (i = 0; i < 0x120; i += 4)
+		fimd_dump[o++] =
+			readl((void *)(FIMD + i));	/* 72 regs */
+	fimd_dump[o++] = readl((void *)(EXYNOS4210_CMU_BASE + 0xC234));
+	fimd_dump[o++] = readl((void *)(EXYNOS4210_CMU_BASE + 0xC534));
+	fimd_dump[o++] = readl((void *)(EXYNOS4210_CMU_BASE +
+					 EXYNOS4210_CLK_GATE_IP_LCD0));
+	fimd_dump[o++] = readl((void *)(EXYNOS4210_CMU_BASE +
+					 EXYNOS4210_CLK_GATE_IP_FSYS));
+	fimd_dump[o++] = 0xF1D0FFFF;
+	fimd_dump_dirty = 1;
+}
+
 static void i9100_fimd_report(void)
 {
 	uint32_t vidcon0 = readl((void *)(FIMD + EXYNOS4210_FIMD_VIDCON0));
@@ -48,6 +73,7 @@ static void i9100_fimd_report(void)
 	printk(KERN_INFO, "fimd: VIDCON0=%08x WINCON0=%08x\n", vidcon0, wincon0);
 	printk(KERN_INFO, "fimd: W0ADD0B0=%08x W0ADD0B1=%08x VIDTCON2=%08x\n",
 	       add0b0, add0b1, tcon2);
+	i9100_fimd_capture();
 }
 
 /* Program window 0 for a full-panel 480x800x32 RGB scanout.  Only used
@@ -57,7 +83,6 @@ static void i9100_fimd_init(uint32_t fb_pa)
 {
 	uint32_t vidcon0 = readl((void *)(FIMD + EXYNOS4210_FIMD_VIDCON0));
 	uint32_t fb_end = fb_pa + FB_WIDTH * FB_HEIGHT * FB_STRIDE;
-	uint32_t wincon0;
 
 	if (!(vidcon0 & (EXYNOS4210_FIMD_VIDCON0_ENVID |
 			 EXYNOS4210_FIMD_VIDCON0_ENVID_F))) {
@@ -99,22 +124,30 @@ static void i9100_fimd_init(uint32_t fb_pa)
 	writel(FB_WIDTH * FB_HEIGHT,
 	       (void *)(FIMD + EXYNOS4210_FIMD_VIDOSD0C));
 
-	/* Point BOTH window-0 buffer sets at our FB: we can't tell which
-	 * buffer index S-Boot's WINCON0 selects. */
-	writel(fb_pa,  (void *)(FIMD + EXYNOS4210_FIMD_VIDW00ADD0B0));
-	writel(fb_pa,  (void *)(FIMD + 0xA4));	/* VIDW00ADD1B0 */
-	writel(fb_end, (void *)(FIMD + EXYNOS4210_FIMD_VIDW00ADD0B1));
-	writel(fb_end, (void *)(FIMD + 0xD4));	/* VIDW00ADD1B1 */
-	writel(FB_WIDTH * FB_STRIDE,	/* PAGEWIDTH, OFFSIZE=0 */
-	       (void *)(FIMD + EXYNOS4210_FIMD_VIDW00ADD2));
+	/* S-Boot does not necessarily draw the logo on window 0 — hardware
+	 * showed the logo persisting under striped garbage, i.e. our win0
+	 * overlay landed on top of another live window.  Retarget EVERY
+	 * enabled window to our FB; WINCONx=0x20+4w, ADD0B0=0xA0+8w,
+	 * ADD1B0=0xA4+8w, ADD0B1=0xD0+8w, ADD1B1=0xD4+8w, ADD2=0x100+4w. */
+	for (int w = 0; w < 5; w++) {
+		uint32_t wc = readl((void *)(FIMD + 0x20 + 4 * w));
 
-	/* Keep whatever else S-Boot set in WINCON0; force ENWIN + 32bpp. */
-	wincon0 = readl((void *)(FIMD + EXYNOS4210_FIMD_WINCON0));
-	wincon0 = (wincon0 & ~(0xf << 2)) |
-		  EXYNOS4210_FIMD_WINCON_ENWIN |
-		  EXYNOS4210_FIMD_WINCON_BUFMODE |
-		  EXYNOS4210_FIMD_WINCON_BPPMODE_32BPP_A888;
-	writel(wincon0, (void *)(FIMD + EXYNOS4210_FIMD_WINCON0));
+		if (w && !(wc & EXYNOS4210_FIMD_WINCON_ENWIN))
+			continue;	/* window unused, skip */
+		printk(KERN_INFO, "fimd: win%d wincon=%08x add0=%08x\n",
+		       w, wc, readl((void *)(FIMD + 0xA0 + 8 * w)));
+		writel(fb_pa,  (void *)(FIMD + 0xA0 + 8 * w));
+		writel(fb_pa,  (void *)(FIMD + 0xA4 + 8 * w));
+		writel(fb_end, (void *)(FIMD + 0xD0 + 8 * w));
+		writel(fb_end, (void *)(FIMD + 0xD4 + 8 * w));
+		writel(FB_WIDTH * FB_STRIDE,
+		       (void *)(FIMD + 0x100 + 4 * w));
+		wc = (wc & ~(0xf << 2)) |
+		     EXYNOS4210_FIMD_WINCON_ENWIN |
+		     EXYNOS4210_FIMD_WINCON_BUFMODE |
+		     EXYNOS4210_FIMD_WINCON_BPPMODE_32BPP_A888;
+		writel(wc, (void *)(FIMD + 0x20 + 4 * w));
+	}
 }
 
 int i9100_init(void)
@@ -237,6 +270,18 @@ static int i9100_late_init(void)
 {
 #if defined(CONFIG_EXYNOS_SDHCI4210)
 	sd_host_probe_4210();
+	/* Flush the S-Boot FIMD/clock snapshot to the card tail. */
+	if (fimd_dump_dirty) {
+		extern int sd_write_sectors(uint32_t, unsigned, const void *);
+		extern unsigned sd_sector_count(void);
+		uint32_t lba = sd_sector_count() - 64;
+
+		if (sd_write_sectors(lba, 1, fimd_dump) == 0)
+			printk(KERN_INFO, "fimd: reg dump -> lba %u\n", lba);
+		else
+			printk(KERN_INFO, "fimd: reg dump write failed\n");
+		fimd_dump_dirty = 0;
+	}
 #endif
 #if defined(CONFIG_EXYNOS_CDCACM4210)
 	/* Bring the DWC2 device up *before* the multi-minute SD staging:

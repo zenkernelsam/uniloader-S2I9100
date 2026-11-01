@@ -55,6 +55,7 @@ static uint32_t SDHC = EXYNOS4210_SDHCI_SD_BASE;	/* slot 2 = microSD */
 /* INTSTS bits */
 #define I_CMD_DONE	(1 << 0)
 #define I_XFER_DONE	(1 << 1)
+#define I_BUF_WR_RDY	(1 << 4)
 #define I_BUF_RD_RDY	(1 << 5)
 #define I_ERROR		(1 << 15)
 
@@ -267,6 +268,61 @@ int sd_read_sectors(uint32_t lba, unsigned count, void *buf)
 		count -= chunk;
 	}
 	return 0;
+}
+
+/* PIO write path — CMD24 only, one block at a time.  Exists so board
+ * code can drop forensics (register dumps) into a raw LBA range that
+ * survives the boot for host-side readback. */
+static int sd_write_block(uint32_t lba, const void *buf)
+{
+	unsigned t, w;
+	const uint32_t *p = buf;
+
+	wr16(R_BLKSIZE, 0x0200 | (7 << 12));
+	wr16(R_BLKCNT, 1);
+	wr16(R_XFER, X_BCNT_EN);	/* write = X_READ clear */
+	if (sd_cmd(24, sd_hcs ? lba : lba * 512,
+		   CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN,
+		   CMD_DATA_EN) == ~0u)
+		return -1;
+
+	t = 400000;
+	while (!(readl((void *)(SDHC + R_INTSTS)) & I_BUF_WR_RDY)) {
+		if (readl((void *)(SDHC + R_INTSTS)) & I_ERROR)
+			return -1;
+		if (!--t)
+			return -1;
+	}
+	writel(I_BUF_WR_RDY, (void *)(SDHC + R_INTSTS));
+	for (w = 0; w < 128; w++)
+		writel(p[w], (void *)(SDHC + R_BUF));
+
+	t = 400000;
+	while (!(readl((void *)(SDHC + R_INTSTS)) & I_XFER_DONE)) {
+		if (readl((void *)(SDHC + R_INTSTS)) & I_ERROR)
+			return -1;
+		if (!--t)
+			return -1;
+	}
+	writel(I_XFER_DONE, (void *)(SDHC + R_INTSTS));
+	return 0;
+}
+
+int sd_write_sectors(uint32_t lba, unsigned count, const void *buf)
+{
+	if (!sd_ready)
+		return -1;
+	while (count--) {
+		if (sd_write_block(lba++, buf))
+			return -1;
+		buf = (const char *)buf + 512;
+	}
+	return 0;
+}
+
+unsigned sd_sector_count(void)
+{
+	return sd_sectors;
 }
 
 int sd_get_sectors(void) { return sd_ready ? sd_sectors : 0; }
