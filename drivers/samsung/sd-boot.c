@@ -342,6 +342,20 @@ int sd_arch_load_kernel_xnu(unsigned int phys_base,
 	if (strlen(ba->CommandLine) + 16 < sizeof(ba->CommandLine))
 		strcat(ba->CommandLine, " i9100fimdtest=1");
 
+	/* Panic-path self-test: a "panic1" file on the card makes the kernel
+	 * stamp stage 0x51 and panic during platform init — exercises the
+	 * marker -> DDR-cell -> CDC-drain -> warm-reset -> readback loop. */
+	{
+		uint32_t lba, nsect;
+
+		if (sd_fat_lba("panic1", &lba, &nsect) == 0 &&
+		    strlen(ba->CommandLine) + 16 < sizeof(ba->CommandLine)) {
+			strcat(ba->CommandLine, " i9100panic=1");
+			printk(KERN_INFO,
+			       "xnu: panic1 marker found, panic test on\n");
+		}
+	}
+
 	/* SD kernel log: hand XNU the card identity plus a raw LBA range to
 	 * push log sectors at with CMD24.  XNU never touches the FAT, the
 	 * directory entry or anything the loader reads.
