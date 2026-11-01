@@ -82,6 +82,15 @@ static int sd_sectors;
 static uint32_t sd_rca;
 static int sd_hcs;		/* high-capacity (block addressed) */
 
+/* Flight-recorder state: the present-bit scan plus probe progress is
+ * written to a fixed scratch LBA once a card answers CMD7, so a dead
+ * panel/UART still leaves evidence on the card. */
+static uint32_t sd_present_scan[4];
+static uint32_t sd_csd_raw[4];
+static uint32_t sd_probe_stage;
+static int sd_host_sel = -1;
+static int sd_selected;
+
 static inline uint16_t rd16(uint32_t off)
 {
 	return *(volatile uint16_t *)(SDHC + off);
@@ -325,104 +334,100 @@ unsigned sd_sector_count(void)
 	return sd_sectors;
 }
 
+/* LBA 16/17 live in the 1MB head before the FAT partition - safe
+ * scratch space on any MBR-laid card, and reachable without trusting
+ * sd_sector_count() (which mis-parsed on the real SDXC card). */
+#define SD_FORENSIC_LBA	16
+
+static void sd_forensic_record(void)
+{
+	uint32_t rec[128];
+	unsigned o = 0;
+	int i;
+
+	if (!sd_selected)
+		return;
+	memset(rec, 0, sizeof(rec));
+	rec[o++] = 0x53444842;		/* 'SDHB' */
+	rec[o++] = sd_probe_stage;
+	rec[o++] = (uint32_t)SDHC;
+	for (i = 0; i < 4; i++)
+		rec[o++] = sd_present_scan[i];
+	for (i = 0; i < 4; i++)
+		rec[o++] = sd_csd_raw[i];
+	rec[o++] = sd_rca;
+	rec[o++] = sd_hcs;
+	rec[o++] = sd_sectors;
+	rec[o++] = readl((void *)(SDHC + R_PRESENT));
+	rec[o++] = 0xF00DF00D;
+	(void)sd_write_block(SD_FORENSIC_LBA, rec);
+}
+
 int sd_get_sectors(void) { return sd_ready ? sd_sectors : 0; }
 int sd_get_rca(void) { return sd_ready ? (int)sd_rca : -1; }
 int sd_is_ready(void) { return sd_ready; }
 
-void sd_host_probe_4210(void)
+static int sd_identify(void)
 {
-	static const uint32_t hosts[] = {
-		EXYNOS4210_SDHCI_BASE(2),	/* i9100 external microSD */
-		EXYNOS4210_SDHCI_BASE(0),
-		EXYNOS4210_SDHCI_BASE(1),
-		EXYNOS4210_SDHCI_BASE(3),
-	};
 	uint32_t ocr, r;
-	unsigned h;
+	unsigned err = 0;
 
-	/* Probe all four hosts: QEMU may wire -drive if=sd to a different
-	 * index than the phone's external slot. First host reporting a
-	 * card wins; card-less ones are skipped. */
-	for (h = 0; h < 4; h++) {
-		SDHC = hosts[h];
-		if (!(readl((void *)(SDHC + R_PRESENT)) & P_CARD_INSERTED))
-			continue;
-		printk(KERN_INFO, "sdhci4210: host %u @%08x has card\n",
-		       h, (unsigned)SDHC);
-		break;
-	}
-	if (h == 4) {
-		/* No card anywhere - keep slot 2 selected and report. */
-		SDHC = EXYNOS4210_SDHCI_SD_BASE;
-		printk(KERN_INFO,
-		       "sdhci4210: version %04x capab %08x present %08x\n",
-		       rd16(R_VERSION), readl((void *)(SDHC + R_CAPAB)),
-		       readl((void *)(SDHC + R_PRESENT)));
-		printk(KERN_INFO, "sdhci4210: no card inserted\n");
-		return;
-	}
-
+	sd_rca = 0;
+	sd_hcs = 0;
+	sd_selected = 0;
 	cmu_feed_sdmmc2();
 	host_reset_clock();
+	sd_probe_stage = 1;
 
-	if (!(readl((void *)(SDHC + R_PRESENT)) & P_CARD_INSERTED)) {
-		printk(KERN_INFO, "sdhci4210: no card inserted\n");
-		return;
-	}
-
-	if (sd_cmd(0, 0, CMD_RESP_NONE, 0) == ~0u) {
-		printk(KERN_INFO, "sdhci4210: CMD0 fail\n");
-		goto out;
-	}
+	if (sd_cmd(0, 0, CMD_RESP_NONE, 0) == ~0u)
+		return -1;
 
 	/* CMD8: 2.0-capable card check — echo means spec>=2.0 only;
 	 * block addressing (HCS) is decided by OCR CCS below. */
 	r = sd_cmd(8, 0x1AA, CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN, 0);
-	printk(KERN_INFO, "sdhci4210: CMD8 resp %08x\n", r);
+	sd_probe_stage = 2;
 
-	/* ACMD41 */
+	/* ACMD41 — bail fast on hard errors (eMMC/empty slot) instead
+	 * of grinding the full retry budget. */
 	for (;;) {
 		unsigned t = 300;
 
 		if (sd_cmd(55, 0, CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN, 0)
-		    == ~0u) {
-			printk(KERN_INFO, "sdhci4210: CMD55 fail\n");
-			goto out;
-		}
+		    == ~0u)
+			return -1;
 		ocr = sd_cmd(41, 0x40300000,
 			     CMD_RESP_R48, 0);	/* HCS|3.3-3.4V */
 		if (ocr & (1u << 31))
 			break;
-		if (!--t) {
-			printk(KERN_INFO, "sdhci4210: ACMD41 exhausted %08x\n",
-			       ocr);
-			goto out;
-		}
+		if (ocr == ~0u && ++err > 8)
+			return -1;
+		if (!--t)
+			return -1;
 	}
 	sd_hcs = !!(ocr & (1u << 30));	/* CCS: 1=block addr, 0=byte addr */
-	printk(KERN_INFO, "sdhci4210: OCR %08x\n", ocr);
+	sd_probe_stage = 3;
 
-	if (sd_cmd(2, 0, CMD_RESP_R136 | CMD_CRC_EN, 0) == ~0u) {
-		printk(KERN_INFO, "sdhci4210: CMD2 fail\n");
-		goto out;
-	}
+	if (sd_cmd(2, 0, CMD_RESP_R136 | CMD_CRC_EN, 0) == ~0u)
+		return -1;
 	r = sd_cmd(3, 0, CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN, 0);
-	if (r == ~0u) {
-		printk(KERN_INFO, "sdhci4210: CMD3 fail\n");
-		goto out;
-	}
+	if (r == ~0u)
+		return -1;
 	sd_rca = r & 0xFFFF0000;
+	sd_probe_stage = 4;
 
-	/* CSD for capacity */
-	if (sd_cmd(9, sd_rca, CMD_RESP_R136 | CMD_CRC_EN, 0) == ~0u) {
-		printk(KERN_INFO, "sdhci4210: CMD9 fail\n");
-		goto out;
-	}
+	/* CSD for capacity — must precede CMD7: SEND_CSD is only legal
+	 * in standby state. */
+	if (sd_cmd(9, sd_rca, CMD_RESP_R136 | CMD_CRC_EN, 0) == ~0u)
+		return -1;
+	sd_csd_raw[0] = readl((void *)(SDHC + R_RESP0));
+	sd_csd_raw[1] = readl((void *)(SDHC + R_RESP1));
+	sd_csd_raw[2] = readl((void *)(SDHC + R_RESP2));
+	sd_csd_raw[3] = readl((void *)(SDHC + R_RESP3));
 	{
 		/* R136 response is shifted: rspreg[i] holds CSD bits
 		 * [i*32+8 .. i*32+39]. */
-		uint32_t c0 = readl((void *)(SDHC + R_RESP1));
-		uint32_t c1 = readl((void *)(SDHC + R_RESP2));
+		uint32_t c0 = sd_csd_raw[1];
+		uint32_t c1 = sd_csd_raw[2];
 
 		if (sd_hcs) {
 			/* CSD v2: C_SIZE = CSD[69:48] -> rspreg[1] bits 29:8 */
@@ -444,25 +449,69 @@ void sd_host_probe_4210(void)
 				sd_sectors >>= 9 - blen;
 		}
 	}
+	sd_probe_stage = 6;
 
-	/* Select card */
+	/* Select card, then drop the flight record — even if CMD16 or
+	 * later staging dies, the probe state survives. */
 	if (sd_cmd(7, sd_rca, CMD_RESP_R48B | CMD_CRC_EN | CMD_IDX_EN, 0)
-	    == ~0u) {
-		printk(KERN_INFO, "sdhci4210: CMD7 fail\n");
-		goto out;
-	}
-	/* Block length 512 */
-	if (sd_cmd(16, 512, CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN, 0) == ~0u) {
-		printk(KERN_INFO, "sdhci4210: CMD16 fail\n");
-		goto out;
-	}
+	    == ~0u)
+		return -1;
+	sd_selected = 1;
+	sd_forensic_record();	/* LBA16 stage=6: card alive, CSD parsed */
 
-	sd_ready = 1;
-	printk(KERN_INFO, "sdhci4210: card ready, %u sectors (%u MB), %s\n",
-	       sd_sectors, sd_sectors / 2048,
-	       sd_hcs ? "SDHC/SDXC" : "SDSC");
+	/* Block length 512 */
+	if (sd_cmd(16, 512, CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN, 0) == ~0u)
+		return -1;
+	sd_probe_stage = 7;
+	sd_forensic_record();	/* LBA16 stage=7: fully ready */
+	return 0;
+}
+
+void sd_host_probe_4210(void)
+{
+	static const uint32_t hosts[] = {
+		EXYNOS4210_SDHCI_BASE(2),	/* i9100 external microSD */
+		EXYNOS4210_SDHCI_BASE(0),
+		EXYNOS4210_SDHCI_BASE(1),
+		EXYNOS4210_SDHCI_BASE(3),
+	};
+	unsigned h;
+
+	/* Snapshot every host's present state first — the record shows
+	 * what the hardware actually reported, regardless of what we do
+	 * with it below. */
+	for (h = 0; h < 4; h++)
+		sd_present_scan[h] =
+			readl((void *)(hosts[h] + R_PRESENT));
+
+	/* Pass 1: hosts reporting a card.  Pass 2: the rest — on the
+	 * phone the external slot's card-detect may not feed R_PRESENT,
+	 * so a "missing" card must still be attempted; empty hosts
+	 * fail fast at CMD55/ACMD41. */
+	for (h = 0; h < 4; h++) {
+		if (!(sd_present_scan[h] & P_CARD_INSERTED))
+			continue;
+		SDHC = hosts[h];
+		sd_host_sel = h;
+		if (sd_identify() == 0)
+			goto found;
+	}
+	for (h = 0; h < 4; h++) {
+		if (sd_present_scan[h] & P_CARD_INSERTED)
+			continue;
+		SDHC = hosts[h];
+		sd_host_sel = h;
+		if (sd_identify() == 0)
+			goto found;
+	}
+	printk(KERN_INFO, "sdhci4210: no usable card on any host\n");
 	return;
 
-out:
-	printk(KERN_INFO, "sdhci4210: card identify failed\n");
+found:
+
+	sd_ready = 1;
+	printk(KERN_INFO,
+	       "sdhci4210: card ready on host %u @%08x, %u sectors (%u MB), %s\n",
+	       sd_host_sel, (unsigned)SDHC, sd_sectors, sd_sectors / 2048,
+	       sd_hcs ? "SDHC/SDXC" : "SDSC");
 }

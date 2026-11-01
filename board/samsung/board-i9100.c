@@ -270,11 +270,13 @@ static int i9100_late_init(void)
 {
 #if defined(CONFIG_EXYNOS_SDHCI4210)
 	sd_host_probe_4210();
-	/* Flush the S-Boot FIMD/clock snapshot to the card tail. */
+	/* Flush the S-Boot FIMD/clock snapshot to a fixed scratch LBA. */
 	if (fimd_dump_dirty) {
 		extern int sd_write_sectors(uint32_t, unsigned, const void *);
-		extern unsigned sd_sector_count(void);
-		uint32_t lba = sd_sector_count() - 64;
+		/* Fixed LBA in the pre-partition head: sd_sector_count()
+		 * mis-parsed CSD v2 on the real SDXC card once, which
+		 * threw the dump into FAT32 space.  LBA 17 always lands. */
+		uint32_t lba = 17;
 
 		if (sd_write_sectors(lba, 1, fimd_dump) == 0)
 			printk(KERN_INFO, "fimd: reg dump -> lba %u\n", lba);
