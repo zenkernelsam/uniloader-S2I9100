@@ -55,17 +55,43 @@ static void i9100_fimd_report(void)
  * the phone we leave S-Boot's own setup untouched. */
 static void i9100_fimd_init(uint32_t fb_pa)
 {
-	uint32_t vidcon0;
+	uint32_t vidcon0 = readl((void *)(FIMD + EXYNOS4210_FIMD_VIDCON0));
+	uint32_t fb_end = fb_pa + FB_WIDTH * FB_HEIGHT * FB_STRIDE;
+	uint32_t wincon0;
 
-	/* LD9040 timing from exynos4210-i9100.dts:
-	 * pclk 23492370, hactive 480 hbp 16 hfp 16 hsync 2,
-	 * vactive 800 vbp 2 vfp 28 vsync 1.  VIDTCON fields store value-1. */
-	writel((1 << 16) | (27 << 8) | 0,	/* VBPD-1 VFPD-1 VSPW-1 */
-	       (void *)(FIMD + EXYNOS4210_FIMD_VIDTCON0));
-	writel((15 << 16) | (15 << 8) | 1,	/* HBPD-1 HFPD-1 HSPW-1 */
-	       (void *)(FIMD + EXYNOS4210_FIMD_VIDTCON1));
-	writel(((FB_HEIGHT - 1) << 11) | (FB_WIDTH - 1),	/* LINEVAL HOZVAL */
-	       (void *)(FIMD + EXYNOS4210_FIMD_VIDTCON2));
+	if (!(vidcon0 & (EXYNOS4210_FIMD_VIDCON0_ENVID |
+			 EXYNOS4210_FIMD_VIDCON0_ENVID_F))) {
+		/* Cold path (QEMU / S-Boot left no scanout): full program.
+		 * LD9040 timing from exynos4210-i9100.dts:
+		 * pclk 23492370, hactive 480 hbp 16 hfp 16 hsync 2,
+		 * vactive 800 vbp 2 vfp 28 vsync 1.  VIDTCON fields are -1. */
+		writel((1 << 16) | (27 << 8) | 0,
+		       (void *)(FIMD + EXYNOS4210_FIMD_VIDTCON0));
+		writel((15 << 16) | (15 << 8) | 1,
+		       (void *)(FIMD + EXYNOS4210_FIMD_VIDTCON1));
+		writel(((FB_HEIGHT - 1) << 11) | (FB_WIDTH - 1),
+		       (void *)(FIMD + EXYNOS4210_FIMD_VIDTCON2));
+
+		/* invert VDEN/VCLK + low-active syncs per i9100 dts */
+		writel(0xf0, (void *)(FIMD + EXYNOS4210_FIMD_VIDCON1));
+
+		/* SCLK_FIMD0 = XXTI 24MHz / 1 -> VCLK 24MHz (~2% off spec). */
+		writel(readl((void *)(EXYNOS4210_CMU_BASE + 0xC234)) & ~0xf,
+		       (void *)(EXYNOS4210_CMU_BASE + 0xC234));
+		writel(readl((void *)(EXYNOS4210_CMU_BASE + 0xC534)) & ~0xf,
+		       (void *)(EXYNOS4210_CMU_BASE + 0xC534));
+		writel(readl((void *)(EXYNOS4210_CMU_BASE +
+				     EXYNOS4210_CLK_GATE_IP_LCD0)) | 1,
+		       (void *)(EXYNOS4210_CMU_BASE +
+				EXYNOS4210_CLK_GATE_IP_LCD0));
+
+		writel(EXYNOS4210_FIMD_VIDCON0_ENVID |
+		       EXYNOS4210_FIMD_VIDCON0_ENVID_F,
+		       (void *)(FIMD + EXYNOS4210_FIMD_VIDCON0));
+	}
+	/* else: S-Boot's scanout is live — its timing already makes the
+	 * LD9040 happy (it drew the logo).  Reprogramming VIDCON/VIDTCON
+	 * here produced fine stripes on real hardware; leave them. */
 
 	writel(0, (void *)(FIMD + EXYNOS4210_FIMD_VIDOSD0A));
 	writel(((FB_WIDTH - 1) << 12) | (FB_HEIGHT - 1),
@@ -73,39 +99,22 @@ static void i9100_fimd_init(uint32_t fb_pa)
 	writel(FB_WIDTH * FB_HEIGHT,
 	       (void *)(FIMD + EXYNOS4210_FIMD_VIDOSD0C));
 
-	writel(EXYNOS4210_FIMD_WINCON_ENWIN |
-	       EXYNOS4210_FIMD_WINCON_BUFMODE |
-	       EXYNOS4210_FIMD_WINCON_BPPMODE_32BPP_A888,
-	       (void *)(FIMD + EXYNOS4210_FIMD_WINCON0));
-
-	writel(fb_pa, (void *)(FIMD + EXYNOS4210_FIMD_VIDW00ADD0B0));
-	writel(fb_pa + FB_WIDTH * FB_HEIGHT * FB_STRIDE,
-	       (void *)(FIMD + EXYNOS4210_FIMD_VIDW00ADD0B1));
+	/* Point BOTH window-0 buffer sets at our FB: we can't tell which
+	 * buffer index S-Boot's WINCON0 selects. */
+	writel(fb_pa,  (void *)(FIMD + EXYNOS4210_FIMD_VIDW00ADD0B0));
+	writel(fb_pa,  (void *)(FIMD + 0xA4));	/* VIDW00ADD1B0 */
+	writel(fb_end, (void *)(FIMD + EXYNOS4210_FIMD_VIDW00ADD0B1));
+	writel(fb_end, (void *)(FIMD + 0xD4));	/* VIDW00ADD1B1 */
 	writel(FB_WIDTH * FB_STRIDE,	/* PAGEWIDTH, OFFSIZE=0 */
 	       (void *)(FIMD + EXYNOS4210_FIMD_VIDW00ADD2));
 
-	/* i9100 dts asks for inverted VDEN/VCLK plus low-active syncs:
-	 * IVCLK(7) IHSYNC(6) IVSYNC(5) IVDEN(4).  Without these the panel
-	 * samples data on the wrong edges — that was the fine-stripe
-	 * garbage seen on real hardware. */
-	writel(0xf0, (void *)(FIMD + EXYNOS4210_FIMD_VIDCON1));
-
-	/* Deterministic pixel clock: feed SCLK_FIMD0 from XXTI (24MHz)
-	 * with ratio 0, so VCLK lands at 24MHz — within ~2% of the panel's
-	 * 23.49MHz spec.  First hardware boot proved we cannot trust
-	 * whatever S-Boot left in VIDCON0's clock fields. */
-	writel((readl((void *)(EXYNOS4210_CMU_BASE + 0xC234)) & ~0xf),
-	       (void *)(EXYNOS4210_CMU_BASE + 0xC234));	/* FIMD0_SEL=XXTI */
-	writel((readl((void *)(EXYNOS4210_CMU_BASE + 0xC534)) & ~0xf),
-	       (void *)(EXYNOS4210_CMU_BASE + 0xC534));	/* FIMD0_RATIO=0 */
-	writel(readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_LCD0)) | 1,
-	       (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_LCD0));
-
-	/* VIDCON0: VIDOUT(0)=RGB I/F, PNRMODE(0)=RGB parallel, CLKVAL_F=0,
-	 * CLKDIR=0, CLKSEL_F=0 -> VCLK = SCLK_FIMD0 = 24MHz, ENVID|ENVID_F. */
-	vidcon0 = EXYNOS4210_FIMD_VIDCON0_ENVID |
-		  EXYNOS4210_FIMD_VIDCON0_ENVID_F;
-	writel(vidcon0, (void *)(FIMD + EXYNOS4210_FIMD_VIDCON0));
+	/* Keep whatever else S-Boot set in WINCON0; force ENWIN + 32bpp. */
+	wincon0 = readl((void *)(FIMD + EXYNOS4210_FIMD_WINCON0));
+	wincon0 = (wincon0 & ~(0xf << 2)) |
+		  EXYNOS4210_FIMD_WINCON_ENWIN |
+		  EXYNOS4210_FIMD_WINCON_BUFMODE |
+		  EXYNOS4210_FIMD_WINCON_BPPMODE_32BPP_A888;
+	writel(wincon0, (void *)(FIMD + EXYNOS4210_FIMD_WINCON0));
 }
 
 int i9100_init(void)

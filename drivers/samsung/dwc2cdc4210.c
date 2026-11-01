@@ -246,10 +246,13 @@ static void dev_soft_init(void)
 {
 	int i;
 
-	DCFG = (1 << 18) | 0;		/* EPMISCNT=1, DEVSPD=HS */
-	DCTL |= DCTL_SFTDISCON;
-	udelay(10);
-	DCTL &= ~DCTL_SFTDISCON;
+	/* DEVSPD=1: connect as a full-speed device — skips the HS chirp
+	 * entirely, one less thing to go wrong on real silicon.  CDC-ACM
+	 * text only needs FS bandwidth. */
+	DCFG = (1 << 18) | 1;		/* EPMISCNT=1, DEVSPD=FS */
+	/* NOTE: no SFTDISCON pulse here — dev_soft_init also runs on the
+	 * USBRST path, where disconnecting would re-trigger enumeration
+	 * forever.  The one-shot pulse lives in usbcdc4210_init(). */
 
 	for (i = 0; i < 4; i++) {
 		DOEPCTL(i) = DXEPCTL_EPDIS | DXEPCTL_SNAK;
@@ -593,8 +596,25 @@ int usbcdc4210_init(void)
 		      (RXF_WORDS + NPTX_WORDS + EP1TX_WORDS);
 
 	dev_soft_init();
+
+	/* One-shot connect: drop + re-raise the pullup so the host issues
+	 * a fresh enumeration against our already-configured EPs. */
+	DCTL |= DCTL_SFTDISCON;
+	udelay(3000);
+	DCTL &= ~DCTL_SFTDISCON;
+
 	usb_ok = 1;
 	console_register(&usbcon);
 	printk(KERN_INFO, "usbcdc: dwc2 device up, gsnpsid=%08x\n", GSNPSID);
+
+	/* Dwell ~2s servicing EP0 while the host enumerates — printk gaps
+	 * during SD staging are too long for the setup deadline, and the
+	 * first real-hardware attempt failed the descriptor request. */
+	for (int i = 0; i < 20000; i++) {
+		usbcdc_poll();
+		udelay(100);
+	}
+	printk(KERN_INFO, "usbcdc: enum=%d configured=%d\n",
+	       enumerated, configured);
 	return 0;
 }

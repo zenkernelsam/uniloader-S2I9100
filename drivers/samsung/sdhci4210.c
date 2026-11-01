@@ -221,6 +221,14 @@ static int sd_read_blocks(uint32_t lba, unsigned count, void *buf)
 	for (n = 0; n < count; n++) {
 		unsigned w;
 
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+		/* Service EP0 between every SD block: without this, host
+		 * setup packets starve for whole seconds during staging
+		 * and enumeration dies (observed on hardware). */
+		extern void usbcdc_poll(void);
+		usbcdc_poll();
+#endif
+
 		t = 400000;
 		while (!(readl((void *)(SDHC + R_INTSTS)) & I_BUF_RD_RDY)) {
 			if (readl((void *)(SDHC + R_INTSTS)) & I_ERROR)
