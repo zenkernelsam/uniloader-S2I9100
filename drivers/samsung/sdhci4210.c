@@ -187,9 +187,11 @@ static void cmu_feed_sdmmc2(void)
 	v = (v & ~(0xF << 16)) | (15 << 16);
 	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_DIV_PERIL0));
 
-	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_PERIL));
-	v |= (1 << 18);	/* SDMMC2 gate, index to verify on device */
-	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_PERIL));
+	/* clk-exynos4: sdmmc2 = GATE_IP_FSYS bit7 (not PERIL — bit18 there
+	 * is spi2; the old write was a no-op masked by S-Boot's ungate). */
+	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_FSYS));
+	v |= (1 << 7);
+	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_FSYS));
 }
 
 static int sd_read_blocks(uint32_t lba, unsigned count, void *buf)

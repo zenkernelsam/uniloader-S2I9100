@@ -26,6 +26,8 @@
 #define DWC2_BASE	0x12480000
 #define PHY_BASE	0x125B0000
 #define PMU_USBPHYCTRL	0x10020704	/* USB_PHY_CONTROL, bit0 = EN0 */
+#define CMU_GATE_IP_FSYS	(*(volatile uint32_t *)(0x10030000 + 0xC940))
+#define GATE_FSYS_USB_DEVICE	(1u << 13)	/* clk-exynos4: usb_device */
 
 #define GREG(x)		(*(volatile uint32_t *)(DWC2_BASE + (x)))
 #define GOTGCTL		GREG(0x000)
@@ -546,13 +548,29 @@ static const struct console usbcon = {
 
 int usbcdc4210_init(void)
 {
+	uint32_t gate;
+
+	/* Gate 0: the aclk133 "usb_device" clock lives in GATE_IP_FSYS
+	 * (CMU+0xC940, bit13 per clk-exynos4).  S-Boot only opens it on
+	 * the download-mode path, so a normal boot hands us a gated
+	 * block whose registers all read 0 — first boot on hardware
+	 * silently bailed right here with zero USB enumeration. */
+	gate = CMU_GATE_IP_FSYS | GATE_FSYS_USB_DEVICE;
+	CMU_GATE_IP_FSYS = gate;
+	udelay(10);
+
 	/* Gate A: core clock/reset gate must be open for sane ID.
 	 * PCGCCTL bit0 = gate hclk (0 = running). */
 	PCGCCTL = 0;
 	udelay(10);
 
-	if ((GSNPSID & 0xffff0000) != 0x4f540000)
+	if ((GSNPSID & 0xffff0000) != 0x4f540000) {
+		/* Report rather than vanish: without this the failure is
+		 * invisible on real hardware (no console registered yet). */
+		printk(KERN_INFO, "usbcdc: no dwc2, gsnpsid=%08x gate=%08x\n",
+		       GSNPSID, gate);
 		return -1;			/* no controller (QEMU) */
+	}
 
 	phy_init();
 
