@@ -104,6 +104,7 @@ static uint32_t sd_last_cmd, sd_last_err, sd_last_detail;
 #define FORENSIC_CELL_EMMC	(EXYNOS4210_DDRCELL_PA + 0x240)
 
 static void sec_log_hex(const char *tag, const uint32_t *v, unsigned n);
+void i9_wdt_kick(void);
 
 static void forensic_inform(void)
 {
@@ -131,6 +132,7 @@ static void forensic_inform(void)
 				  sd_last_err, sd_last_detail };
 		sec_log_hex("SDst", v, 4);
 	}
+	i9_wdt_kick();
 }
 
 /* S-Boot/PBL and the kernel share a printk mirror in DRAM: a 1MB ring
@@ -144,7 +146,7 @@ static void forensic_inform(void)
 #define SEC_LOG_SIZE	0x100000u
 #define SEC_LOG_MAGIC	0x4D474F4Cu
 
-static void sec_log_emit(const char *s)
+void sec_log_emit(const char *s)
 {
 	volatile uint32_t *hdr = (volatile uint32_t *)SEC_LOG_HDR;
 	char *buf = (char *)SEC_LOG_BUF;
@@ -179,6 +181,31 @@ static void sec_log_hex(const char *tag, const uint32_t *v, unsigned n)
 	*o++ = '\n';
 	*o = 0;
 	sec_log_emit(line);
+}
+
+/* S3C6410/Exynos-class WDT (0x10060000): armed for the forensic run so
+ * a bus-freeze or an endless probe still ends in a *warm* reset —
+ * sec_log/DRAM cells survive, the user just holds Vol-+Home and lands
+ * in ODIN mode.  ~3kHz at prescaler 255/div 128; 16-bit count <= ~21s. */
+#define I9_WTCON	0x10060000u
+#define I9_WTDAT	0x10060004u
+#define I9_WTCNT	0x10060008u
+
+void i9_wdt_arm(void)
+{
+	writel(0xFFFF, (void *)I9_WTDAT);
+	writel(0xFFFF, (void *)I9_WTCNT);
+	writel((255u << 8) | (3u << 3) | (1u << 5) | 1u, (void *)I9_WTCON);
+}
+
+void i9_wdt_kick(void)
+{
+	writel(0xFFFF, (void *)I9_WTCNT);
+}
+
+void i9_wdt_off(void)
+{
+	writel(0, (void *)I9_WTCON);
 }
 
 /* --- I2C5 bitbang on GPB6(SDA)/GPB7(SCL): MAX8997 PMIC @0x66 owns
@@ -329,6 +356,7 @@ static uint32_t sd_cmd(unsigned idx, uint32_t arg, unsigned resp,
 {
 	unsigned t;
 
+	i9_wdt_kick();
 	/* Wait for CMD line free */
 	t = 100000;
 	while (readl((void *)(SDHC + R_PRESENT)) & P_CMD_INHIBIT)
@@ -734,6 +762,7 @@ static uint32_t dw_cmd(unsigned idx, uint32_t arg, uint32_t flags)
 {
 	unsigned t;
 
+	i9_wdt_kick();
 	mwr(M_RINTSTS, 0xFFFFFFFF);
 	mwr(M_CMDARG, arg);
 	mwr(M_CMD, idx | CMD_STRT | CMD_USE_HOLD | CMD_WAIT_PRV | flags);

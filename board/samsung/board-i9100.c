@@ -150,12 +150,20 @@ static void i9100_fimd_init(uint32_t fb_pa)
 	}
 }
 
+#if defined(CONFIG_EXYNOS_SDHCI4210)
+extern void sec_log_emit(const char *);
+extern void i9_wdt_arm(void), i9_wdt_kick(void), i9_wdt_off(void);
+#endif
+
 int i9100_init(void)
 {
 	uint32_t vidcon0 = readl((void *)(FIMD + EXYNOS4210_FIMD_VIDCON0));
 	uint32_t fb_pa = FB_FALLBACK;
 
 	i9100_fimd_report();
+#if defined(CONFIG_EXYNOS_SDHCI4210)
+	sec_log_emit("I9B init\n");	/* proves our C entry ran */
+#endif
 
 	/* S3C2410-style watchdog: S-Boot normally leaves it off, but if it
 	 * is running the multi-minute SD staging would reset the board.
@@ -269,6 +277,10 @@ extern void usbcdc_poll(void);
 static int i9100_late_init(void)
 {
 #if defined(CONFIG_EXYNOS_SDHCI4210)
+	sec_log_emit("I9B late\n");
+	i9_wdt_arm();	/* ~21s window; kicked per forensic stage/cmd.
+			   A dead slot ends in a *warm* reset: hold
+			   Vol-+Home to land in ODIN, no power-off. */
 	sd_host_probe_4210();
 	/* Flush the S-Boot FIMD/clock snapshot to a fixed scratch LBA. */
 	if (fimd_dump_dirty) {
@@ -293,10 +305,15 @@ static int i9100_late_init(void)
 		extern int sd_emmc_forensic_write(void);
 		extern int sd_is_ready(void);
 
-		if (!sd_is_ready())
+		if (!sd_is_ready()) {
 			printk(KERN_INFO, "emmc forensic: %s\n",
 			       sd_emmc_forensic_write() == 0
 			       ? "written" : "failed");
+			sec_log_emit("I9B forensic done; wdt reset soon\n");
+			/* leave the dog armed: ~21s -> warm reset */
+		} else {
+			i9_wdt_off();
+		}
 	}
 #endif
 #if defined(CONFIG_EXYNOS_CDCACM4210)
