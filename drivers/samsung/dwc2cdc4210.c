@@ -23,10 +23,21 @@
 #include <lib/debug.h>
 #include <lib/console.h>
 
+/* Base addresses are overridable so the same logic can run under a
+ * host-side register simulator (tools/usbcdc_sim.c) — the EP0 state
+ * machine is testable without silicon. */
+#ifndef DWC2_BASE
 #define DWC2_BASE	0x12480000
+#endif
+#ifndef PHY_BASE
 #define PHY_BASE	0x125B0000
+#endif
+#ifndef PMU_USBPHYCTRL
 #define PMU_USBPHYCTRL	0x10020704	/* USB_PHY_CONTROL, bit0 = EN0 */
+#endif
+#ifndef CMU_GATE_IP_FSYS
 #define CMU_GATE_IP_FSYS	(*(volatile uint32_t *)(0x10030000 + 0xC940))
+#endif
 #define GATE_FSYS_USB_DEVICE	(1u << 13)	/* clk-exynos4: usb_device */
 
 #define GREG(x)		(*(volatile uint32_t *)(DWC2_BASE + (x)))
@@ -63,7 +74,9 @@
 #define DTXFSTS(n)	GREG(0x918 + (n) * 0x20)	/* INEPTFSPC per EP */
 
 #define PCGCCTL		GREG(0xE00)
+#ifndef FIFO
 #define FIFO(n)		(*(volatile uint32_t *)(DWC2_BASE + 0x1000 + (n) * 0x1000))
+#endif
 
 #define PHYREG(x)	(*(volatile uint32_t *)(PHY_BASE + (x)))
 #define PHYPWR		PHYREG(0x00)
@@ -246,10 +259,10 @@ static void dev_soft_init(void)
 {
 	int i;
 
-	/* DEVSPD=1: connect as a full-speed device — skips the HS chirp
-	 * entirely, one less thing to go wrong on real silicon.  CDC-ACM
-	 * text only needs FS bandwidth. */
-	DCFG = (1 << 18) | 1;		/* EPMISCNT=1, DEVSPD=FS */
+	/* EPMISCNT=1, DEVSPD=HS: trats runs the HS chirp (its PHY is a
+	 * full UTMI+ HS transceiver).  FS-only was our guess; upstream
+	 * silicon does HS on this block. */
+	DCFG = (1 << 18) | 0;		/* EPMISCNT=1, DEVSPD=HS */
 	/* NOTE: no SFTDISCON pulse here — dev_soft_init also runs on the
 	 * USBRST path, where disconnecting would re-trigger enumeration
 	 * forever.  The one-shot pulse lives in usbcdc4210_init(). */
@@ -600,9 +613,12 @@ int usbcdc4210_init(void)
 	if (bounded_wait(&GRSTCTL, GRSTCTL_CSFTRST, 0, 100000))
 		return -3;
 
-	/* trats recipe: FDMOD + NP TXF rewind + TRDT 5 + UTMI 8-bit +
-	 * TOUTCAL 7 */
-	GUSBCFG = (1 << 30) | (1 << 14) | (0x5 << 10) | (0 << 3) | 0x7;
+	/* trats recipe: FDMOD + NP TXF rewind + TRDT 5 + UTMI 16-bit +
+	 * TOUTCAL 7.  u-boot reconfig_usbd() defaults the PHY interface
+	 * to 16-bit unless a board explicitly asks for 8; trats (the
+	 * i9100 reference) uses 16.  8-bit here let the host see the
+	 * pullup yet decode zero packets — Windows VID_0000. */
+	GUSBCFG = (1 << 30) | (1 << 14) | (0x5 << 10) | (1 << 3) | 0x7;
 
 	/* FIFO map */
 	GRXFSIZ = RXF_WORDS;
@@ -637,7 +653,7 @@ int usbcdc4210_init(void)
 			printk(KERN_INFO, "usbcdc: poll i=%d gints=%08x\n",
 			       i, GINTSTS);
 	}
-	printk(KERN_INFO, "usbcdc: enum=%d configured=%d gintsts=%08x\n",
-	       enumerated, configured, GINTSTS);
+	printk(KERN_INFO, "usbcdc: enum=%d configured=%d gintsts=%08x dsts=%08x\n",
+	       enumerated, configured, GINTSTS, DSTS);
 	return 0;
 }
