@@ -718,9 +718,59 @@ int sd_is_ready(void) { return sd_ready; }
 #define M_FIFOTH	0x4C
 #define M_CDETECT	0x50
 #define M_BMOD		0x80
+#define M_PLDMND	0x84
+#define M_DBADDR	0x88
+#define M_IDSTS		0x8C
+#define M_IDINTEN	0x90
+#define M_DSCADDR	0x94
+#define M_BUFADDR	0x98
 #define M_FIFODAT	0x100
 
 #define CTRL_RESET_ALL	0x7	/* ctrl|fifo|dma reset */
+#define CTRL_DMA_RESET	(1u << 2)
+#define CTRL_INT_EN	(1u << 4)
+#define CTRL_DMA_EN	(1u << 5)
+#define CTRL_USE_IDMAC	(1u << 25)
+
+/* Old-IP 32-bit IDMAC (dw_mmc non-64addr layout, smdk4210 mshci.h):
+ * DBADDR/IDSTS/IDINTEN/DSCADDR/BUFADDR — the 64-bit variant on 3475
+ * shifted this whole block by +4, do not copy those offsets. */
+#define IDMAC_SWRESET	(1u << 0)
+#define IDMAC_FB	(1u << 1)
+#define IDMAC_ENABLE	(1u << 7)
+#define IDMAC_TI	(1u << 0)
+#define IDMAC_RI	(1u << 1)
+#define IDMAC_NI	(1u << 8)
+#define DES0_OWN	(1u << 31)
+#define DES0_CES	(1u << 30)
+#define DES0_ER		(1u << 5)
+#define DES0_CH		(1u << 4)
+#define DES0_FD		(1u << 3)
+#define DES0_LD		(1u << 2)
+#define DES0_DIC	(1u << 1)
+
+struct dw_idmac_desc {
+	uint32_t des0;	/* OWN|CES|ER|CH|FD|LD|DIC */
+	uint32_t des1;	/* buffer1 size [12:0] (+buf2 size [25:13]) */
+	uint32_t des2;	/* buffer1 physical address */
+	uint32_t des3;	/* buffer2 / next descriptor when chained */
+};
+
+/* The forensic page 0x7FFE0000 already survives warm reset; the two
+ * cells live at +0x040/+0x240 so +0x480 onward is ours.  Real DRAM
+ * physicals — exactly what the IDMAC wants, and the x86 sim mmaps the
+ * same page so no translation is needed there either. */
+#define DW_IDMAC_DESC_PA	(EXYNOS4210_DDRCELL_PA + 0x480)
+#define DW_IDMAC_BUF_PA		(EXYNOS4210_DDRCELL_PA + 0x600)
+
+static inline void dmb(void)
+{
+#if defined(__arm__) || defined(__aarch64__)
+	__asm__ __volatile__("dmb" ::: "memory");
+#else	/* host-side sim: ordering barrier only */
+	__asm__ __volatile__("" ::: "memory");
+#endif
+}
 #define CMD_RESP_EXP	(1u << 6)
 #define CMD_RESP_LONG	(1u << 7)
 #define CMD_CHECK_CRC	(1u << 8)
@@ -884,10 +934,106 @@ static int dw_write_block(uint32_t lba, const void *buf)
 	return 0;
 }
 
+/* Single-block read through the internal DMA engine — upstream's
+ * answer (sdmmc3475 sd_idmac_read) to the "CPU data port returns
+ * zeros" quirk, ported to the 4210's old 32-bit IDMAC register block.
+ * Descriptor ring and bounce buffer live in the reserved forensic
+ * page so their physicals are compile-time constants. */
+static int dw_read_block_idmac(uint32_t lba, void *buf)
+{
+	volatile struct dw_idmac_desc *d = (void *)DW_IDMAC_DESC_PA;
+	uint32_t v, st;
+	unsigned t;
+
+	/* kernel idmac_stop_dma: CTRL &= ~USE_IDMAC, then DMA_RESET
+	 * (self-clearing), then BMOD &= ~(ENABLE|FB) */
+	mwr(M_CTRL, mrd(M_CTRL) & ~CTRL_USE_IDMAC);
+	mwr(M_CTRL, mrd(M_CTRL) | CTRL_DMA_RESET);
+	for (t = 0; t < 100000 && (mrd(M_CTRL) & CTRL_DMA_RESET); t++)
+		;
+	mwr(M_BMOD, mrd(M_BMOD) & ~(IDMAC_ENABLE | IDMAC_FB));
+
+	/* per-transfer init: BMOD SWRESET, IDINTEN, DBADDR */
+	mwr(M_BMOD, IDMAC_SWRESET);
+	for (t = 0; t < 100000 && (mrd(M_BMOD) & IDMAC_SWRESET); t++)
+		;
+	mwr(M_IDINTEN, IDMAC_TI | IDMAC_RI | IDMAC_NI);
+	mwr(M_DBADDR, DW_IDMAC_DESC_PA);
+	mwr(M_CTRL, mrd(M_CTRL) | CTRL_DMA_EN);
+	mwr(M_RINTSTS, INT_RXDR | INT_TXDR);
+	mwr(M_INTMSK, mrd(M_INTMSK) & ~(INT_RXDR | INT_TXDR));
+
+	/* descriptor built AFTER DMA_ENABLE (kernel translate_sglist
+	 * order) — single desc, first+last, unchained */
+	d->des0 = DES0_OWN | DES0_FD | DES0_LD;
+	d->des1 = 512;
+	d->des2 = DW_IDMAC_BUF_PA;
+	d->des3 = 0;
+	dmb();
+
+	mwr(M_BLKSIZ, 512);
+	mwr(M_BYTCNT, 512);
+	mwr(M_CTRL, mrd(M_CTRL) | CTRL_USE_IDMAC);
+	dmb();
+	mwr(M_BMOD, mrd(M_BMOD) | IDMAC_ENABLE | IDMAC_FB);
+
+	mwr(M_RINTSTS, 0xFFFFFFFF);
+	mwr(M_IDSTS, 0xFFFFFFFF);
+	mwr(M_PLDMND, 1);		/* IDMAC: descriptors pending */
+	dmb();
+
+	mwr(M_CMDARG, lba);
+	mwr(M_CMD, 17 | CMD_STRT | CMD_USE_HOLD | CMD_WAIT_PRV |
+	    CMD_RESP_EXP | CMD_CHECK_CRC | CMD_DATA_EXP);
+	for (t = 0; t < 5000000; t++) {
+		st = mrd(M_RINTSTS);
+		if (st & (INT_CDONE | INT_RTO | INT_RE | INT_RCRC))
+			break;
+	}
+	if (st & (INT_RTO | INT_RE | INT_RCRC)) {
+		sd_last_cmd = 17; sd_last_err = 5; sd_last_detail = st;
+		return -1;
+	}
+	mwr(M_RINTSTS, INT_CDONE);
+
+	/* wait for the IDMAC transfer-complete bit — 512B delivered */
+	v = 0;
+	for (t = 0; t < 5000000; t++) {
+		v = mrd(M_IDSTS);
+		if (v & (IDMAC_TI | IDMAC_RI | IDMAC_NI))
+			break;
+		st = mrd(M_RINTSTS);
+		if (st & INT_ERRS) {
+			sd_last_cmd = 17; sd_last_err = 6;
+			sd_last_detail = (st & 0xffff) | (v << 16);
+			return -1;
+		}
+	}
+	if (!(v & (IDMAC_TI | IDMAC_RI | IDMAC_NI))) {
+		sd_last_cmd = 17; sd_last_err = 7;
+		sd_last_detail = v;
+		return -1;
+	}
+	mwr(M_IDSTS, 0xFFFFFFFF);
+	mwr(M_RINTSTS, 0xFFFFFFFF);
+
+	/* back to PIO mode so later dw_read_block/dw_write_block callers
+	 * see a clean controller (kernel idmac_stop_dma post-transfer) */
+	mwr(M_CTRL, mrd(M_CTRL) & ~CTRL_USE_IDMAC);
+	mwr(M_CTRL, mrd(M_CTRL) | CTRL_DMA_RESET);
+	for (t = 0; t < 100000 && (mrd(M_CTRL) & CTRL_DMA_RESET); t++)
+		;
+	mwr(M_BMOD, mrd(M_BMOD) & ~(IDMAC_ENABLE | IDMAC_FB));
+
+	memcpy(buf, (void *)DW_IDMAC_BUF_PA, 512);
+	return 0;
+}
+
 /* Single-block read via the PIO FIFO @FIFODAT (32-bit on the 4210's
  * older MSHC — the "PIO port reads zeros" quirk upstream hit is the
- * newer DW-2.40a layout at 0x200; if this still returns garbage the
- * record will say so and we move to 32-bit IDMAC next round). */
+ * newer DW-2.40a layout at 0x200, but nobody proved the 4210 port
+ * actually works either).  All-zero readback is the smoking gun:
+ * retry through IDMAC before believing it. */
 static int dw_read_block(uint32_t lba, void *buf)
 {
 	uint32_t *p = buf;
@@ -914,6 +1060,12 @@ static int dw_read_block(uint32_t lba, void *buf)
 			return -1;
 		if (!--t)
 			return -1;
+	}
+	for (w = 0; w < 128 && !p[w]; w++)
+		;
+	if (w == 128) {
+		printk(KERN_INFO, "emmc: pio read all-zero, idmac retry\n");
+		return dw_read_block_idmac(lba, buf);
 	}
 	return 0;
 }
