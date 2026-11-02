@@ -261,6 +261,11 @@ static void dev_soft_init(void)
 	DIEPMSK = (1 << 3) | (1 << 2) | (1 << 0);	/* timeout|ahberr|xfcompl */
 	DOEPMSK = (1 << 3) | (1 << 2) | (1 << 0);
 	DAINTMSK = (1 << 16) | 1;			/* ep0 out+in */
+	/* Unmask what we poll: on some DWC2 integration the status bits
+	 * never raise in GINTSTS while masked — EP0 stayed deaf on the
+	 * first cable plug (Windows VID_0000 descriptor fail). */
+	GINTMSK = GINTSTS_USBRST | GINTSTS_ENUMDONE | GINTSTS_RXFLVL |
+		  GINTSTS_IEPINT | GINTSTS_OEPINT;
 
 	fifo_flush_rx();
 	fifo_flush_tx(0x10);
@@ -625,7 +630,7 @@ int usbcdc4210_init(void)
 		usbcdc_poll();
 		udelay(100);
 	}
-	printk(KERN_INFO, "usbcdc: enum=%d configured=%d\n",
-	       enumerated, configured);
+	printk(KERN_INFO, "usbcdc: enum=%d configured=%d gintsts=%08x\n",
+	       enumerated, configured, GINTSTS);
 	return 0;
 }
