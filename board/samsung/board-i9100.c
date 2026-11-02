@@ -314,9 +314,11 @@ static int i9100_late_init(void)
 			       ? "written" : "failed");
 			sec_log_emit("I9B forensic done; hold Vol+Home\n");
 			/* Wait (bounded) for Vol-+Home: when they are held
-			 * we stop kicking and the dog fires a *warm* reset
-			 * ~21s later -> iROM lands in ODIN with our sec_log
-			 * ring intact.  No keys -> loop resets anyway. */
+			 * we fire PMU_SWRESET - the *true* warm reset that
+			 * skips iROM DRAM re-init (the same path kernel
+			 * panic capture uses) - and iROM drops into ODIN
+			 * with our sec_log ring intact.  The WDT stays
+			 * armed as a pure hang-recovery backstop. */
 			for (i = 0; i < 600; i++) {
 				volatile unsigned j;
 				g2 = readl((void *)0x11000C44);	/* GPX2DAT */
@@ -327,7 +329,8 @@ static int i9100_late_init(void)
 				for (j = 0; j < 2000000; j++)
 					;
 			}
-			/* keys held (or timed out): let the dog fire */
+			sec_log_emit("I9B swreset now\n");
+			writel(1, (void *)EXYNOS4210_PMU_SWRESET);
 			for (;;)
 				;
 		} else {
