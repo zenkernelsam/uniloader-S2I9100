@@ -90,6 +90,136 @@ static uint32_t sd_csd_raw[4];
 static uint32_t sd_probe_stage;
 static int sd_host_sel = -1;
 static int sd_selected;
+static uint32_t sd_gpk2con_before, sd_gpk2con_after, sd_gpx3dat;
+static uint32_t sd_ldo17_before = ~0u, sd_ldo17_after = ~0u, sd_i2c_status;
+
+/* --- I2C5 bitbang on GPB6(SDA)/GPB7(SCL): MAX8997 PMIC @0x66 owns
+ * the external slot VTF rail (LDO17, 2.8V).  S-Boot's normal boot
+ * path likely leaves the slot unpowered, which would exactly match
+ * "every host dead". --- */
+
+static void sd_udelay(unsigned int us)
+{
+	volatile unsigned int i;
+
+	while (us--)
+		for (i = 0; i < 400; i++)
+			__asm__ __volatile__("nop");
+}
+
+static void gpb_pin(int pin, int out)
+{
+	uint32_t c = readl((void *)EXYNOS4210_GPBCON);
+
+	c = (c & ~(0xFu << (pin * 4))) | ((out ? 1u : 0u) << (pin * 4));
+	writel(c, (void *)EXYNOS4210_GPBCON);
+}
+
+static int gpb_val(int pin)
+{
+	return !!(readl((void *)EXYNOS4210_GPBDAT) & (1u << pin));
+}
+
+static void i2c_sda(int v)	/* open-drain: 1 = release to pull-up */
+{
+	gpb_pin(6, !v);
+}
+
+static void i2c_scl(int v)
+{
+	gpb_pin(7, !v);
+}
+
+static void i2c_start(void)
+{
+	i2c_sda(1); i2c_scl(1); sd_udelay(5);
+	i2c_sda(0); sd_udelay(5);
+	i2c_scl(0); sd_udelay(5);
+}
+
+static void i2c_stop(void)
+{
+	i2c_sda(0); i2c_scl(1); sd_udelay(5);
+	i2c_sda(1); sd_udelay(5);
+}
+
+static int i2c_wr(unsigned char b)	/* returns 1 on ACK */
+{
+	int i, ack;
+
+	for (i = 7; i >= 0; i--) {
+		i2c_sda((b >> i) & 1);
+		i2c_scl(1); sd_udelay(5);
+		i2c_scl(0); sd_udelay(2);
+	}
+	i2c_sda(1);			/* release for ACK */
+	i2c_scl(1); sd_udelay(2);
+	ack = !gpb_val(6);		/* low = ACK */
+	i2c_scl(0); sd_udelay(5);
+	return ack;
+}
+
+static unsigned char i2c_rd(void)
+{
+	unsigned char b = 0;
+	int i;
+
+	i2c_sda(1);			/* release */
+	for (i = 7; i >= 0; i--) {
+		i2c_scl(1); sd_udelay(2);
+		b = (b << 1) | gpb_val(6);
+		i2c_scl(0); sd_udelay(5);
+	}
+	i2c_sda(0);			/* master NAK (single byte) */
+	i2c_scl(1); sd_udelay(5);
+	i2c_scl(0); sd_udelay(5);
+	return b;
+}
+
+static int pmic_read_reg(unsigned reg, unsigned char *v)
+{
+	i2c_start();
+	if (!i2c_wr(0xCC)) { sd_i2c_status |= 1; i2c_stop(); return -1; }
+	if (!i2c_wr(reg))  { sd_i2c_status |= 2; i2c_stop(); return -1; }
+	i2c_start();
+	if (!i2c_wr(0xCD)) { sd_i2c_status |= 4; i2c_stop(); return -1; }
+	*v = i2c_rd();
+	i2c_stop();
+	return 0;
+}
+
+static int pmic_write_reg(unsigned reg, unsigned char v)
+{
+	i2c_start();
+	if (!i2c_wr(0xCC)) { sd_i2c_status |= 8; i2c_stop(); return -1; }
+	if (!i2c_wr(reg))  { sd_i2c_status |= 0x10; i2c_stop(); return -1; }
+	if (!i2c_wr(v))    { sd_i2c_status |= 0x20; i2c_stop(); return -1; }
+	i2c_stop();
+	return 0;
+}
+
+static void sd_slot_power(void)
+{
+	unsigned char v;
+
+	/* GPB6/7 to GPIO for bitbang (bus already pulled up on board). */
+	writel(readl((void *)EXYNOS4210_GPBDAT) &
+	       ~((1u << 6) | (1u << 7)), (void *)EXYNOS4210_GPBDAT);
+	gpb_pin(6, 0); gpb_pin(7, 0);
+	writel(readl((void *)EXYNOS4210_GPBPUD) | (0x2 << 12) | (0x2 << 14),
+	       (void *)EXYNOS4210_GPBPUD);
+	i2c_sda(1); i2c_scl(1);
+	sd_udelay(100);
+
+	if (pmic_read_reg(0x4B /*MAX8997 LDO17CTRL*/, &v) == 0) {
+		sd_ldo17_before = v;
+		if (pmic_write_reg(0x4B, v | 0xC0 /*EN_LDO*/) == 0) {
+			if (pmic_read_reg(0x4B, &v) == 0)
+				sd_ldo17_after = v;
+		}
+	}
+	sd_udelay(2000);		/* rail ramp */
+}
 
 static inline uint16_t rd16(uint32_t off)
 {
@@ -359,6 +489,12 @@ static void sd_forensic_record(void)
 	rec[o++] = sd_hcs;
 	rec[o++] = sd_sectors;
 	rec[o++] = readl((void *)(SDHC + R_PRESENT));
+	rec[o++] = sd_gpk2con_before;
+	rec[o++] = sd_gpk2con_after;
+	rec[o++] = sd_gpx3dat;
+	rec[o++] = sd_ldo17_before;
+	rec[o++] = sd_ldo17_after;
+	rec[o++] = sd_i2c_status;
 	rec[o++] = 0xF00DF00D;
 	(void)sd_write_block(SD_FORENSIC_LBA, rec);
 }
@@ -483,6 +619,26 @@ void sd_host_probe_4210(void)
 	for (h = 0; h < 4; h++)
 		sd_present_scan[h] =
 			readl((void *)(hosts[h] + R_PRESENT));
+
+	/* Slot power first: VTF = MAX8997 LDO17 over I2C5, which the
+	 * normal-boot path may leave off entirely. */
+	sd_slot_power();
+
+	/* u-boot exynos4x12 SDMMC2 pinmux: GPK2[0..6] func 2 (pin2 is
+	 * the unused internal CD — leave as input), pull none, LV4
+	 * drive.  The real card-detect is GPX3.4, wired active-low —
+	 * configure it as an input so the record shows the true slot
+	 * state instead of a floating pad. */
+	sd_gpk2con_before = readl((void *)EXYNOS4210_GPK2CON);
+	writel(0x02222022, (void *)EXYNOS4210_GPK2CON);
+	writel(0x00000000, (void *)EXYNOS4210_GPK2PUD);
+	writel(0x00333033, (void *)EXYNOS4210_GPK2DRV);
+	writel(readl((void *)EXYNOS4210_GPX3CON) & ~(0xF << 16),
+	       (void *)EXYNOS4210_GPX3CON);
+	writel(readl((void *)EXYNOS4210_GPX3PUD) & ~(0x3 << 8),
+	       (void *)EXYNOS4210_GPX3PUD);
+	sd_gpk2con_after = readl((void *)EXYNOS4210_GPK2CON);
+	sd_gpx3dat = readl((void *)EXYNOS4210_GPX3DAT);
 
 	/* Pass 1: hosts reporting a card.  Pass 2: the rest — on the
 	 * phone the external slot's card-detect may not feed R_PRESENT,
