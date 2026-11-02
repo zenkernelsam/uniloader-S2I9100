@@ -623,12 +623,19 @@ int usbcdc4210_init(void)
 	console_register(&usbcon);
 	printk(KERN_INFO, "usbcdc: dwc2 device up, gsnpsid=%08x\n", GSNPSID);
 
-	/* Dwell ~2s servicing EP0 while the host enumerates — printk gaps
-	 * during SD staging are too long for the setup deadline, and the
-	 * first real-hardware attempt failed the descriptor request. */
-	for (int i = 0; i < 20000; i++) {
+	/* Dwell servicing EP0 while the host enumerates — bounded but
+	 * heartbeat-driven: udelay is uncalibrated on real silicon, so
+	 * count iterations not microseconds, and exit as soon as the
+	 * host finishes configuring us instead of burning a fixed wait.
+	 * A heartbeat line every 2000 spins proves the loop is alive —
+	 * a screen frozen on "device up" looked like a hang. */
+	for (int i = 0; i < 60000; i++) {
 		usbcdc_poll();
-		udelay(100);
+		if (configured)
+			break;
+		if ((i & 0x3fff) == 0x2000)
+			printk(KERN_INFO, "usbcdc: poll i=%d gints=%08x\n",
+			       i, GINTSTS);
 	}
 	printk(KERN_INFO, "usbcdc: enum=%d configured=%d gintsts=%08x\n",
 	       enumerated, configured, GINTSTS);

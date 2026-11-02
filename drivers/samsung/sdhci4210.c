@@ -1179,12 +1179,25 @@ void sd_host_probe_4210(void)
 	};
 	unsigned h;
 
+	/* Clocks before touching: an unclocked SDHCI block can hang the
+	 * bus forever on real silicon — QEMU reads 0 but the phone's
+	 * AHB bridge waits indefinitely.  S-Boot boots from eMMC and
+	 * likely leaves every SD channel gated; scanning registers
+	 * first froze the board right here (screen stopped at the
+	 * probe boundary twice). */
+	printk(KERN_INFO, "sd: feed clocks\n");
+	for (h = 0; h < 4; h++)
+		cmu_feed_sdmmc(h);
+
 	/* Snapshot every host's present state first — the record shows
 	 * what the hardware actually reported, regardless of what we do
 	 * with it below. */
 	for (h = 0; h < 4; h++)
 		sd_present_scan[h] =
 			readl((void *)(hosts[h] + R_PRESENT));
+	printk(KERN_INFO, "sd: present %08x %08x %08x %08x\n",
+	       sd_present_scan[0], sd_present_scan[1],
+	       sd_present_scan[2], sd_present_scan[3]);
 
 	/* Slot power first: VTF = MAX8997 LDO17 over I2C5, which the
 	 * normal-boot path may leave off entirely. */
