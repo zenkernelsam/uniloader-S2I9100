@@ -566,12 +566,186 @@ int sd_is_ready(void) { return sd_ready; }
 /* ---------------- eMMC forensic channel ----------------
  * The SD flight record depends on a card answering CMD7 — if the
  * external slot is truly dead we never get the record back.  The
- * eMMC is a second, always-powered channel: minimal MMC-proto init
- * on host 0, then drop the same record into a free tail sector of
- * the KERNEL partition (LBA 73728..90111 per the GPT backup — we
- * own that region, 686KB of 8MB used).  Read back under TWRP.
+ * eMMC is a second, always-powered channel: drop the same record
+ * into a free tail sector of the KERNEL partition (LBA 73728..90111
+ * per the GPT backup — we own that region, 686KB of 8MB used).
+ *
+ * HARDWARE TRUTH (from the running TWRP kernel): the i9100 eMMC is
+ * NOT on SDHCI0 — it hangs off the DesignWare MSHC at 0x12550000
+ * (dw_mmc/mshci IP, totally different register set).  SDHCI0/1 are
+ * not wired to anything on this board.
  */
 #define EMMC_FORENSIC_LBA	90110	/* KERNEL tail-2, unused space */
+#define DWMMC_BASE		0x12550000
+
+/* mshci register map (smdk4210 drivers/mmc/host/mshci.h) */
+#define M_CTRL		0x00
+#define M_PWREN		0x04
+#define M_CLKDIV	0x08
+#define M_CLKSRC	0x0C
+#define M_CLKENA	0x10
+#define M_TMOUT		0x14
+#define M_CTYPE		0x18
+#define M_BLKSIZ	0x1C
+#define M_BYTCNT	0x20
+#define M_INTMSK	0x24
+#define M_CMDARG	0x28
+#define M_CMD		0x2C
+#define M_RESP0		0x30
+#define M_RESP1		0x34
+#define M_RESP2		0x38
+#define M_RESP3		0x3C
+#define M_MINTSTS	0x40
+#define M_RINTSTS	0x44
+#define M_STATUS	0x48
+#define M_FIFOTH	0x4C
+#define M_CDETECT	0x50
+#define M_BMOD		0x80
+#define M_FIFODAT	0x100
+
+#define CTRL_RESET_ALL	0x7	/* ctrl|fifo|dma reset */
+#define CMD_RESP_EXP	(1u << 6)
+#define CMD_RESP_LONG	(1u << 7)
+#define CMD_CHECK_CRC	(1u << 8)
+#define CMD_DATA_EXP	(1u << 9)
+#define CMD_DAT_WR	(1u << 10)
+#define CMD_WAIT_PRV	(1u << 13)
+#define CMD_SEND_INIT	(1u << 15)
+#define CMD_UPD_CLK	(1u << 21)
+#define CMD_USE_HOLD	(1u << 29)
+#define CMD_STRT	(1u << 31)
+#define INT_CDETECT	(1u << 0)
+#define INT_RE		(1u << 1)
+#define INT_CDONE	(1u << 2)
+#define INT_DTO		(1u << 3)
+#define INT_TXDR	(1u << 4)
+#define INT_RXDR	(1u << 5)
+#define INT_RCRC	(1u << 6)
+#define INT_DCRC	(1u << 7)
+#define INT_RTO		(1u << 8)
+#define INT_DRTO	(1u << 9)
+#define INT_HTO		(1u << 10)
+#define INT_HLE		(1u << 12)
+#define INT_EBE		(1u << 15)
+#define INT_ERRS	(INT_RE|INT_RCRC|INT_RTO|INT_DRTO|INT_HTO|INT_HLE|INT_EBE)
+#define ST_FIFO_EMPTY	(1u << 2)
+#define ST_FIFO_FULL	(1u << 3)
+#define ST_DATA_BUSY	(1u << 9)
+#define ST_FIFO_COUNT	(0x1FFFu << 17)
+
+static uint32_t mrd(uint32_t off)
+{
+	return readl((void *)(DWMMC_BASE + off));
+}
+
+static void mwr(uint32_t off, uint32_t v)
+{
+	writel(v, (void *)(DWMMC_BASE + off));
+}
+
+/* Issue one eMMC command; returns RESP0 or ~0 on error.
+ * flags = CMD_RESP_* / CMD_DATA_* per mshci.h. */
+static uint32_t dw_cmd(unsigned idx, uint32_t arg, uint32_t flags)
+{
+	unsigned t;
+
+	mwr(M_RINTSTS, 0xFFFFFFFF);
+	mwr(M_CMDARG, arg);
+	mwr(M_CMD, idx | CMD_STRT | CMD_USE_HOLD | CMD_WAIT_PRV | flags);
+
+	t = 400000;
+	for (;;) {
+		uint32_t s = mrd(M_RINTSTS);
+
+		if (s & INT_ERRS) {
+			sd_last_cmd = idx; sd_last_err = 3;
+			sd_last_detail = s;
+			return ~0u;
+		}
+		if (s & INT_CDONE)
+			break;
+		if (!--t) {
+			sd_last_cmd = idx; sd_last_err = 4;
+			sd_last_detail = s;
+			return ~0u;
+		}
+	}
+	return mrd(M_RESP0);
+}
+
+static void dw_update_clock(unsigned div)
+{
+	unsigned t;
+
+	mwr(M_CLKENA, 0);
+	t = 100000;
+	while (mrd(M_CMD) & CMD_STRT)
+		if (!--t)
+			break;
+	mwr(M_CLKDIV, div);
+	mwr(M_CMD, 0);
+	mwr(M_CMD, CMD_STRT | CMD_UPD_CLK | CMD_WAIT_PRV);
+	t = 100000;
+	while (mrd(M_CMD) & CMD_STRT)
+		if (!--t)
+			break;
+	mwr(M_CLKENA, 1);
+}
+
+static void dw_host_init(void)
+{
+	unsigned t;
+
+	/* Full reset, then self-clear wait */
+	mwr(M_CTRL, CTRL_RESET_ALL);
+	t = 100000;
+	while (mrd(M_CTRL) & CTRL_RESET_ALL)
+		if (!--t)
+			break;
+
+	mwr(M_BMOD, 0);			/* PIO, no IDMAC */
+	mwr(M_INTMSK, 0);		/* polled, not signalled */
+	mwr(M_TMOUT, 0xFFFFFFFF);
+	mwr(M_CTYPE, 0);		/* 1-bit bus */
+	mwr(M_PWREN, 1);
+	sd_udelay(2000);
+	/* ~400kHz init clock from 90MHz SCLK_DWMCI (div = clk/2*target) */
+	dw_update_clock(113);
+	/* FIFO: depth 0x20; TX wmark 0xF, RX wmark 0x10, burst 16 */
+	mwr(M_FIFOTH, (3u << 28) | (0xF << 16) | 0x10);
+}
+
+static int dw_write_block(uint32_t lba, const void *buf)
+{
+	const uint32_t *p = buf;
+	unsigned w, t;
+
+	mwr(M_BLKSIZ, 512);
+	mwr(M_BYTCNT, 512);
+	if (dw_cmd(24, lba, CMD_RESP_EXP | CMD_CHECK_CRC |
+		   CMD_DATA_EXP | CMD_DAT_WR) == ~0u)
+		return -1;
+
+	for (w = 0; w < 128; w++) {
+		t = 400000;
+		while (mrd(M_STATUS) & ST_FIFO_FULL) {
+			if (mrd(M_RINTSTS) & INT_ERRS)
+				return -1;
+			if (!--t)
+				return -1;
+		}
+		mwr(M_FIFODAT, p[w]);
+	}
+
+	t = 800000;
+	while (!(mrd(M_RINTSTS) & INT_DTO)) {
+		if (mrd(M_RINTSTS) & INT_ERRS)
+			return -1;
+		if (!--t)
+			return -1;
+	}
+	return 0;
+}
 
 /* Progressive eMMC-side record: rewritten at every probe stage so a
  * dead probe still leaves its corpse in the DRAM cell + INFORM regs. */
@@ -583,9 +757,9 @@ static void emmc_record(unsigned stage, uint32_t ocr)
 	memset(rec, 0, sizeof(rec));
 	rec[o++] = 0x454D3142;		/* 'EM1B' */
 	rec[o++] = stage;
-	rec[o++] = readl((void *)(SDHC + R_PRESENT));
-	rec[o++] = readl((void *)(SDHC + R_CAPAB));
-	rec[o++] = readl((void *)(SDHC + R_CAPAB + 4));
+	rec[o++] = mrd(M_STATUS);
+	rec[o++] = mrd(M_RINTSTS);
+	rec[o++] = mrd(M_CDETECT);
 	rec[o++] = ocr;
 	rec[o++] = sd_rca;
 	rec[o++] = sd_hcs;
@@ -606,25 +780,21 @@ static int mmc_probe_emmc(void)
 	uint32_t ocr, r;
 	unsigned t;
 
-	SDHC = EXYNOS4210_SDHCI_EMMC_BASE;
-	cmu_feed_sdmmc(0);	/* S-Boot read KERNEL off eMMC, so the
-				 * clock was very likely fed already —
-				 * but a dead gate here costs nothing. */
-	host_reset_clock();
+	dw_host_init();
 	sd_selected = 0;
-	sd_probe_stage = 10;		/* 10-19 = eMMC side */
-	emmc_record(10, 0);
+	sd_probe_stage = 10;		/* 10-15 = eMMC side (DWMMC) */
+	emmc_record(10, mrd(M_CTRL));
 
-	if (sd_cmd(0, 0, CMD_RESP_NONE, 0) == ~0u) {
+	if (dw_cmd(0, 0, CMD_SEND_INIT) == ~0u) {
 		emmc_record(10, 0);
 		return -1;
 	}
 
 	/* CMD1 SEND_OP_COND: loop until the device reports ready.
-	 * 0x40FF8000 = sector-mode request + 2.7-3.6V window. */
+	 * 0x40FF8000 = sector-mode request + 2.7-3.6V window.  R3: no CRC. */
 	ocr = 0;
 	for (t = 300; t && !(ocr & (1u << 31)); t--) {
-		ocr = sd_cmd(1, 0x40FF8000, CMD_RESP_R48, 0);
+		ocr = dw_cmd(1, 0x40FF8000, CMD_RESP_EXP);
 		if (ocr == ~0u) {
 			emmc_record(10, ocr);
 			return -1;
@@ -638,13 +808,13 @@ static int mmc_probe_emmc(void)
 	sd_probe_stage = 11;
 	emmc_record(11, ocr);
 
-	if (sd_cmd(2, 0, CMD_RESP_R136 | CMD_CRC_EN, 0) == ~0u) {
+	if (dw_cmd(2, 0, CMD_RESP_EXP | CMD_RESP_LONG) == ~0u) {
 		emmc_record(11, ocr);
 		return -1;
 	}
 	/* MMC CMD3 = SET_RELATIVE_ADDR: host assigns, use 1<<16. */
 	sd_rca = 0x00010000;
-	r = sd_cmd(3, sd_rca, CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN, 0);
+	r = dw_cmd(3, sd_rca, CMD_RESP_EXP | CMD_CHECK_CRC);
 	if (r == ~0u) {
 		emmc_record(11, ocr);
 		return -1;
@@ -652,19 +822,18 @@ static int mmc_probe_emmc(void)
 	sd_probe_stage = 12;
 	emmc_record(12, ocr);
 
-	if (sd_cmd(9, sd_rca, CMD_RESP_R136 | CMD_CRC_EN, 0) == ~0u) {
+	if (dw_cmd(9, sd_rca, CMD_RESP_EXP | CMD_RESP_LONG) == ~0u) {
 		emmc_record(12, ocr);
 		return -1;
 	}
-	sd_csd_raw[0] = readl((void *)(SDHC + R_RESP0));
-	sd_csd_raw[1] = readl((void *)(SDHC + R_RESP1));
-	sd_csd_raw[2] = readl((void *)(SDHC + R_RESP2));
-	sd_csd_raw[3] = readl((void *)(SDHC + R_RESP3));
+	sd_csd_raw[0] = mrd(M_RESP0);
+	sd_csd_raw[1] = mrd(M_RESP1);
+	sd_csd_raw[2] = mrd(M_RESP2);
+	sd_csd_raw[3] = mrd(M_RESP3);
 	sd_probe_stage = 13;
 	emmc_record(13, ocr);
 
-	if (sd_cmd(7, sd_rca, CMD_RESP_R48B | CMD_CRC_EN | CMD_IDX_EN, 0)
-	    == ~0u) {
+	if (dw_cmd(7, sd_rca, CMD_RESP_EXP | CMD_CHECK_CRC) == ~0u) {
 		emmc_record(13, ocr);
 		return -1;
 	}
@@ -672,8 +841,7 @@ static int mmc_probe_emmc(void)
 	sd_probe_stage = 14;
 	emmc_record(14, ocr);
 
-	if (sd_cmd(16, 512, CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN, 0)
-	    == ~0u) {
+	if (dw_cmd(16, 512, CMD_RESP_EXP | CMD_CHECK_CRC) == ~0u) {
 		emmc_record(14, ocr);
 		return -1;
 	}
@@ -685,9 +853,6 @@ static int mmc_probe_emmc(void)
 int sd_emmc_forensic_write(void)
 {
 	uint32_t rec[128];
-	uint32_t old_sdhc = SDHC;
-	int old_sel = sd_selected, old_hcs = sd_hcs, old_stage = sd_probe_stage;
-	uint32_t old_rca = sd_rca;
 	int ret;
 
 	memset(rec, 0, sizeof(rec));
@@ -697,15 +862,8 @@ int sd_emmc_forensic_write(void)
 	if (mmc_probe_emmc() != 0)
 		ret = -1;
 	else
-		ret = sd_write_block(EMMC_FORENSIC_LBA, rec) ? -1 : 0;
+		ret = dw_write_block(EMMC_FORENSIC_LBA, rec) ? -1 : 0;
 	emmc_record(15, ret == 0 ? 0xACE : 0xBAD);	/* ocr field = verdict */
-
-	/* Restore the SD-side view so staging continues on the card. */
-	SDHC = old_sdhc;
-	sd_selected = old_sel;
-	sd_hcs = old_hcs;
-	sd_probe_stage = old_stage;
-	sd_rca = old_rca;
 	return ret;
 }
 
