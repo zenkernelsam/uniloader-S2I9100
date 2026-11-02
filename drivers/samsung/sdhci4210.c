@@ -150,6 +150,7 @@ void sec_log_emit(const char *s)
 {
 	volatile uint32_t *hdr = (volatile uint32_t *)SEC_LOG_HDR;
 	char *buf = (char *)SEC_LOG_BUF;
+	const char *o = s;
 	uint32_t p;
 
 	if (hdr[0] != SEC_LOG_MAGIC) {
@@ -164,6 +165,10 @@ void sec_log_emit(const char *s)
 		p++;
 	}
 	hdr[1] = p;
+	/* Mirror to the live console too: now that the adopted S-Boot
+	 * framebuffer renders printk on the real panel, every forensic
+	 * stage should be visible on screen as it happens. */
+	printk(KERN_INFO, "%s", o);
 }
 
 static void sec_log_hex(const char *tag, const uint32_t *v, unsigned n)

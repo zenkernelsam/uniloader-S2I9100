@@ -558,14 +558,27 @@ int usbcdc4210_init(void)
 	 * the download-mode path, so a normal boot hands us a gated
 	 * block whose registers all read 0 — first boot on hardware
 	 * silently bailed right here with zero USB enumeration. */
+	printk(KERN_INFO, "usbcdc: pre gate=%08x phyctl=%08x sid=%08x\n",
+	       CMU_GATE_IP_FSYS, *(volatile uint32_t *)PMU_USBPHYCTRL,
+	       GSNPSID);
 	gate = CMU_GATE_IP_FSYS | GATE_FSYS_USB_DEVICE;
 	CMU_GATE_IP_FSYS = gate;
 	udelay(10);
+
+	/* PHY power must precede the ID check: with USB_PHY_CTRL off the
+	 * whole OTG core reads back 0 on real silicon, so phy_init()
+	 * after the sanity check was self-defeating. */
+	phy_init();
+	udelay(1000);
 
 	/* Gate A: core clock/reset gate must be open for sane ID.
 	 * PCGCCTL bit0 = gate hclk (0 = running). */
 	PCGCCTL = 0;
 	udelay(10);
+
+	printk(KERN_INFO, "usbcdc: post gate=%08x phyctl=%08x sid=%08x\n",
+	       CMU_GATE_IP_FSYS, *(volatile uint32_t *)PMU_USBPHYCTRL,
+	       GSNPSID);
 
 	if ((GSNPSID & 0xffff0000) != 0x4f540000) {
 		/* Report rather than vanish: without this the failure is
@@ -574,8 +587,6 @@ int usbcdc4210_init(void)
 		       GSNPSID, gate);
 		return -1;			/* no controller (QEMU) */
 	}
-
-	phy_init();
 
 	/* core soft reset */
 	if (bounded_wait(&GRSTCTL, GRSTCTL_AHBIDLE, GRSTCTL_AHBIDLE, 100000))
