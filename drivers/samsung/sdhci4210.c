@@ -93,6 +93,39 @@ static int sd_selected;
 static uint32_t sd_gpk2con_before, sd_gpk2con_after, sd_gpx3dat;
 static uint32_t sd_ldo17_before = ~0u, sd_ldo17_after = ~0u, sd_i2c_status;
 
+/* Last sd_cmd failure, for the forensic records. */
+static uint32_t sd_last_cmd, sd_last_err, sd_last_detail;
+
+/* Forensic cells in DRAM (survive a warm reset -> readable from TWRP
+ * via /dev/mem, no working bus needed):
+ *   0x7FFE0040: SD-side SDHB record   0x7FFE0240: eMMC-side EM1B record
+ * INFORM6/7 carry a packed summary in case DMC reinit scribbles DRAM. */
+#define FORENSIC_CELL_SD	(EXYNOS4210_DDRCELL_PA + 0x040)
+#define FORENSIC_CELL_EMMC	(EXYNOS4210_DDRCELL_PA + 0x240)
+
+static void forensic_inform(void)
+{
+	uint32_t cd = 0;
+	int i;
+
+	for (i = 0; i < 4; i++)
+		if (sd_present_scan[i] & P_CARD_INSERTED)
+			cd |= (1u << i);
+
+	/* 0xF0E | stage nibble (1-7=SD side, A-F=eMMC side) |
+	 * last-SD-stage nibble | host_sel+1 | card-detect bits */
+	writel(0xF0E00000 | ((sd_probe_stage & 0xF) << 12) |
+	       ((sd_probe_stage < 10 ? sd_probe_stage : 0) << 8) |
+	       (((unsigned)sd_host_sel + 1) << 4) | cd,
+	       (void *)EXYNOS4210_PMU_INFORM6);
+	/* gpx3dat | ldo17 before | ldo17 after | i2c status */
+	writel(((sd_gpx3dat & 0xFF) << 24) |
+	       ((sd_ldo17_before & 0xFF) << 16) |
+	       ((sd_ldo17_after & 0xFF) << 8) |
+	       (sd_i2c_status & 0xFF),
+	       (void *)EXYNOS4210_PMU_INFORM7);
+}
+
 /* --- I2C5 bitbang on GPB6(SDA)/GPB7(SCL): MAX8997 PMIC @0x66 owns
  * the external slot VTF rail (LDO17, 2.8V).  S-Boot's normal boot
  * path likely leaves the slot unpowered, which would exactly match
@@ -244,13 +277,19 @@ static uint32_t sd_cmd(unsigned idx, uint32_t arg, unsigned resp,
 	/* Wait for CMD line free */
 	t = 100000;
 	while (readl((void *)(SDHC + R_PRESENT)) & P_CMD_INHIBIT)
-		if (!--t)
+		if (!--t) {
+			sd_last_cmd = idx; sd_last_err = 1;
+			sd_last_detail = readl((void *)(SDHC + R_PRESENT));
 			return ~0u;
+		}
 	if (extra & CMD_DATA_EN) {
 		t = 100000;
 		while (readl((void *)(SDHC + R_PRESENT)) & P_DATA_INHIBIT)
-			if (!--t)
+			if (!--t) {
+				sd_last_cmd = idx; sd_last_err = 2;
+				sd_last_detail = readl((void *)(SDHC + R_PRESENT));
 				return ~0u;
+			}
 	}
 
 	writel(0xffffffff, (void *)(SDHC + R_INTSTS));
@@ -265,6 +304,8 @@ static uint32_t sd_cmd(unsigned idx, uint32_t arg, unsigned resp,
 			writel(s, (void *)(SDHC + R_INTSTS));
 			printk(KERN_INFO, "sdhci: cmd%u err sts %08x\n",
 			       idx, e);
+			sd_last_cmd = idx; sd_last_err = 3;
+			sd_last_detail = e;
 			return ~0u;
 		}
 		if (s & I_CMD_DONE)
@@ -272,6 +313,8 @@ static uint32_t sd_cmd(unsigned idx, uint32_t arg, unsigned resp,
 		if (!--t) {
 			printk(KERN_INFO, "sdhci: cmd%u timeout (intsts %08x)\n",
 			       idx, s);
+			sd_last_cmd = idx; sd_last_err = 4;
+			sd_last_detail = s;
 			return ~0u;
 		}
 	}
@@ -495,6 +538,9 @@ static unsigned sd_forensic_fill(uint32_t *rec)
 	rec[o++] = sd_ldo17_before;
 	rec[o++] = sd_ldo17_after;
 	rec[o++] = sd_i2c_status;
+	rec[o++] = sd_last_cmd;
+	rec[o++] = sd_last_err;
+	rec[o++] = sd_last_detail;
 	rec[o++] = 0xF00DF00D;
 	return o;
 }
@@ -507,6 +553,9 @@ static void sd_forensic_record(void)
 		return;
 	memset(rec, 0, sizeof(rec));
 	sd_forensic_fill(rec);
+	/* Mirror to the DRAM cell unconditionally — card write may
+	 * fail, the warm-reset readback path must not depend on it. */
+	memcpy((void *)FORENSIC_CELL_SD, rec, sizeof(rec));
 	(void)sd_write_block(SD_FORENSIC_LBA, rec);
 }
 
@@ -524,6 +573,34 @@ int sd_is_ready(void) { return sd_ready; }
  */
 #define EMMC_FORENSIC_LBA	90110	/* KERNEL tail-2, unused space */
 
+/* Progressive eMMC-side record: rewritten at every probe stage so a
+ * dead probe still leaves its corpse in the DRAM cell + INFORM regs. */
+static void emmc_record(unsigned stage, uint32_t ocr)
+{
+	uint32_t rec[128];
+	unsigned o = 0;
+
+	memset(rec, 0, sizeof(rec));
+	rec[o++] = 0x454D3142;		/* 'EM1B' */
+	rec[o++] = stage;
+	rec[o++] = readl((void *)(SDHC + R_PRESENT));
+	rec[o++] = readl((void *)(SDHC + R_CAPAB));
+	rec[o++] = readl((void *)(SDHC + R_CAPAB + 4));
+	rec[o++] = ocr;
+	rec[o++] = sd_rca;
+	rec[o++] = sd_hcs;
+	rec[o++] = sd_last_cmd;
+	rec[o++] = sd_last_err;
+	rec[o++] = sd_last_detail;
+	rec[o++] = sd_csd_raw[0];
+	rec[o++] = sd_csd_raw[1];
+	rec[o++] = sd_csd_raw[2];
+	rec[o++] = sd_csd_raw[3];
+	rec[o++] = 0xF00DF00D;
+	memcpy((void *)FORENSIC_CELL_EMMC, rec, sizeof(rec));
+	forensic_inform();
+}
+
 static int mmc_probe_emmc(void)
 {
 	uint32_t ocr, r;
@@ -536,50 +613,72 @@ static int mmc_probe_emmc(void)
 	host_reset_clock();
 	sd_selected = 0;
 	sd_probe_stage = 10;		/* 10-19 = eMMC side */
+	emmc_record(10, 0);
 
-	if (sd_cmd(0, 0, CMD_RESP_NONE, 0) == ~0u)
+	if (sd_cmd(0, 0, CMD_RESP_NONE, 0) == ~0u) {
+		emmc_record(10, 0);
 		return -1;
+	}
 
 	/* CMD1 SEND_OP_COND: loop until the device reports ready.
 	 * 0x40FF8000 = sector-mode request + 2.7-3.6V window. */
 	ocr = 0;
 	for (t = 300; t && !(ocr & (1u << 31)); t--) {
 		ocr = sd_cmd(1, 0x40FF8000, CMD_RESP_R48, 0);
-		if (ocr == ~0u)
+		if (ocr == ~0u) {
+			emmc_record(10, ocr);
 			return -1;
+		}
 	}
-	if (!t)
+	if (!t) {
+		emmc_record(10, ocr);
 		return -1;
+	}
 	sd_hcs = !!(ocr & (1u << 30));
 	sd_probe_stage = 11;
+	emmc_record(11, ocr);
 
-	if (sd_cmd(2, 0, CMD_RESP_R136 | CMD_CRC_EN, 0) == ~0u)
+	if (sd_cmd(2, 0, CMD_RESP_R136 | CMD_CRC_EN, 0) == ~0u) {
+		emmc_record(11, ocr);
 		return -1;
+	}
 	/* MMC CMD3 = SET_RELATIVE_ADDR: host assigns, use 1<<16. */
 	sd_rca = 0x00010000;
 	r = sd_cmd(3, sd_rca, CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN, 0);
-	if (r == ~0u)
+	if (r == ~0u) {
+		emmc_record(11, ocr);
 		return -1;
+	}
 	sd_probe_stage = 12;
+	emmc_record(12, ocr);
 
-	if (sd_cmd(9, sd_rca, CMD_RESP_R136 | CMD_CRC_EN, 0) == ~0u)
+	if (sd_cmd(9, sd_rca, CMD_RESP_R136 | CMD_CRC_EN, 0) == ~0u) {
+		emmc_record(12, ocr);
 		return -1;
+	}
 	sd_csd_raw[0] = readl((void *)(SDHC + R_RESP0));
 	sd_csd_raw[1] = readl((void *)(SDHC + R_RESP1));
 	sd_csd_raw[2] = readl((void *)(SDHC + R_RESP2));
 	sd_csd_raw[3] = readl((void *)(SDHC + R_RESP3));
 	sd_probe_stage = 13;
+	emmc_record(13, ocr);
 
 	if (sd_cmd(7, sd_rca, CMD_RESP_R48B | CMD_CRC_EN | CMD_IDX_EN, 0)
-	    == ~0u)
+	    == ~0u) {
+		emmc_record(13, ocr);
 		return -1;
+	}
 	sd_selected = 1;
 	sd_probe_stage = 14;
+	emmc_record(14, ocr);
 
 	if (sd_cmd(16, 512, CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN, 0)
-	    == ~0u)
+	    == ~0u) {
+		emmc_record(14, ocr);
 		return -1;
+	}
 	sd_probe_stage = 15;
+	emmc_record(15, ocr);
 	return 0;
 }
 
@@ -593,10 +692,13 @@ int sd_emmc_forensic_write(void)
 
 	memset(rec, 0, sizeof(rec));
 	sd_forensic_fill(rec);		/* capture SD-side state first */
+	memcpy((void *)FORENSIC_CELL_SD, rec, sizeof(rec));
+	forensic_inform();
 	if (mmc_probe_emmc() != 0)
 		ret = -1;
 	else
 		ret = sd_write_block(EMMC_FORENSIC_LBA, rec) ? -1 : 0;
+	emmc_record(15, ret == 0 ? 0xACE : 0xBAD);	/* ocr field = verdict */
 
 	/* Restore the SD-side view so staging continues on the card. */
 	SDHC = old_sdhc;
@@ -618,6 +720,7 @@ static int sd_identify(void)
 	cmu_feed_sdmmc((SDHC - EXYNOS4210_SDHCI_BASE(0)) >> 16);
 	host_reset_clock();
 	sd_probe_stage = 1;
+	forensic_inform();
 
 	if (sd_cmd(0, 0, CMD_RESP_NONE, 0) == ~0u)
 		return -1;
@@ -626,6 +729,7 @@ static int sd_identify(void)
 	 * block addressing (HCS) is decided by OCR CCS below. */
 	r = sd_cmd(8, 0x1AA, CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN, 0);
 	sd_probe_stage = 2;
+	forensic_inform();
 
 	/* ACMD41 — bail fast on hard errors (eMMC/empty slot) instead
 	 * of grinding the full retry budget. */
@@ -646,6 +750,7 @@ static int sd_identify(void)
 	}
 	sd_hcs = !!(ocr & (1u << 30));	/* CCS: 1=block addr, 0=byte addr */
 	sd_probe_stage = 3;
+	forensic_inform();
 
 	if (sd_cmd(2, 0, CMD_RESP_R136 | CMD_CRC_EN, 0) == ~0u)
 		return -1;
@@ -654,6 +759,7 @@ static int sd_identify(void)
 		return -1;
 	sd_rca = r & 0xFFFF0000;
 	sd_probe_stage = 4;
+	forensic_inform();
 
 	/* CSD for capacity — must precede CMD7: SEND_CSD is only legal
 	 * in standby state. */
@@ -690,6 +796,7 @@ static int sd_identify(void)
 		}
 	}
 	sd_probe_stage = 6;
+	forensic_inform();
 
 	/* Select card, then drop the flight record — even if CMD16 or
 	 * later staging dies, the probe state survives. */
@@ -703,6 +810,7 @@ static int sd_identify(void)
 	if (sd_cmd(16, 512, CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN, 0) == ~0u)
 		return -1;
 	sd_probe_stage = 7;
+	forensic_inform();
 	sd_forensic_record();	/* LBA16 stage=7: fully ready */
 	return 0;
 }
