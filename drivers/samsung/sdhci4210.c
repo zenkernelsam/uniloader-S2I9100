@@ -103,6 +103,8 @@ static uint32_t sd_last_cmd, sd_last_err, sd_last_detail;
 #define FORENSIC_CELL_SD	(EXYNOS4210_DDRCELL_PA + 0x040)
 #define FORENSIC_CELL_EMMC	(EXYNOS4210_DDRCELL_PA + 0x240)
 
+static void sec_log_hex(const char *tag, const uint32_t *v, unsigned n);
+
 static void forensic_inform(void)
 {
 	uint32_t cd = 0;
@@ -124,6 +126,59 @@ static void forensic_inform(void)
 	       ((sd_ldo17_after & 0xFF) << 8) |
 	       (sd_i2c_status & 0xFF),
 	       (void *)EXYNOS4210_PMU_INFORM7);
+	{
+		uint32_t v[4] = { sd_probe_stage, sd_last_cmd,
+				  sd_last_err, sd_last_detail };
+		sec_log_hex("SDst", v, 4);
+	}
+}
+
+/* S-Boot/PBL and the kernel share a printk mirror in DRAM: a 1MB ring
+ * at 0x4D900000 (magic@-8, write-ptr@-4 — sec_log=0x100000@0x4d900000).
+ * If the bootloaders honor an existing ptr (append semantics), text we
+ * emit here lands inside the next boot's /proc/last_kmsg window — a
+ * cold-boot-safe readout needing no working bus.  If they reset the
+ * ring each boot we lose nothing by trying. */
+#define SEC_LOG_HDR	0x4D8FFFF8u
+#define SEC_LOG_BUF	0x4D900000u
+#define SEC_LOG_SIZE	0x100000u
+#define SEC_LOG_MAGIC	0x4D474F4Cu
+
+static void sec_log_emit(const char *s)
+{
+	volatile uint32_t *hdr = (volatile uint32_t *)SEC_LOG_HDR;
+	char *buf = (char *)SEC_LOG_BUF;
+	uint32_t p;
+
+	if (hdr[0] != SEC_LOG_MAGIC)
+		return;
+	p = hdr[1];
+	while (*s) {
+		buf[p & (SEC_LOG_SIZE - 1)] = *s++;
+		p++;
+	}
+	hdr[1] = p;
+}
+
+static void sec_log_hex(const char *tag, const uint32_t *v, unsigned n)
+{
+	static const char h[] = "0123456789abcdef";
+	char line[200];
+	char *o = line;
+	unsigned i;
+
+	while (*tag)
+		*o++ = *tag++;
+	*o++ = ' ';
+	while (n--) {
+		uint32_t x = *v++;
+		for (i = 0; i < 8; i++)
+			*o++ = h[(x >> (28 - i * 4)) & 0xF];
+		*o++ = ' ';
+	}
+	*o++ = '\n';
+	*o = 0;
+	sec_log_emit(line);
 }
 
 /* --- I2C5 bitbang on GPB6(SDA)/GPB7(SCL): MAX8997 PMIC @0x66 owns
@@ -381,6 +436,33 @@ static void cmu_feed_sdmmc(unsigned host)
 	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_FSYS));
 }
 
+/* The eMMC is not an SDMMC host: it hangs off the DesignWare MSHC
+ * (dw_mmc @0x12550000), clocked by the *fifth* FSYS channel — MMC4.
+ * mout_mmc4 lives at SRC_FSYS[19:16], its divider pair in DIV_FSYS3
+ * ([3:0] div_mmc4, [15:8] div_mmc_pre4), sclk unmask = SRC_MASK_FSYS
+ * bit16, bus gate = GATE_IP_FSYS bit9.  Same ~50MHz from SCLK_MPLL. */
+static void cmu_feed_dwmmc(void)
+{
+	uint32_t v;
+
+	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_FSYS));
+	v = (v & ~(0xFu << 16)) | (6u << 16);
+	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_FSYS));
+
+	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_DIV_FSYS3));
+	v &= ~(0xFFu << 8) & ~0xFu;
+	v |= 15;			/* div_mmc4=16, pre4=1 -> 800/16 = 50MHz */
+	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_DIV_FSYS3));
+
+	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_MASK_FSYS));
+	v |= (1u << 16);		/* samsung gate ops: 1 = unmasked/enabled */
+	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_MASK_FSYS));
+
+	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_FSYS));
+	v |= (1u << 9);
+	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_FSYS));
+}
+
 static int sd_read_blocks(uint32_t lba, unsigned count, void *buf)
 {
 	unsigned t, n;
@@ -576,6 +658,7 @@ int sd_is_ready(void) { return sd_ready; }
  * not wired to anything on this board.
  */
 #define EMMC_FORENSIC_LBA	90110	/* KERNEL tail-2, unused space */
+#define EMMC_EM1B_LBA		90109	/* progressive probe record lands here */
 #define DWMMC_BASE		0x12550000
 
 /* mshci register map (smdk4210 drivers/mmc/host/mshci.h) */
@@ -633,6 +716,8 @@ int sd_is_ready(void) { return sd_ready; }
 #define ST_DATA_BUSY	(1u << 9)
 #define ST_FIFO_COUNT	(0x1FFFu << 17)
 
+static int emmc_xfer_ok;	/* set once the card is selected + 512B blocks */
+
 static uint32_t mrd(uint32_t off)
 {
 	return readl((void *)(DWMMC_BASE + off));
@@ -684,7 +769,7 @@ static void dw_update_clock(unsigned div)
 			break;
 	mwr(M_CLKDIV, div);
 	mwr(M_CMD, 0);
-	mwr(M_CMD, CMD_STRT | CMD_UPD_CLK | CMD_WAIT_PRV);
+	mwr(M_CMD, CMD_STRT | CMD_UPD_CLK | CMD_WAIT_PRV | CMD_USE_HOLD);
 	t = 100000;
 	while (mrd(M_CMD) & CMD_STRT)
 		if (!--t)
@@ -695,6 +780,9 @@ static void dw_update_clock(unsigned div)
 static void dw_host_init(void)
 {
 	unsigned t;
+
+	cmu_feed_dwmmc();
+	sd_udelay(1000);
 
 	/* Full reset, then self-clear wait */
 	mwr(M_CTRL, CTRL_RESET_ALL);
@@ -770,9 +858,18 @@ static void emmc_record(unsigned stage, uint32_t ocr)
 	rec[o++] = sd_csd_raw[1];
 	rec[o++] = sd_csd_raw[2];
 	rec[o++] = sd_csd_raw[3];
+	rec[o++] = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_FSYS));
+	rec[o++] = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_DIV_FSYS3));
+	rec[o++] = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_MASK_FSYS));
+	rec[o++] = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_FSYS));
 	rec[o++] = 0xF00DF00D;
 	memcpy((void *)FORENSIC_CELL_EMMC, rec, sizeof(rec));
 	forensic_inform();
+	sec_log_hex("EM1B", rec, o);
+	/* Once the card is in transfer state every stage checkpoint also
+	 * lands on eMMC — a late failure still leaves the latest stage. */
+	if (emmc_xfer_ok)
+		dw_write_block(EMMC_EM1B_LBA, rec);
 }
 
 static int mmc_probe_emmc(void)
@@ -845,6 +942,7 @@ static int mmc_probe_emmc(void)
 		emmc_record(14, ocr);
 		return -1;
 	}
+	emmc_xfer_ok = 1;
 	sd_probe_stage = 15;
 	emmc_record(15, ocr);
 	return 0;
@@ -859,6 +957,8 @@ int sd_emmc_forensic_write(void)
 	sd_forensic_fill(rec);		/* capture SD-side state first */
 	memcpy((void *)FORENSIC_CELL_SD, rec, sizeof(rec));
 	forensic_inform();
+	sec_log_hex("SDHB", rec, 24);
+	emmc_xfer_ok = 0;
 	if (mmc_probe_emmc() != 0)
 		ret = -1;
 	else

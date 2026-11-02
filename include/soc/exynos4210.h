@@ -109,10 +109,12 @@
  * and CLK_DIV_FSYS @0xC540, one 4-bit field per host starting at bit0.) */
 #define EXYNOS4210_CLK_SRC_PERIL0	0xC250
 #define EXYNOS4210_CLK_DIV_PERIL0	0xC550
-#define EXYNOS4210_CLK_SRC_FSYS		0xC240
-#define EXYNOS4210_CLK_DIV_FSYS		0xC540
+#define EXYNOS4210_CLK_SRC_FSYS		0xC240	/* mout_mmc0-4 @[3:0],[7:4],...,[19:16] */
+#define EXYNOS4210_CLK_DIV_FSYS		0xC540	/* DIV_FSYS0 */
+#define EXYNOS4210_CLK_DIV_FSYS3	0xC54C	/* div_mmc4 @[3:0], div_mmc_pre4 @[15:8] */
+#define EXYNOS4210_CLK_SRC_MASK_FSYS	0xC340	/* sclk_mmcN unmask @4N; N=4 -> bit16 */
 #define EXYNOS4210_CLK_GATE_IP_PERIL	0xC950
-#define EXYNOS4210_CLK_GATE_IP_FSYS	0xC940	/* sdmmc0-3 @5-8, usb_device @13 */
+#define EXYNOS4210_CLK_GATE_IP_FSYS	0xC940	/* sdmmc0-3 @5-8, sdmmc4(DWMMC) @9, usb_device @13 */
 #define EXYNOS4210_CLK_GATE_IP_LCD0	0xC934	/* fimd0 @0 */
 
 /* DRAM */
