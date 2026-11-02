@@ -21,3 +21,6 @@ blob/Image
 blob/dtb
 drivers/*.a
 blob/ramdisk
+
+*.o.d
+zImage

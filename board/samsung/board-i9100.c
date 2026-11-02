@@ -253,7 +253,7 @@ int i9100_init(void)
 	 * window actually feeds the panel, a band shows.  Bright
 	 * halfwords read as bright in 565 too. */
 	{
-		static const uint32_t cands[] = {0, 0x5EC00000, 0x5E000000};
+		uint32_t cands[3] = {0, 0x5EC00000, 0x5E000000};
 		unsigned c, i;
 
 		cands[0] = fb_pa;
@@ -321,6 +321,23 @@ extern void usbcdc_poll(void);
  * printk() output lands on the panel. */
 static int i9100_late_init(void)
 {
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+	/* Bring the DWC2 device up BEFORE the storage probes: the host
+	 * enumerates us while we stream probe progress to the COM port.
+	 * usbcdc_poll() is driven from the console write path, so every
+	 * printk services EP0.  This used to sit after the dead-SD
+	 * branch - which never returns on the real device, so the USB
+	 * console never came up at all.  Returns nonzero when the OTG
+	 * block is absent (QEMU) - the console simply never registers. */
+	usbcdc4210_init();
+	/* Re-report the FIMD snapshot now that the CDC console may be
+	 * live — early_init's printk only ever reached the UART. */
+	printk(KERN_INFO,
+	       "fimd: VIDCON0=%08x WINCON0=%08x ADD0B0=%08x\n",
+	       readl((void *)(FIMD + EXYNOS4210_FIMD_VIDCON0)),
+	       readl((void *)(FIMD + EXYNOS4210_FIMD_WINCON0)),
+	       readl((void *)(FIMD + EXYNOS4210_FIMD_VIDW00ADD0B0)));
+#endif
 #if defined(CONFIG_EXYNOS_SDHCI4210)
 	sec_log_emit("I9B late\n");
 	i9_wdt_arm();	/* ~21s window; kicked per forensic stage/cmd.
@@ -371,6 +388,9 @@ static int i9100_late_init(void)
 				if (!(g3 & 0x20) && (g2 & 3) != 3)
 					break;		/* home + a vol key */
 				i9_wdt_kick();
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+				usbcdc_poll();
+#endif
 				for (j = 0; j < 2000000; j++)
 					;
 			}
@@ -382,15 +402,6 @@ static int i9100_late_init(void)
 			i9_wdt_off();
 		}
 	}
-#endif
-#if defined(CONFIG_EXYNOS_CDCACM4210)
-	/* Bring the DWC2 device up *before* the multi-minute SD staging:
-	 * the host enumerates us while we stream I9S progress to both
-	 * the panel and the fresh COM port.  usbcdc_poll() is driven
-	 * from the console write path, so every printk services EP0.
-	 * Returns nonzero when the OTG block is absent (QEMU) - the
-	 * console simply never registers. */
-	usbcdc4210_init();
 #endif
 	return 0;
 }
