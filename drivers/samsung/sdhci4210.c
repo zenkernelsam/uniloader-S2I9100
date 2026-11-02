@@ -473,27 +473,14 @@ static void cmu_feed_sdmmc(unsigned host)
  * mout_mmc4 lives at SRC_FSYS[19:16], its divider pair in DIV_FSYS3
  * ([3:0] div_mmc4, [15:8] div_mmc_pre4), sclk unmask = SRC_MASK_FSYS
  * bit16, bus gate = GATE_IP_FSYS bit9.  Same ~50MHz from SCLK_MPLL. */
-static void cmu_feed_dwmmc(void)
-{
-	uint32_t v;
-
-	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_FSYS));
-	v = (v & ~(0xFu << 16)) | (6u << 16);
-	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_FSYS));
-
-	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_DIV_FSYS3));
-	v &= ~(0xFFu << 8) & ~0xFu;
-	v |= 15;			/* div_mmc4=16, pre4=1 -> 800/16 = 50MHz */
-	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_DIV_FSYS3));
-
-	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_MASK_FSYS));
-	v |= (1u << 16);		/* samsung gate ops: 1 = unmasked/enabled */
-	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_MASK_FSYS));
-
-	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_FSYS));
-	v |= (1u << 9);
-	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_FSYS));
-}
+/* NOTE: no cmu_feed_dwmmc, no dw_pinmux — deliberately.  Upstream's
+ * real-hardware driver (sdmmc3475.c) feeds NOTHING: S-Boot reads the
+ * KERNEL partition from eMMC on every single boot, so the MSHC clock
+ * chain, bus power and GPK pinmux arrive LIVE at handoff.  Earlier
+ * rounds programmed SRC_FSYS[19:16]/DIV_FSYS3/SRC_MASK/GATE_IP and
+ * GPK0/1 func3 ourselves — plausibly disturbing a chain that was
+ * already working.  Register *values* still go into the EM1B record
+ * for forensics, but the chain stays exactly as S-Boot left it. */
 
 static int sd_read_blocks(uint32_t lba, unsigned count, void *buf)
 {
@@ -760,108 +747,92 @@ static void mwr(uint32_t off, uint32_t v)
 	writel(v, (void *)(DWMMC_BASE + off));
 }
 
-/* Issue one eMMC command; returns RESP0 or ~0 on error.
- * flags = CMD_RESP_* / CMD_DATA_* per mshci.h. */
+/* Issue one eMMC command; returns RESP0 or ~0 on error.  Upstream
+ * mm_cmd structure (sdmmc3475): wait for a previous STRT to clear
+ * BEFORE loading ours, then poll RINTSTS for done-or-error — polling
+ * only CDONE+ERRS let an RTO/RE slip through as a silent non-answer. */
 static uint32_t dw_cmd(unsigned idx, uint32_t arg, uint32_t flags)
 {
+	uint32_t st = 0;
 	unsigned t;
 
 	i9_wdt_kick();
+	for (t = 0; t < 1000000 && (mrd(M_CMD) & CMD_STRT); t++)
+		;
 	mwr(M_RINTSTS, 0xFFFFFFFF);
 	mwr(M_CMDARG, arg);
 	mwr(M_CMD, idx | CMD_STRT | CMD_USE_HOLD | CMD_WAIT_PRV | flags);
 
-	t = 400000;
-	for (;;) {
-		uint32_t s = mrd(M_RINTSTS);
-
-		if (s & INT_ERRS) {
-			sd_last_cmd = idx; sd_last_err = 3;
-			sd_last_detail = s;
-			return ~0u;
-		}
-		if (s & INT_CDONE)
+	for (t = 0; t < 5000000; t++) {
+		st = mrd(M_RINTSTS);
+		if (st & (INT_CDONE | INT_RTO | INT_RE | INT_RCRC))
 			break;
-		if (!--t) {
-			sd_last_cmd = idx; sd_last_err = 4;
-			sd_last_detail = s;
-			return ~0u;
-		}
+	}
+	if (!(st & (INT_CDONE | INT_RTO | INT_RE | INT_RCRC))) {
+		sd_last_cmd = idx; sd_last_err = 4; sd_last_detail = st;
+		return ~0u;
+	}
+	if (st & (INT_RE | INT_RCRC | INT_RTO)) {
+		sd_last_cmd = idx; sd_last_err = 3; sd_last_detail = st;
+		return ~0u;
 	}
 	return mrd(M_RESP0);
 }
 
-static void dw_update_clock(unsigned div)
+/* upd_clk, upstream structure (sdmmc3475): STRT|UPD_CLK|WAIT_PRV then
+ * wait the STRT self-clear; full-reset and retry 50x before giving up. */
+static int dw_upd_clk(void)
 {
-	unsigned t;
+	unsigned t, try;
 
-	mwr(M_CLKENA, 0);
-	t = 100000;
-	while (mrd(M_CMD) & CMD_STRT)
-		if (!--t)
-			break;
-	mwr(M_CLKDIV, div);
-	mwr(M_CMD, 0);
-	mwr(M_CMD, CMD_STRT | CMD_UPD_CLK | CMD_WAIT_PRV | CMD_USE_HOLD);
-	t = 100000;
-	while (mrd(M_CMD) & CMD_STRT)
-		if (!--t)
-			break;
-	mwr(M_CLKENA, 1);
+	for (try = 0; try < 50; try++) {
+		mwr(M_CMDARG, 0);
+		mwr(M_CMD, CMD_STRT | CMD_UPD_CLK | CMD_WAIT_PRV |
+		    CMD_USE_HOLD);
+		for (t = 0; t < 1000000 && (mrd(M_CMD) & CMD_STRT); t++)
+			;
+		if (!(mrd(M_CMD) & CMD_STRT))
+			return 0;
+		mwr(M_CTRL, CTRL_RESET_ALL);
+		for (t = 0; t < 100000 && (mrd(M_CTRL) & CTRL_RESET_ALL);
+		     t++)
+			;
+	}
+	return -1;
 }
 
-/* DWMMC pinmux (sd4_* in exynos4210-pinctrl.dtsi): GPK0[0..6] func3
- * (clk/cmd/cd/d0-3), GPK1[3..6] func3 (d4-7).  S-Boot sets these to
- * read the kernel every boot, but after a reset they may revert -
- * cheap insurance either way.  GPKn: CON@+0, DAT@+4, PUD@+8, DRV@+C. */
-static void dw_pinmux(void)
+static void dw_set_slow_clock(void)
 {
-	uint32_t v;
-
-	v = readl((void *)0x11000040);		/* GPK0CON */
-	v = (v & ~0x0FFFFFFFu) | 0x03333333u;	/* pins0-6 func3 */
-	writel(v, (void *)0x11000040);
-	v = readl((void *)0x11000048);		/* GPK0PUD */
-	v = (v & ~0x3FFFu) | 0x2AA0u;		/* clk/cmd none, cd+d0-3 pull-up */
-	writel(v, (void *)0x11000048);
-	v = readl((void *)0x1100004C);		/* GPK0DRV */
-	v = (v & ~0x3FFFu) | 0x3FFFu;		/* LV4 */
-	writel(v, (void *)0x1100004C);
-
-	v = readl((void *)0x11000060);		/* GPK1CON */
-	v = (v & ~0x0FFFF000u) | 0x03333000u;	/* pins3-6 func3 */
-	writel(v, (void *)0x11000060);
-	v = readl((void *)0x11000068);		/* GPK1PUD */
-	v = (v & ~0x00003FC0u) | 0x00002A80u;	/* d4-7 pull-up, pins3-6 */
-	writel(v, (void *)0x11000068);
-	v = readl((void *)0x1100006C);		/* GPK1DRV */
-	v = (v & ~0x00003FC0u) | 0x00003FC0u;	/* LV4, pins3-6 */
-	writel(v, (void *)0x1100006C);
+	mwr(M_CLKENA, 0);
+	dw_upd_clk();
+	mwr(M_CLKDIV, 0xff);	/* max divider: ~400kHz for card init */
+	dw_upd_clk();
+	mwr(M_CLKENA, 1);
+	dw_upd_clk();
 }
 
 static void dw_host_init(void)
 {
 	unsigned t;
 
-	dw_pinmux();
-	cmu_feed_dwmmc();
-	sd_udelay(1000);
-
-	/* Full reset, then self-clear wait */
+	/* S-Boot hands over a LIVE controller (it reads KERNEL from eMMC
+	 * every boot): clocks, power and pinmux already configured.
+	 * Upstream sequence: full reset -> INT_ENABLE -> slow CLKDIV via
+	 * upd_clk -> FIFOTH.  No CMU writes, no pinmux writes. */
 	mwr(M_CTRL, CTRL_RESET_ALL);
 	t = 100000;
 	while (mrd(M_CTRL) & CTRL_RESET_ALL)
 		if (!--t)
 			break;
 
+	mwr(M_CTRL, 1u << 4);		/* INT_ENABLE */
 	mwr(M_BMOD, 0);			/* PIO, no IDMAC */
 	mwr(M_INTMSK, 0);		/* polled, not signalled */
 	mwr(M_TMOUT, 0xFFFFFFFF);
 	mwr(M_CTYPE, 0);		/* 1-bit bus */
 	mwr(M_PWREN, 1);
 	sd_udelay(2000);
-	/* ~400kHz init clock from 90MHz SCLK_DWMCI (div = clk/2*target) */
-	dw_update_clock(113);
+	dw_set_slow_clock();
 	/* FIFO: depth 0x20; TX wmark 0xF, RX wmark 0x10, burst 16 */
 	mwr(M_FIFOTH, (3u << 28) | (0xF << 16) | 0x10);
 }
@@ -888,6 +859,40 @@ static int dw_write_block(uint32_t lba, const void *buf)
 		mwr(M_FIFODAT, p[w]);
 	}
 
+	t = 800000;
+	while (!(mrd(M_RINTSTS) & INT_DTO)) {
+		if (mrd(M_RINTSTS) & INT_ERRS)
+			return -1;
+		if (!--t)
+			return -1;
+	}
+	return 0;
+}
+
+/* Single-block read via the PIO FIFO @FIFODAT (32-bit on the 4210's
+ * older MSHC — the "PIO port reads zeros" quirk upstream hit is the
+ * newer DW-2.40a layout at 0x200; if this still returns garbage the
+ * record will say so and we move to 32-bit IDMAC next round). */
+static int dw_read_block(uint32_t lba, void *buf)
+{
+	uint32_t *p = buf;
+	unsigned w, t;
+
+	mwr(M_BLKSIZ, 512);
+	mwr(M_BYTCNT, 512);
+	if (dw_cmd(17, lba, CMD_RESP_EXP | CMD_CHECK_CRC |
+		   CMD_DATA_EXP) == ~0u)
+		return -1;
+	for (w = 0; w < 128; w++) {
+		t = 400000;
+		while (mrd(M_STATUS) & ST_FIFO_EMPTY) {
+			if (mrd(M_RINTSTS) & INT_ERRS)
+				return -1;
+			if (!--t)
+				return -1;
+		}
+		p[w] = mrd(M_FIFODAT);
+	}
 	t = 800000;
 	while (!(mrd(M_RINTSTS) & INT_DTO)) {
 		if (mrd(M_RINTSTS) & INT_ERRS)
@@ -1008,6 +1013,19 @@ static int mmc_probe_emmc(void)
 	emmc_xfer_ok = 1;
 	sd_probe_stage = 15;
 	emmc_record(15, ocr);
+
+	/* Zero-write data-path verification: read the KERNEL partition
+	 * head (mmcblk0p5 @ LBA73728, verified from TWRP's GPT).  The
+	 * flashed zImage carries magic 0x016F2818 at byte 0x24 (word 9) —
+	 * a correct readback proves the whole data path without writing
+	 * a single byte.  The word lands in the EM1B stage-16 record. */
+	{
+		uint32_t kb[128];
+		int rc = dw_read_block(73728, kb);
+
+		emmc_record(16, rc == 0 ? kb[9]
+					: (0xDEAD0000u | (unsigned)(-rc)));
+	}
 	return 0;
 }
 

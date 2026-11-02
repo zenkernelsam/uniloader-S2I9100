@@ -197,32 +197,77 @@ int i9100_init(void)
 		writel(0, (void *)EXYNOS4210_PMU_INFORM7);
 	}
 
-	/* Always scan our own fixed buffer at FB_FALLBACK, even when S-Boot
-	 * left a live splash.  The kernel contract pins Video.v_baseAddr to
-	 * 0x5E000000 (i9100_video_ok validates it, and pmap excludes that
-	 * window from the managed pool), so adopting S-Boot's buffer would
-	 * both break the address contract and hide all kernel console
-	 * output.  Reprogramming window 0 keeps the contract, guarantees
-	 * ARGB8888 regardless of S-Boot's pixel format, and makes kernel
-	 * text visible on the real panel.  Panel/backlight (LD9040 SPI
-	 * init) stay as S-Boot left them; the VIDTCON values written here
-	 * match the timings S-Boot programs anyway. */
-	i9100_fimd_init(fb_pa);
+	/* Upstream style (board-j1xlte): when S-Boot's scanout is live,
+	 * ADOPT the framebuffer it is already scanning — never poke FIMD
+	 * registers mid-scanout (the all-window retarget here is what
+	 * produced the 花屏).  Pick the enabled window with the largest
+	 * OSD area and write pixels straight into its buffer.
+	 *
+	 * The XNU kernel contract (Video.v_baseAddr pinned 0x5E000000)
+	 * still stands for the boot path; for forensic runs the visible
+	 * console matters more — a clean retarget can happen at jump
+	 * time later.  QEMU shows no live scanout -> cold-program ours. */
 	if (vidcon0 & (EXYNOS4210_FIMD_VIDCON0_ENVID |
-		       EXYNOS4210_FIMD_VIDCON0_ENVID_F))
-		printk(KERN_INFO,
-		       "fimd: retargeted live S-Boot scanout to fb @%08x\n",
-		       fb_pa);
-	else
-		printk(KERN_INFO, "fimd: initialized own fb @%08x\n", fb_pa);
+		       EXYNOS4210_FIMD_VIDCON0_ENVID_F)) {
+		unsigned bw = 0;
+		uint32_t barea = 0, bpp = 4;
+		int w;
 
-	/* Stage marker I: YELLOW band = board early_init done. */
+		for (w = 0; w < 5; w++) {
+			uint32_t wc = readl((void *)(FIMD + 0x20 + 4 * w));
+			uint32_t osdb = readl((void *)(FIMD + 0x44 +
+						       0x10 * w));
+			uint32_t area = (((osdb >> 12) & 0x7ff) + 1) *
+					((osdb & 0x7ff) + 1);
+
+			if (!(wc & EXYNOS4210_FIMD_WINCON_ENWIN))
+				continue;
+			printk(KERN_INFO,
+			       "fimd: win%d wc=%08x osd=%08x fb=%08x\n",
+			       w, wc, osdb,
+			       readl((void *)(FIMD + 0xA0 + 8 * w)));
+			if (area > barea) {
+				barea = area;
+				bw = w;
+				bpp = (((wc >> 2) & 0xf) >= 0xb) ? 4 : 2;
+			}
+		}
+		if (barea) {
+			fb_pa = readl((void *)(FIMD + 0xA0 + 8 * bw));
+			i9100_fb.stride = bpp;
+			i9100_fb.format = bpp == 4 ? FB_FORMAT_ARGB8888
+						   : FB_FORMAT_RGB565;
+			printk(KERN_INFO,
+			       "fimd: adopted S-Boot win%d fb @%08x bpp%u\n",
+			       bw, fb_pa, bpp);
+		} else {
+			fb_pa = 0x5EC00000; /* documented S-Boot splash */
+		}
+	} else {
+		/* Dead scanout (QEMU): program our own window as before. */
+		i9100_fimd_init(FB_FALLBACK);
+	}
+	i9100_fb.address = (void *)fb_pa;
+
+	/* Proof bands in every plausible scanned buffer — whichever
+	 * window actually feeds the panel, a band shows.  Bright
+	 * halfwords read as bright in 565 too. */
 	{
-		volatile unsigned int *fb = (volatile unsigned int *)fb_pa;
-		unsigned int i;
+		static const uint32_t cands[] = {0, 0x5EC00000, 0x5E000000};
+		unsigned c, i;
 
-		for (i = 0; i < FB_WIDTH * 24; i++)
-			fb[(0x128000 >> 2) + i] = 0xFFFFFF00;
+		cands[0] = fb_pa;
+		for (c = 0; c < 3; c++) {
+			volatile unsigned int *fb =
+				(volatile unsigned int *)cands[c];
+
+			if (!cands[c] || (c && cands[c] == cands[0]))
+				continue;
+			for (i = 0; i < FB_WIDTH * 64; i++)
+				fb[(0x40000 >> 2) + i] = 0xFFFFFFFF;
+			for (i = 0; i < FB_WIDTH * 24; i++)
+				fb[(0x128000 >> 2) + i] = 0xFFFFFF00;
+		}
 	}
 
 	return 0;
