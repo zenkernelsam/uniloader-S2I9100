@@ -306,11 +306,30 @@ static int i9100_late_init(void)
 		extern int sd_is_ready(void);
 
 		if (!sd_is_ready()) {
+			unsigned i;
+			uint32_t g2, g3;
+
 			printk(KERN_INFO, "emmc forensic: %s\n",
 			       sd_emmc_forensic_write() == 0
 			       ? "written" : "failed");
-			sec_log_emit("I9B forensic done; wdt reset soon\n");
-			/* leave the dog armed: ~21s -> warm reset */
+			sec_log_emit("I9B forensic done; hold Vol+Home\n");
+			/* Wait (bounded) for Vol-+Home: when they are held
+			 * we stop kicking and the dog fires a *warm* reset
+			 * ~21s later -> iROM lands in ODIN with our sec_log
+			 * ring intact.  No keys -> loop resets anyway. */
+			for (i = 0; i < 600; i++) {
+				volatile unsigned j;
+				g2 = readl((void *)0x11000C44);	/* GPX2DAT */
+				g3 = readl((void *)0x11000C64);	/* GPX3DAT */
+				if (!(g3 & 0x20) && (g2 & 3) != 3)
+					break;		/* home + a vol key */
+				i9_wdt_kick();
+				for (j = 0; j < 2000000; j++)
+					;
+			}
+			/* keys held (or timed out): let the dog fire */
+			for (;;)
+				;
 		} else {
 			i9_wdt_off();
 		}

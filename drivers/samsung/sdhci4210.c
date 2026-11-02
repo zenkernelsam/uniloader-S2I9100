@@ -152,8 +152,12 @@ void sec_log_emit(const char *s)
 	char *buf = (char *)SEC_LOG_BUF;
 	uint32_t p;
 
-	if (hdr[0] != SEC_LOG_MAGIC)
-		return;
+	if (hdr[0] != SEC_LOG_MAGIC) {
+		/* Cold boot trashed the ring header: claim it ourselves so
+		 * our lines still land inside the next save_old window. */
+		hdr[1] = 0;
+		hdr[0] = SEC_LOG_MAGIC;
+	}
 	p = hdr[1];
 	while (*s) {
 		buf[p & (SEC_LOG_SIZE - 1)] = *s++;
@@ -806,10 +810,40 @@ static void dw_update_clock(unsigned div)
 	mwr(M_CLKENA, 1);
 }
 
+/* DWMMC pinmux (sd4_* in exynos4210-pinctrl.dtsi): GPK0[0..6] func3
+ * (clk/cmd/cd/d0-3), GPK1[3..6] func3 (d4-7).  S-Boot sets these to
+ * read the kernel every boot, but after a reset they may revert -
+ * cheap insurance either way.  GPKn: CON@+0, DAT@+4, PUD@+8, DRV@+C. */
+static void dw_pinmux(void)
+{
+	uint32_t v;
+
+	v = readl((void *)0x11000040);		/* GPK0CON */
+	v = (v & ~0x0FFFFFFFu) | 0x03333333u;	/* pins0-6 func3 */
+	writel(v, (void *)0x11000040);
+	v = readl((void *)0x11000048);		/* GPK0PUD */
+	v = (v & ~0x3FFFu) | 0x2AA0u;		/* clk/cmd none, cd+d0-3 pull-up */
+	writel(v, (void *)0x11000048);
+	v = readl((void *)0x1100004C);		/* GPK0DRV */
+	v = (v & ~0x3FFFu) | 0x3FFFu;		/* LV4 */
+	writel(v, (void *)0x1100004C);
+
+	v = readl((void *)0x11000060);		/* GPK1CON */
+	v = (v & ~0x0FFFF000u) | 0x03333000u;	/* pins3-6 func3 */
+	writel(v, (void *)0x11000060);
+	v = readl((void *)0x11000068);		/* GPK1PUD */
+	v = (v & ~0x00003FC0u) | 0x00002A80u;	/* d4-7 pull-up, pins3-6 */
+	writel(v, (void *)0x11000068);
+	v = readl((void *)0x1100006C);		/* GPK1DRV */
+	v = (v & ~0x00003FC0u) | 0x00003FC0u;	/* LV4, pins3-6 */
+	writel(v, (void *)0x1100006C);
+}
+
 static void dw_host_init(void)
 {
 	unsigned t;
 
+	dw_pinmux();
 	cmu_feed_dwmmc();
 	sd_udelay(1000);
 
