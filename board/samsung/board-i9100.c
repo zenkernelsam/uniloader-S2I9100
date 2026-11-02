@@ -284,6 +284,20 @@ static int i9100_late_init(void)
 			printk(KERN_INFO, "fimd: reg dump write failed\n");
 		fimd_dump_dirty = 0;
 	}
+	{
+		/* Fallback forensic channel: when the slot is dead, drop
+		 * the same record into eMMC KERNEL tail instead (TWRP
+		 * can dd it back).  Skip when the card answered — QEMU
+		 * shares one sd-bus across hosts, so the MMC-proto CMD0
+		 * would reset the real card mid-session. */
+		extern int sd_emmc_forensic_write(void);
+		extern int sd_is_ready(void);
+
+		if (!sd_is_ready())
+			printk(KERN_INFO, "emmc forensic: %s\n",
+			       sd_emmc_forensic_write() == 0
+			       ? "written" : "failed");
+	}
 #endif
 #if defined(CONFIG_EXYNOS_CDCACM4210)
 	/* Bring the DWC2 device up *before* the multi-minute SD staging:

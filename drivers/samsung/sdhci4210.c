@@ -313,24 +313,28 @@ static void host_reset_clock(void)
 	wr8(R_HOST, 0x00);
 }
 
-/* Feed the host clock: SCLKMPLL(6) -> SDMMC2 mux, div 16 -> ~50 MHz.
- * Best-effort: ignored under QEMU, possibly redundant under S-Boot. */
-static void cmu_feed_sdmmc2(void)
+/* Feed a host clock: SCLKMPLL(6) -> mux, div 16 -> ~50 MHz.  On 4210 the
+ * SDMMC mux/div live in CLK_{SRC,DIV}_FSYS, one 4-bit field per host
+ * (host n at bits [4n+3:4n]); gate = GATE_IP_FSYS bit(5+n).  Best-effort:
+ * ignored under QEMU, possibly redundant under S-Boot. */
+static void cmu_feed_sdmmc(unsigned host)
 {
 	uint32_t v;
+	unsigned sh = host * 4;
 
-	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_PERIL0));
-	v = (v & ~(0xF << 16)) | (6 << 16);
-	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_PERIL0));
+	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_FSYS));
+	v = (v & ~(0xF << sh)) | (6 << sh);
+	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_SRC_FSYS));
 
-	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_DIV_PERIL0));
-	v = (v & ~(0xF << 16)) | (15 << 16);
-	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_DIV_PERIL0));
+	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_DIV_FSYS));
+	v = (v & ~(0xF << sh)) | (15 << sh);
+	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_DIV_FSYS));
 
-	/* clk-exynos4: sdmmc2 = GATE_IP_FSYS bit7 (not PERIL — bit18 there
-	 * is spi2; the old write was a no-op masked by S-Boot's ungate). */
+	/* clk-exynos4: sdmmcN = GATE_IP_FSYS bit(5+N) (not PERIL — bit18
+	 * there is spi2; the old write was a no-op masked by S-Boot's
+	 * ungate). */
 	v = readl((void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_FSYS));
-	v |= (1 << 7);
+	v |= (1 << (5 + host));
 	writel(v, (void *)(EXYNOS4210_CMU_BASE + EXYNOS4210_CLK_GATE_IP_FSYS));
 }
 
@@ -469,15 +473,11 @@ unsigned sd_sector_count(void)
  * sd_sector_count() (which mis-parsed on the real SDXC card). */
 #define SD_FORENSIC_LBA	16
 
-static void sd_forensic_record(void)
+static unsigned sd_forensic_fill(uint32_t *rec)
 {
-	uint32_t rec[128];
 	unsigned o = 0;
 	int i;
 
-	if (!sd_selected)
-		return;
-	memset(rec, 0, sizeof(rec));
 	rec[o++] = 0x53444842;		/* 'SDHB' */
 	rec[o++] = sd_probe_stage;
 	rec[o++] = (uint32_t)SDHC;
@@ -496,12 +496,116 @@ static void sd_forensic_record(void)
 	rec[o++] = sd_ldo17_after;
 	rec[o++] = sd_i2c_status;
 	rec[o++] = 0xF00DF00D;
+	return o;
+}
+
+static void sd_forensic_record(void)
+{
+	uint32_t rec[128];
+
+	if (!sd_selected)
+		return;
+	memset(rec, 0, sizeof(rec));
+	sd_forensic_fill(rec);
 	(void)sd_write_block(SD_FORENSIC_LBA, rec);
 }
 
 int sd_get_sectors(void) { return sd_ready ? sd_sectors : 0; }
 int sd_get_rca(void) { return sd_ready ? (int)sd_rca : -1; }
 int sd_is_ready(void) { return sd_ready; }
+
+/* ---------------- eMMC forensic channel ----------------
+ * The SD flight record depends on a card answering CMD7 — if the
+ * external slot is truly dead we never get the record back.  The
+ * eMMC is a second, always-powered channel: minimal MMC-proto init
+ * on host 0, then drop the same record into a free tail sector of
+ * the KERNEL partition (LBA 73728..90111 per the GPT backup — we
+ * own that region, 686KB of 8MB used).  Read back under TWRP.
+ */
+#define EMMC_FORENSIC_LBA	90110	/* KERNEL tail-2, unused space */
+
+static int mmc_probe_emmc(void)
+{
+	uint32_t ocr, r;
+	unsigned t;
+
+	SDHC = EXYNOS4210_SDHCI_EMMC_BASE;
+	cmu_feed_sdmmc(0);	/* S-Boot read KERNEL off eMMC, so the
+				 * clock was very likely fed already —
+				 * but a dead gate here costs nothing. */
+	host_reset_clock();
+	sd_selected = 0;
+	sd_probe_stage = 10;		/* 10-19 = eMMC side */
+
+	if (sd_cmd(0, 0, CMD_RESP_NONE, 0) == ~0u)
+		return -1;
+
+	/* CMD1 SEND_OP_COND: loop until the device reports ready.
+	 * 0x40FF8000 = sector-mode request + 2.7-3.6V window. */
+	ocr = 0;
+	for (t = 300; t && !(ocr & (1u << 31)); t--) {
+		ocr = sd_cmd(1, 0x40FF8000, CMD_RESP_R48, 0);
+		if (ocr == ~0u)
+			return -1;
+	}
+	if (!t)
+		return -1;
+	sd_hcs = !!(ocr & (1u << 30));
+	sd_probe_stage = 11;
+
+	if (sd_cmd(2, 0, CMD_RESP_R136 | CMD_CRC_EN, 0) == ~0u)
+		return -1;
+	/* MMC CMD3 = SET_RELATIVE_ADDR: host assigns, use 1<<16. */
+	sd_rca = 0x00010000;
+	r = sd_cmd(3, sd_rca, CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN, 0);
+	if (r == ~0u)
+		return -1;
+	sd_probe_stage = 12;
+
+	if (sd_cmd(9, sd_rca, CMD_RESP_R136 | CMD_CRC_EN, 0) == ~0u)
+		return -1;
+	sd_csd_raw[0] = readl((void *)(SDHC + R_RESP0));
+	sd_csd_raw[1] = readl((void *)(SDHC + R_RESP1));
+	sd_csd_raw[2] = readl((void *)(SDHC + R_RESP2));
+	sd_csd_raw[3] = readl((void *)(SDHC + R_RESP3));
+	sd_probe_stage = 13;
+
+	if (sd_cmd(7, sd_rca, CMD_RESP_R48B | CMD_CRC_EN | CMD_IDX_EN, 0)
+	    == ~0u)
+		return -1;
+	sd_selected = 1;
+	sd_probe_stage = 14;
+
+	if (sd_cmd(16, 512, CMD_RESP_R48 | CMD_CRC_EN | CMD_IDX_EN, 0)
+	    == ~0u)
+		return -1;
+	sd_probe_stage = 15;
+	return 0;
+}
+
+int sd_emmc_forensic_write(void)
+{
+	uint32_t rec[128];
+	uint32_t old_sdhc = SDHC;
+	int old_sel = sd_selected, old_hcs = sd_hcs, old_stage = sd_probe_stage;
+	uint32_t old_rca = sd_rca;
+	int ret;
+
+	memset(rec, 0, sizeof(rec));
+	sd_forensic_fill(rec);		/* capture SD-side state first */
+	if (mmc_probe_emmc() != 0)
+		ret = -1;
+	else
+		ret = sd_write_block(EMMC_FORENSIC_LBA, rec) ? -1 : 0;
+
+	/* Restore the SD-side view so staging continues on the card. */
+	SDHC = old_sdhc;
+	sd_selected = old_sel;
+	sd_hcs = old_hcs;
+	sd_probe_stage = old_stage;
+	sd_rca = old_rca;
+	return ret;
+}
 
 static int sd_identify(void)
 {
@@ -511,7 +615,7 @@ static int sd_identify(void)
 	sd_rca = 0;
 	sd_hcs = 0;
 	sd_selected = 0;
-	cmu_feed_sdmmc2();
+	cmu_feed_sdmmc((SDHC - EXYNOS4210_SDHCI_BASE(0)) >> 16);
 	host_reset_clock();
 	sd_probe_stage = 1;
 

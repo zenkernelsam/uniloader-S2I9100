@@ -104,9 +104,13 @@
 #define EXYNOS4210_WDT_BASE		0x10060000
 
 /* CMU clock gating for SDMMC hosts (CLK_GATE_IP_PERIL @0xC950,
- * CLK_SRC_PERIL0 @0xC250, CLK_DIV_PERIL0 @0xC550 — Exynos4210 CMU map) */
+ * CLK_SRC_PERIL0 @0xC250, CLK_DIV_PERIL0 @0xC550 — Exynos4210 CMU map.
+ * SDMMC mux/div live in the FSYS group on 4210: CLK_SRC_FSYS @0xC240
+ * and CLK_DIV_FSYS @0xC540, one 4-bit field per host starting at bit0.) */
 #define EXYNOS4210_CLK_SRC_PERIL0	0xC250
 #define EXYNOS4210_CLK_DIV_PERIL0	0xC550
+#define EXYNOS4210_CLK_SRC_FSYS		0xC240
+#define EXYNOS4210_CLK_DIV_FSYS		0xC540
 #define EXYNOS4210_CLK_GATE_IP_PERIL	0xC950
 #define EXYNOS4210_CLK_GATE_IP_FSYS	0xC940	/* sdmmc0-3 @5-8, usb_device @13 */
 #define EXYNOS4210_CLK_GATE_IP_LCD0	0xC934	/* fimd0 @0 */
