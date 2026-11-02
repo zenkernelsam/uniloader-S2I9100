@@ -226,9 +226,19 @@ static void sd_udelay(unsigned int us)
 {
 	volatile unsigned int i;
 
-	while (us--)
+	while (us--) {
 		for (i = 0; i < 400; i++)
 			__asm__ __volatile__("nop");
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+		/* EP0 setup deadlines are ~50ms; every busy-wait in the
+		 * storage path must keep servicing USB or enumeration
+		 * times out mid-probe (observed: VID_0000 fail). */
+		{
+			extern void usbcdc_poll(void);
+			usbcdc_poll();
+		}
+#endif
+	}
 }
 
 static void gpb_pin(int pin, int out)

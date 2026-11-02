@@ -275,7 +275,7 @@ static void dev_soft_init(void)
 static void ep0_arm_setup(void)
 {
 	DOEPTSIZ(0) = (3 << 29) | (1 << 19) | (8 * 3);	/* SUPCNT=3 */
-	DOEPCTL(0) |= DXEPCTL_EPENA;
+	DOEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
 }
 
 /* push a chunk (<=64B) into EP0-IN NPTX fifo and start it */
