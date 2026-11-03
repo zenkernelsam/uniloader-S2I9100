@@ -324,6 +324,10 @@ static void dev_soft_init(void)
 	for (i = 0; i < 4; i++) {
 		DOEPCTL(i) = DXEPCTL_EPDIS | DXEPCTL_SNAK;
 		DIEPCTL(i) = DXEPCTL_EPDIS | DXEPCTL_SNAK;
+		if (DIEPCTL(i) & DXEPCTL_EPENA)
+			bounded_wait(&DIEPCTL(i), DXEPCTL_EPDIS, 0, 100000);
+		DIEPINT(i) = 0x3ff;
+		DOEPINT(i) = 0x3ff;
 	}
 	DIEPMSK = (1 << 4) | (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
 	DOEPMSK = (1 << 6) | (1 << 5) | (1 << 4) | (1 << 3) | (1 << 2) | (1 << 0);
@@ -675,7 +679,6 @@ void usbcdc_poll(void)
 			if (usb_dma && (oi & DXEPINT_STUP)) {
 				memcpy(setup_pkt, ep0_dma_out, 8);
 				just_setup = 1;
-				DOEPCTL(0) |= DXEPCTL_CNAK;
 				ep0_setup();
 			}
 			if (usb_dma && (oi & (DXEPINT_B2BSTUP |
