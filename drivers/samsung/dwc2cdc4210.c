@@ -314,8 +314,11 @@ static int ep0_tx_start(unsigned int len)
 	uint32_t w;
 	unsigned int space = GNPTXSTS & 0xffff;
 
-	if (space < words)
+	if (space < words) {
+		printk(KERN_INFO, "ep0i: nofifo sp%u need%u\n",
+		       space, words);
 		return -1;
+	}
 
 	DIEPTSIZ(0) = (1 << 19) | len;
 	for (i = 0; i < words; i++) {
@@ -323,6 +326,8 @@ static int ep0_tx_start(unsigned int len)
 		FIFO(0) = w;
 	}
 	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
+	printk(KERN_INFO, "ep0i: tx %uB sp%u diepint%08x\n",
+	       len, space, DIEPINT(0));
 	ep0_buf += len;
 	ep0_len -= len;
 	return 0;
@@ -437,6 +442,8 @@ static void ep0_setup(void)
 
 static void ep0_in_done(void)
 {
+	printk(KERN_INFO, "ep0i: compl st=%d len=%u\n",
+	       ep0_state, ep0_len);
 	switch (ep0_state) {
 	case EP0_DATA_IN:
 		if (ep0_len) {
@@ -570,6 +577,24 @@ void usbcdc_poll(void)
 			DIEPINT(1) = ei;
 			if (ei & (DXEPINT_XFERCOMPL | DXEPINT_AHBERR))
 				ep1_busy = 0;
+		}
+	}
+	if (st & GINTSTS_OEPINT) {
+		uint32_t d = (DAINT >> 16) & 0xffff;
+		if (d & 1) {
+			uint32_t oi = DOEPINT(0);
+			DOEPINT(0) = oi;
+			if (oi)
+				printk(KERN_INFO, "ep0o: %08x\n", oi);
+			if ((oi & DXEPINT_XFERCOMPL) &&
+			    ep0_state == EP0_STATUS_OUT) {
+				ep0_state = EP0_WAIT_SETUP;
+				ep0_arm_setup();
+			}
+		}
+		if (d & 2) {
+			uint32_t oi = DOEPINT(1);
+			DOEPINT(1) = oi;
 		}
 	}
 drain:
