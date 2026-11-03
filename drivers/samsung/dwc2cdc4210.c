@@ -6,16 +6,20 @@
  * output - the "no UART jig" debug channel, same niche the lilac
  * project's QcomXnuUsbDebug fills.
  *
- * Register/sequence reference: u-boot drivers/usb/gadget/dwc2_udc_otg.c
- * + dwc2_udc_otg_phy.c (board "trats" == GT-I9100) and
- * drivers/usb/common/dwc2_core.h.
+ * Register/sequence reference: REVERSED from GT-I9100 S-Boot (SBL2,
+ * assets/sbl2.bin @0x4d400000) — the production Odin download stack
+ * that provably enumerates on this silicon.  See
+ * research/SBOOT-DWC2-REVERSE.md for the full decode.
  *
- * Design: pure polled slave-mode, no IRQs, no DMA.  usbcdc_poll()
- * services USBRST/ENUMDONE/RXFLVL and drains the TX ring; it is called
- * from the console write path so enumeration traffic is handled as a
- * side effect of logging.  Every wait is bounded - a missing or dead
- * controller must never hang the boot (QEMU smdkc210 does not model
- * the OTG block at all, so the GSNPSID sanity check bails there).
+ * Design: pure polled SLAVE mode (GAHBCFG=1, DMA_EN=0) exactly like
+ * S-Boot: EP0 payloads are pushed word-by-word into DFIFO0, and only
+ * when the host IN-token arrives with an empty fifo (INTKNTXFEMP) —
+ * never at setup-decode time.  Setup payloads are popped from the
+ * GRXSTSP status port + DFIFO0 data port.  EP0-OUT is re-armed for
+ * setup unconditionally on every OUT-EP0 event.  usbcdc_poll()
+ * services USBRST/ENUMDONE/RXFLVL/IEPINT/OEPINT and drains the TX
+ * ring; every wait is bounded so a missing controller can never hang
+ * the boot (QEMU smdkc210 has no OTG model: the GSNPSID check bails).
  */
 
 #include <stdint.h>
@@ -88,6 +92,11 @@
 #ifndef FIFO
 #define FIFO(n)		(*(volatile uint32_t *)(DWC2_BASE + 0x1000 + (n) * 0x1000))
 #endif
+/* RX payload pop port — same DFIFO register on silicon, split in the
+ * sim so the host can inject setup bytes independent of TX pushes. */
+#ifndef FIFO_RD
+#define FIFO_RD(n)	FIFO(n)
+#endif
 
 #define PHYREG(x)	(*(volatile uint32_t *)(PHY_BASE + (x)))
 #define PHYPWR		PHYREG(0x00)
@@ -127,33 +136,39 @@
 #define DXEPINT_EPDISBLD	(1u << 1)
 
 #define DCTL_SFTDISCON		(1u << 1)
-#define DCTL_PWRONPRGDONE	(1u << 11)
 #define DXEPINT_B2BSTUP		(1u << 6)	/* OUT: back-to-back setup */
 #define DXEPINT_STSPHSERCVD	(1u << 5)	/* OUT: setup phase done */
-#define DXEPINT_OUTTKNEPDIS	(1u << 4)	/* OUT: token while dis */
 #define DXEPINT_INTKNTXFEMP	(1u << 4)	/* IN: token while empty */
-#define GRSTCTL_INTKNQFLSH	(1u << 3)
-#define DCTL_CGOUTNAK		(1u << 10)
-#define DCTL_CGNPINNAK		(1u << 8)
 
 
 #define GRXSTS_PKTSTS(x)	(((x) >> 17) & 0xf)
 #define GRXSTS_BYTECNT(x)	(((x) >> 4) & 0x7ff)
 #define GRXSTS_EPNUM(x)		((x) & 0xf)
 
-#define PKTSTS_OUTNAK		1
 #define PKTSTS_OUTRX		2
 #define PKTSTS_OUTDONE		3
 #define PKTSTS_SETUPDONE	4
 #define PKTSTS_SETUPRX		6
 
-/* FIFO layout (32-bit words): RX 512 @0, NPTX(EP0) 128 @512,
- * EP1 bulk-IN 128 @640, EP2 int-IN 32 @768.  Total fits the device
- * FIFO RAM easily. */
+/* FIFO map cloned from S-Boot: shared RX 512 words @0, non-periodic
+ * TX 512 words @512.  No dedicated per-EP TX fifos — EP1-IN shares the
+ * NPTX fifo (TXFNUM=0) exactly like the Odin bulk path. */
 #define RXF_WORDS	0x200
-#define NPTX_WORDS	0x80
-#define EP1TX_WORDS	0x80
-#define EP2TX_WORDS	0x20
+#define NPTX_WORDS	0x200
+#define NPTX_OFF	0x200
+
+/* GINTMSK runtime values from S-Boot's dispatcher (0x4d41bf58):
+ * 0x800c3810 = WKUP|OEP|IEP|ENUMDONE|USBRST|RXFLVL; RXFLVL is masked
+ * off (0x800c3800) while the fifo is being popped. */
+#define GINTMSK_RUN		0x800c3810u
+#define GINTMSK_RXMASK		0x800c3800u
+
+/* EP0 arm values from S-Boot: plain EPENA|CNAK, MPS=0 (64B) for data,
+ * MPS=3 (8B) for the ZLP status — it never touches the PID bits. */
+#define EP0_ARM_TX		0x84000000u
+#define EP0_ARM_ZLP		0x84000003u
+#define EP0_OUT_ARM		0x84000000u
+#define EP0_OUT_TSIZ		0x20080008u	/* SUPCNT1|PKTCNT1|8B */
 
 /* ---------------- usb descriptors ---------------- */
 
@@ -218,38 +233,22 @@ static const uint8_t str3[] = {
 /* ---------------- state ---------------- */
 
 static int usb_ok;
-static int usb_dma;	/* GAHBCFG.DMA_EN: payloads + setup data move via
-			 * DIEPDMA/DOEPDMA buffers, not the fifo port */
-static int just_setup;	/* s3c quirk: skip CNAK on the arm
-			 * right after a setup stage */
-static uint32_t last_ei;		/* diepint print dedup */
 static int enumerated;		/* ENUMDONE seen */
 static int configured;		/* SET_CONFIGURATION seen */
 static int host_open;		/* SET_CONTROL_LINE_STATE seen (port open) */
-static uint8_t new_addr;	/* pending SET_ADDRESS */
 static int ep1_busy;		/* IN transfer in flight on EP1 */
 static int in_poll;		/* reentrancy guard: printk inside a
 				   handler triggers usbcon_write ->
 				   usbcdc_poll; nested polls must
-				   return immediately or bookkeeping
-				   (e.g. ep0_len after tx) runs twice */
+				   return immediately */
 
-enum { EP0_WAIT_SETUP, EP0_DATA_IN, EP0_STATUS_IN, EP0_STATUS_OUT,
-       EP0_DATA_OUT } ep0_state;
-
+/* S-Boot style request state: setup decode only RECORDS what the host
+ * wants; the actual push happens when the IN token knocks on an empty
+ * TX fifo (DIEPINT0.INTKNTXFEMP). */
+enum { REQ_NONE, REQ_DATA, REQ_ZLP, REQ_OUT } ep0_req;
+static const uint8_t *ep0_ptr;	/* pending TX payload */
+static unsigned int ep0_plen;	/* pending TX byte count */
 static uint8_t setup_pkt[8];
-static const uint8_t *ep0_buf;
-static unsigned int ep0_len;	/* remaining to send */
-static unsigned int ep0_asked;	/* wLength from host */
-static int ep0_d1;		/* next EP0-IN packet goes out DATA1 */
-/* This DWC2 may be a dedicated buffer-DMA core (trats only ever
- * exercises it in DMA mode): setup packets still arrive via the
- * RX fifo, but IN/OUT payloads are fetched from *DIEPDMA memory,
- * not from words pushed into the fifo port.  Feed BOTH paths so
- * either architecture answers correctly.  phys==virt, dcache off. */
-static uint8_t ep0_dma_in[64] __attribute__((aligned(32)));
-static uint8_t ep0_dma_out[64] __attribute__((aligned(32)));
-static uint8_t ep1_dma_buf[64] __attribute__((aligned(32)));
 
 #define TXRING 4096
 static char txring[TXRING];
@@ -309,138 +308,159 @@ static void fifo_flush_tx(unsigned int num)
 	bounded_wait(&GRSTCTL, GRSTCTL_AHBIDLE, GRSTCTL_AHBIDLE, 100000);
 }
 
+static void ep0_out_rearm(void);
+
+/* S-Boot 0x4d41b9f0 + 0x4d41b228: full device re-init, run on every
+ * USBRST so each enumeration attempt starts from the same clean
+ * endpoint state. */
 static void dev_soft_init(void)
 {
 	int i;
 
-	/* EPMISCNT=1, DEVSPD=HS: trats runs the HS chirp (its PHY is a
-	 * full UTMI+ HS transceiver).  FS-only was our guess; upstream
-	 * silicon does HS on this block. */
-	DCFG = (1 << 18) | 0;		/* EPMISCNT=1, DEVSPD=HS */
+	DCFG = (1 << 18);		/* EPMISCNT=1, DEVSPD=HS */
 	/* NOTE: no SFTDISCON pulse here — dev_soft_init also runs on the
 	 * USBRST path, where disconnecting would re-trigger enumeration
 	 * forever.  The one-shot pulse lives in usbcdc4210_init(). */
 
+	/* If a previous stage left IN EPs enabled, disable them and wait
+	 * for EPDISBLD — an async disable still in flight rejects the
+	 * next EPENA write on this core (the VID_0000 deadlock). */
 	for (i = 0; i < 4; i++) {
 		uint32_t de = DIEPCTL(i), oe = DOEPCTL(i);
-		DOEPCTL(i) = (oe & DXEPCTL_EPENA ? DXEPCTL_EPDIS : 0) |
-			DXEPCTL_SNAK;
-		DIEPCTL(i) = (de & DXEPCTL_EPENA ? DXEPCTL_EPDIS : 0) |
-			DXEPCTL_SNAK;
-		if (de & DXEPCTL_EPENA)
-			bounded_wait(&DIEPCTL(i), DXEPCTL_EPDIS, 0, 100000);
+		if (de & DXEPCTL_EPENA) {
+			DIEPCTL(i) = (de & ~DXEPCTL_EPENA) | DXEPCTL_EPDIS;
+			bounded_wait(&DIEPINT(i), DXEPINT_EPDISBLD,
+				     DXEPINT_EPDISBLD, 100000);
+		}
+		if (oe & DXEPCTL_EPENA) {
+			DOEPCTL(i) = (oe & ~DXEPCTL_EPENA) | DXEPCTL_EPDIS;
+			bounded_wait(&DOEPINT(i), DXEPINT_EPDISBLD,
+				     DXEPINT_EPDISBLD, 100000);
+		}
+	}
+	for (i = 0; i < 4; i++) {
 		DIEPINT(i) = 0x3ff;
 		DOEPINT(i) = 0x3ff;
 	}
-	DIEPMSK = (1 << 4) | (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
-	DOEPMSK = (1 << 6) | (1 << 5) | (1 << 4) | (1 << 3) | (1 << 2) | (1 << 0);
-	DAINTMSK = (1 << 16) | 1;			/* ep0 out+in */
-	/* Unmask what we poll: on some DWC2 integration the status bits
-	 * never raise in GINTSTS while masked — EP0 stayed deaf on the
-	 * first cable plug (Windows VID_0000 descriptor fail). */
-	GINTMSK = GINTSTS_USBRST | GINTSTS_ENUMDONE | GINTSTS_RXFLVL |
-		  GINTSTS_IEPINT | GINTSTS_OEPINT;
 
 	fifo_flush_rx();
-	fifo_flush_tx(0x10);
+	fifo_flush_tx(0x10);	/* all TX fifos */
 
-	just_setup = 0;
+	/* S-Boot: SNAK every OUT ep, then EPENA|CNAK every OUT ep. */
+	for (i = 0; i < 4; i++)
+		DOEPCTL(i) |= DXEPCTL_SNAK;
 
-	ep0_state = EP0_WAIT_SETUP;
-	ep0_len = 0;
-	ep0_d1 = 0;
+	/* S-Boot mask values: IN EP0/EP1 + OUT EP0/EP2 (0x00050003); we
+	 * need EP1-OUT instead of EP2-OUT → IN{0,1} + OUT{0,1}. */
+	DAINTMSK = (1 << 17) | (1 << 16) | (1 << 1) | (1 << 0);
+	DOEPMSK = 13;	/* XFRC|AHBERR|STUP — S-Boot exact */
+	DIEPMSK = 29;	/* XFRC|AHBERR|EPDISBLD|INTKNTXFEMP — S-Boot exact */
+
+	GRXFSIZ = RXF_WORDS;
+	GNPTXFSIZ = (NPTX_WORDS << 16) | NPTX_OFF;
+
+	for (i = 0; i < 4; i++)
+		DOEPCTL(i) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
+	DCFG &= ~0x7f0u;			/* DEVADDR=0 */
+
+	/* S-Boot 0x4d41b228: clear ep ints, EP0-IN CNAK, EP0-OUT armed */
+	DIEPINT(0) = 0x3ff;
+	DIEPINT(1) = 0x3ff;
+	DOEPINT(0) = 0x3ff;
+	DOEPINT(1) = 0x3ff;
+	DIEPCTL(0) = DXEPCTL_CNAK;
+	ep0_out_rearm();
+
+	GINTMSK = GINTMSK_RUN;
+
+	ep0_req = REQ_NONE;
+	ep0_ptr = 0;
+	ep0_plen = 0;
 	ep1_busy = 0;
 	configured = 0;
 	host_open = 0;
 }
 
-static void ep0_arm_setup(void)
+/* S-Boot 0x4d41bd1c tail: EP0-OUT is re-armed for the next setup on
+ * EVERY OUT-EP0 event — no state check, no conditions. */
+static void ep0_out_rearm(void)
 {
-	DOEPDMA(0) = (uint32_t)ep0_dma_out;
-	DOEPTSIZ(0) = (3 << 29) | (1 << 19) | (8 * 3);	/* SUPCNT=3 */
-	DOEPCTL(0) = (DOEPCTL(0) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
-		DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK;
+	DOEPTSIZ(0) = EP0_OUT_TSIZ;
+	DOEPCTL(0) = EP0_OUT_ARM;
 }
 
-/* push a chunk (<=64B) into EP0-IN NPTX fifo and start it */
-static int ep0_tx_start(unsigned int len)
+/* S-Boot 0x4d416f3c: push one 64B packet per pass through DFIFO0 and
+ * rewrite DIEPTSIZ0 as (remaining_pkts<<19)|this_pkt_len each time;
+ * between packets wait for IEPINT (previous packet went out).  The
+ * caller armed DIEPCTL0 already. */
+static void ep0_tx(const uint8_t *buf, unsigned int len)
 {
-	unsigned int words = (len + 3) >> 2, i;
-	uint32_t w;
-	unsigned int space = GNPTXSTS & 0xffff;
-	unsigned int tsiz0;
+	const uint8_t *p = buf;
+	unsigned int rem = len;
+	unsigned int npackets = (len + 63) >> 6;
+	unsigned int i, j;
 
-	if (space < words) {
-		printk(KERN_INFO, "ep0i: nofifo sp%u need%u\n",
-		       space, words);
-		return -1;
-	}
+	for (i = 0; i < npackets; i++) {
+		unsigned int this_len = rem < 64 ? rem : 64;
+		uint32_t w;
 
-	memcpy(ep0_dma_in, ep0_buf, len);
-	DIEPDMA(0) = (uint32_t)ep0_dma_in;
-	DIEPTSIZ(0) = (1 << 19) | len;
-	tsiz0 = DIEPTSIZ(0);
-	if (!usb_dma) {
-		for (i = 0; i < words; i++) {
-			memcpy(&w, ep0_buf + i * 4, 4);
+		DIEPTSIZ(0) = ((npackets - i) << 19) | this_len;
+		for (j = 0; j < this_len; j += 4) {
+			w = p[j] | (p[j + 1] << 8) | (p[j + 2] << 16) |
+				((j + 3 < this_len ? p[j + 3] : 0) << 24);
 			FIFO(0) = w;
 		}
+		rem -= 64;
+		p += 64;
+		if (rem > 0) {
+			bounded_wait(&GINTSTS, GINTSTS_IEPINT,
+				     GINTSTS_IEPINT, 100000);
+			GINTSTS = GINTSTS_IEPINT;
+		}
 	}
-	/* control data stage starts on DATA1 (USB2.0 8.5.3); the core
-	 * toggles it internally per ACKed packet, so only the first
-	 * chunk of a reply needs SETD1PID.  Status stage is always D1. */
-	DIEPCTL(0) = (DIEPCTL(0) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
-		DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK |
-		(ep0_d1 ? DXEPCTL_SETD1PID : 0);
-	just_setup = 0;
-	ep0_d1 = 0;
-	printk(KERN_INFO, "ep0i: tx %uB sp%u tsiz%x>%x dma%08x dctl%08x\n"
-		"  buf%08x octl%08x otsiz%08x odma%08x daint%08x\n",
-	       len, space, tsiz0, DIEPTSIZ(0), DIEPDMA(0), DIEPCTL(0),
-	       *(volatile uint32_t *)ep0_dma_in,
-	       DOEPCTL(0), DOEPTSIZ(0), DOEPDMA(0), DAINT);
-	ep0_buf += len;
-	ep0_len -= len;
-	return 0;
+}
+
+/* S-Boot 0x4d4183dc: consume the request recorded by setup decode.
+ * Runs when the host's IN token found the TX fifo empty. */
+static void ep0_kick(void)
+{
+	if (ep0_req == REQ_DATA) {
+		printk(KERN_INFO, "ep0i: tx %uB\n", ep0_plen);
+		DIEPCTL(0) = EP0_ARM_TX;
+		ep0_tx(ep0_ptr, ep0_plen);
+		ep0_ptr = 0;
+		ep0_plen = 0;
+		ep0_req = REQ_NONE;
+	} else if (ep0_req == REQ_ZLP) {
+		DIEPTSIZ(0) = (1 << 19) | 0;
+		DIEPCTL(0) = EP0_ARM_ZLP;
+		ep0_req = REQ_NONE;
+	}
 }
 
 static void ep0_reply(const uint8_t *buf, unsigned int len, unsigned int asked)
 {
-	ep0_buf = buf;
-	ep0_len = len < asked ? len : asked;
-	ep0_asked = asked;
-	ep0_state = EP0_DATA_IN;
-	ep0_d1 = 1;		/* data stage starts on DATA1 */
-	ep0_tx_start(ep0_len > 64 ? 64 : ep0_len);
+	ep0_ptr = buf;
+	ep0_plen = len < asked ? len : asked;
+	ep0_req = REQ_DATA;
 }
 
 static void ep0_status_in(void)
 {
-	ep0_state = EP0_STATUS_IN;
-	ep0_buf = (const uint8_t *)"";
-	ep0_len = 0;
-	DIEPDMA(0) = (uint32_t)ep0_dma_in;
-	DIEPTSIZ(0) = (1 << 19) | 0;
-	DIEPCTL(0) = (DIEPCTL(0) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
-		DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK |
-		DXEPCTL_SETD1PID;
-}
-
-static void ep0_status_out(void)
-{
-	ep0_state = EP0_STATUS_OUT;
-	ep0_arm_setup();
+	ep0_req = REQ_ZLP;
 }
 
 static void ep0_stall(void)
 {
 	DIEPCTL(0) |= DXEPCTL_STALL;
 	DOEPCTL(0) |= DXEPCTL_STALL;
-	ep0_state = EP0_WAIT_SETUP;
-	ep0_arm_setup();
+	ep0_req = REQ_NONE;
+	ep0_out_rearm();
 }
 
-/* handle one decoded setup packet */
+/* handle one decoded setup packet — S-Boot 0x4d417db8: only RECORDS
+ * the request; the dispatcher tail then pre-arms a ZLP+CNAK so the
+ * INTKNTXFEMP on the next IN token drives the real work. */
 static void ep0_setup(void)
 {
 	uint8_t rt = setup_pkt[0], rq = setup_pkt[1];
@@ -451,51 +471,51 @@ static void ep0_setup(void)
 	       rt, rq, wv, wl);
 	if (rt == 0x80 && rq == 6) {		/* GET_DESCRIPTOR dev->host */
 		switch (wv >> 8) {
-		case 1: ep0_reply(dev_desc, sizeof(dev_desc), wl); return;
-		case 2: ep0_reply(cfg_desc, sizeof(cfg_desc), wl); return;
+		case 1: ep0_reply(dev_desc, sizeof(dev_desc), wl); goto tail;
+		case 2: ep0_reply(cfg_desc, sizeof(cfg_desc), wl); goto tail;
 		case 3:
 			switch (wv & 0xff) {
-			case 0: ep0_reply(str0, sizeof(str0), wl); return;
-			case 1: ep0_reply(str1, sizeof(str1), wl); return;
-			case 2: ep0_reply(str2, sizeof(str2), wl); return;
-			default: ep0_reply(str3, sizeof(str3), wl); return;
+			case 0: ep0_reply(str0, sizeof(str0), wl); goto tail;
+			case 1: ep0_reply(str1, sizeof(str1), wl); goto tail;
+			case 2: ep0_reply(str2, sizeof(str2), wl); goto tail;
+			default: ep0_reply(str3, sizeof(str3), wl); goto tail;
 			}
-		case 6: ep0_reply(qual_desc, sizeof(qual_desc), wl); return;
+		case 6: ep0_reply(qual_desc, sizeof(qual_desc), wl); goto tail;
 		case 7: {	/* OTHER_SPEED: same body, type byte 7 */
 			static uint8_t osc[sizeof(cfg_desc)];
 			memcpy(osc, cfg_desc, sizeof(osc));
 			osc[1] = 7;
 			ep0_reply(osc, sizeof(osc), wl);
-			return;
+			goto tail;
 		}
 		}
 		ep0_stall();
 		return;
 	}
 	if (rt == 0x00 && rq == 5) {		/* SET_ADDRESS */
-		new_addr = wv & 0x7f;
+		/* S-Boot applies the address IMMEDIATELY at setup decode —
+		 * DCFG = base | (addr<<4) | 0x40000 — not after the ZLP. */
+		DCFG = (DCFG & ~0x7f0u) | ((wv & 0x7f) << 4) | 0x40000;
 		ep0_status_in();
-		return;
+		goto tail;
 	}
 	if (rt == 0x00 && rq == 9) {		/* SET_CONFIGURATION */
-		/* EP1 IN bulk, fifo1; EP2 IN int, fifo2 */
-		DIEPCTL(1) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(2) |
-			(1 << 22) | DXEPCTL_MPS(64) | DXEPCTL_EPENA |
-			DXEPCTL_CNAK | DXEPCTL_SETD0PID;
+		/* S-Boot EP1-IN arm value 0x84088840: EPENA|CNAK|bulk|
+		 * USBACTEP|NEXTEP=1|MPS=64 — TXFNUM=0 shares the NPTX
+		 * fifo, no dedicated DIEPTXF needed.  EP2-IN int and
+		 * EP1-OUT bulk for the CDC data interface. */
+		DIEPCTL(1) = EP0_ARM_TX | DXEPCTL_EPTYPE(2) |
+			DXEPCTL_USBACTEP | (1 << 11) | 64;
 		DIEPCTL(2) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(3) |
-			(2 << 22) | DXEPCTL_MPS(8) | DXEPCTL_SNAK;
+			DXEPCTL_MPS(8) | DXEPCTL_SNAK;
 		DOEPCTL(1) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(2) |
 			DXEPCTL_MPS(64) | DXEPCTL_EPENA | DXEPCTL_CNAK;
 		configured = 1;
 		ep0_status_in();
-		return;
+		goto tail;
 	}
 	if (rt == 0x21 && rq == 0x20) {		/* SET_LINE_CODING, 7B out */
-		ep0_state = EP0_DATA_OUT;
-		DOEPDMA(0) = (uint32_t)ep0_dma_out;
-		DOEPTSIZ(0) = (1 << 19) | 7;
-		DOEPCTL(0) = (DOEPCTL(0) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
-			DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK;
+		ep0_req = REQ_OUT;		/* bytes arrive via RXFLVL */
 		return;
 	}
 	if (rt == 0xa1 && rq == 0x21) {		/* GET_LINE_CODING */
@@ -503,12 +523,12 @@ static void ep0_setup(void)
 			0x00, 0xc2, 0x01, 0x00, 0, 0, 8 /* 115200 8N1 */
 		};
 		ep0_reply(lc, 7, wl);
-		return;
+		goto tail;
 	}
 	if (rt == 0x21 && rq == 0x22) {		/* SET_CONTROL_LINE_STATE */
 		host_open = 1;
 		ep0_status_in();
-		return;
+		goto tail;
 	}
 	if (rq == 1 || rq == 3)			/* CLEAR/SET_FEATURE */
 		ep0_status_in();
@@ -516,37 +536,12 @@ static void ep0_setup(void)
 		ep0_reply((const uint8_t *)"\0\0", 2, wl);
 	else
 		ep0_status_in();
-}
-
-static void ep0_in_done(void)
-{
-	printk(KERN_INFO, "ep0i: compl st=%d len=%u tsiz%08x\n",
-	       ep0_state, ep0_len, DIEPTSIZ(0));
-	switch (ep0_state) {
-	case EP0_DATA_IN:
-		if (ep0_len) {
-			ep0_tx_start(ep0_len > 64 ? 64 : ep0_len);
-			break;
-		}
-		/* if host asked for more than we had and len was an exact
-		 * multiple of 64, a ZLP ends the data stage */
-		if (ep0_asked > (unsigned int)(ep0_buf - 0) && 0) { }
-		ep0_status_out();
-		break;
-	case EP0_STATUS_IN:
-		if (new_addr) {
-			DCFG = (DCFG & ~(0x7f << 4)) | (new_addr << 4);
-			new_addr = 0;
-		}
-		ep0_state = EP0_WAIT_SETUP;
-		/* control transfer without data stage ends here: re-arm
-		 * EP0-OUT so the next setup (e.g. the GET_DESCRIPTOR the
-		 * host sends right after SET_ADDRESS) is not missed */
-		ep0_arm_setup();
-		break;
-	default:
-		break;
-	}
+tail:
+	/* S-Boot dispatcher tail (0x4d418090): pre-arm ZLP + CNAK —
+	 * releases NAK so the host's IN token raises INTKNTXFEMP,
+	 * which then runs ep0_kick() to do the real send. */
+	DIEPTSIZ(0) = (1 << 19) | 0;
+	DIEPCTL(0) = DXEPCTL_CNAK;
 }
 
 /* ---------------- tx ring + console ---------------- */
@@ -563,13 +558,15 @@ static void ring_push(const char *s)
 	}
 }
 
+/* EP1-IN printk stream: slave push into the shared NPTX fifo, same
+ * shape as S-Boot's ep1 fifo writer (0x4d41710c). */
 static void ep1_kick(void)
 {
 	unsigned int n = 0, space;
 	uint8_t pkt[64];
 	uint32_t w;
 
-	if (ep1_busy || !configured || !host_open || tx_head == tx_tail)
+	if (ep1_busy || !configured || tx_head == tx_tail)
 		return;
 	if (DIEPINT(1) & DXEPINT_XFERCOMPL)
 		DIEPINT(1) = DXEPINT_XFERCOMPL;	/* stale */
@@ -578,14 +575,11 @@ static void ep1_kick(void)
 		pkt[n++] = txring[tx_tail];
 		tx_tail = (tx_tail + 1) & (TXRING - 1);
 	}
-	space = DTXFSTS(1) & 0xffff;
+	space = GNPTXSTS & 0xffff;	/* TXFNUM=0: shared NPTX */
 	if (space < (n + 3) / 4)
 		return;
 
-	memcpy(ep1_dma_buf, pkt, n);
-	fifo_flush_tx(1);
-	DIEPDMA(1) = (uint32_t)ep1_dma_buf;
-	DIEPTSIZ(1) = (1 << 19) | n;
+	DIEPTSIZ(1) = (1 << 19) | n | 0x20000000;	/* PKTCNT1|len|MC=1 */
 	for (unsigned int i = 0; i < (n + 3) / 4; i++) {
 		w = pkt[i * 4] | (pkt[i * 4 + 1] << 8) |
 		    (pkt[i * 4 + 2] << 16) |
@@ -597,7 +591,9 @@ static void ep1_kick(void)
 	ep1_busy = 1;
 }
 
-/* main service routine; safe to call any time after usbcdc_init() */
+/* main service routine — S-Boot 0x4d41bf58/0x4d41bd1c dispatch model:
+ * GINTSTS is read once, cleared wholesale, then dispatched bit by bit.
+ * Safe to call any time after usbcdc_init(). */
 void usbcdc_poll(void)
 {
 	uint32_t st;
@@ -609,63 +605,56 @@ void usbcdc_poll(void)
 	st = GINTSTS;
 	if (!st)
 		goto drain;
+	GINTSTS = st;			/* S-Boot: clear all at once */
 
-	if (st & GINTSTS_USBRST) {
-		GINTSTS = GINTSTS_USBRST;
-		new_addr = 0;
+	if (st & GINTSTS_USBRST)	/* 0x1000: full re-init */
 		dev_soft_init();
-	}
-	if (st & GINTSTS_ENUMDONE) {
-		GINTSTS = GINTSTS_ENUMDONE;
+	if (st & GINTSTS_ENUMDONE) {	/* 0x2000 */
 		enumerated = 1;
-		DIEPCTL(0) = (DIEPCTL(0) & ~3u) | 0;	/* mps 64 */
-		DOEPCTL(0) = (DOEPCTL(0) & ~3u) | 0;
-		DIEPCTL(0) |= DXEPCTL_CNAK;
-		DOEPCTL(0) |= DXEPCTL_CNAK;
-		ep0_arm_setup();
+		/* S-Boot reads DSTS enum speed then patches descriptor
+		 * MPS; our MPS stays 64 (legal for FS too). */
+		printk(KERN_INFO, "usbcdc: enumdone dsts=%08x\n", DSTS);
+		ep0_out_rearm();
 	}
 	if (st & GINTSTS_RXFLVL) {
-		uint32_t gs = GRXSTSP;
-		unsigned int ps = GRXSTS_PKTSTS(gs);
-		unsigned int bc = GRXSTS_BYTECNT(gs);
+		uint32_t gs, ps, ep, bc;
 
-		GINTSTS = GINTSTS_RXFLVL;
-		if (ps == PKTSTS_SETUPRX) {
-			/* each GRXSTSP read POPS the fifo — two statements,
-			 * strict order, don't fold into one declaration */
-			uint32_t lo = GRXSTSP;
-			uint32_t hi = GRXSTSP;
-			if (!usb_dma) {
-				memcpy(setup_pkt, &lo, 4);
-				memcpy(setup_pkt + 4, &hi, 4);
-			}
-		} else if (ps == PKTSTS_SETUPDONE) {
-			if (!usb_dma)
-				ep0_setup();
-		} else if (ps == PKTSTS_OUTRX) {
-			unsigned int words = (bc + 3) / 4, i;
-			for (i = 0; i < words; i++)
-				(void)GRXSTSP;	/* discard OUT data */
-			if (ep0_state == EP0_DATA_OUT)
+		GINTMSK = GINTMSK_RXMASK;	/* mask RXFLVL while popping */
+		gs = GRXSTSP;			/* pop the status word */
+		ps = GRXSTS_PKTSTS(gs);
+		ep = GRXSTS_EPNUM(gs);
+		bc = GRXSTS_BYTECNT(gs);
+
+		if (ps == PKTSTS_SETUPRX) {	/* 6: setup payload in DFIFO0 */
+			uint32_t lo = FIFO_RD(0);
+			uint32_t hi = FIFO_RD(0);
+			memcpy(setup_pkt, &lo, 4);
+			memcpy(setup_pkt + 4, &hi, 4);
+			ep0_setup();
+		} else if (ps == PKTSTS_OUTRX) {	/* 2: OUT data */
+			unsigned int i;
+			uint32_t w;
+			for (i = 0; i < bc; i += 4)
+				w = FIFO_RD(ep);	/* drain payload */
+			(void)w;
+			if (ep == 0 && ep0_req == REQ_OUT) {
+				/* SET_LINE_CODING payload arrived;
+				 * line coding ignored, answer ZLP. */
 				ep0_status_in();
-		} else if (ps == PKTSTS_OUTDONE) {
-			if (ep0_state == EP0_STATUS_OUT)
-				ep0_state = EP0_WAIT_SETUP;
-			ep0_arm_setup();
+			}
 		}
+		/* 1 goutnak / 3 outdone / 4 setupdone: ignored like S-Boot */
+		GINTMSK = GINTMSK_RUN;
 	}
-	if (st & GINTSTS_IEPINT) {
+	if (st & GINTSTS_IEPINT) {	/* 0x40000 */
 		uint32_t d = DAINT & 0xffff;
 		if (d & 1) {
 			uint32_t ei = DIEPINT(0);
-			DIEPINT(0) = ei;
+			if (ei & DXEPINT_INTKNTXFEMP)
+				ep0_kick();	/* host knocked: send now */
 			if (ei & DXEPINT_XFERCOMPL)
-				ep0_in_done();
-			else if (ei && ei != last_ei) {
-				last_ei = ei;
-				printk(KERN_INFO, "ep0i: diepint %08x dma %08x\n",
-				       ei, DIEPDMA(0));
-			}
+				printk(KERN_INFO, "ep0i: compl\n");
+			DIEPINT(0) = ei;
 		}
 		if (d & 2) {
 			uint32_t ei = DIEPINT(1);
@@ -673,29 +662,19 @@ void usbcdc_poll(void)
 			if (ei & (DXEPINT_XFERCOMPL | DXEPINT_AHBERR))
 				ep1_busy = 0;
 		}
+		if (d & 4) {
+			uint32_t ei = DIEPINT(2);
+			DIEPINT(2) = ei;
+		}
 	}
-	if (st & GINTSTS_OEPINT) {
+	if (st & GINTSTS_OEPINT) {	/* 0x80000 */
 		uint32_t d = (DAINT >> 16) & 0xffff;
 		if (d & 1) {
 			uint32_t oi = DOEPINT(0);
-			DOEPINT(0) = oi;
 			if (oi)
 				printk(KERN_INFO, "ep0o: %08x\n", oi);
-			/* internal-DMA core: setup bytes land in the DOEPDMA
-			 * buffer, not the RX fifo - STUP is the only doorbell. */
-			if (usb_dma && (oi & DXEPINT_STUP)) {
-				memcpy(setup_pkt, ep0_dma_out, 8);
-				just_setup = 1;
-				ep0_setup();
-			}
-			if (usb_dma && (oi & (DXEPINT_B2BSTUP |
-				      DXEPINT_STSPHSERCVD)))
-				ep0_arm_setup();
-			if ((oi & DXEPINT_XFERCOMPL) &&
-			    ep0_state == EP0_STATUS_OUT) {
-				ep0_state = EP0_WAIT_SETUP;
-				ep0_arm_setup();
-			}
+			ep0_out_rearm();	/* unconditional, like S-Boot */
+			DOEPINT(0) = oi;
 		}
 		if (d & 2) {
 			uint32_t oi = DOEPINT(1);
@@ -768,43 +747,19 @@ int usbcdc4210_init(void)
 	if (bounded_wait(&GRSTCTL, GRSTCTL_CSFTRST, 0, 100000))
 		return -3;
 
-	/* GHWCFG2 arch = internal dedicated DMA (0x228ffc50
-	 * bits[4:3]=2): slave-mode TX cannot deliver a payload, the
-	 * engine only runs with DMA_EN set.  Upstream arms the bus
-	 * mode right after the core reset, before any fifo/EP cfg. */
-	GAHBCFG = GAHBCFG_GLBL_INTR_EN | GAHBCFG_DMA_EN |
-		  GAHBCFG_HBSTLEN_INCR4 | GAHBCFG_NPTXEMPLVL |
-		  GAHBCFG_PTXEMPLVL;
+	/* S-Boot writes GAHBCFG=1 — GLBL_INTR_EN ONLY.  The production
+	 * stack runs EP0 in pure slave mode with DMA_EN=0 and only ever
+	 * flips DMA_EN (0x27) for the Odin bulk transfers.  Every
+	 * "DMA-only" theory we had was wrong: slave is the proven path. */
+	GAHBCFG = GAHBCFG_GLBL_INTR_EN;
 
-	/* trats recipe: FDMOD + NP TXF rewind + TRDT 5 + UTMI 16-bit +
-	 * TOUTCAL 7.  u-boot reconfig_usbd() defaults the PHY interface
-	 * to 16-bit unless a board explicitly asks for 8; trats (the
-	 * i9100 reference) uses 16.  8-bit here let the host see the
-	 * pullup yet decode zero packets — Windows VID_0000. */
+	/* S-Boot writes GUSBCFG=0x540f — FDMOD + TRDT=5 + UTMI 16-bit +
+	 * TOUTCAL=7, the exact same value. */
 	GUSBCFG = (1 << 30) | (1 << 14) | (0x5 << 10) | (1 << 3) | 0x7;
 
-	/* FIFO map */
-	GRXFSIZ = RXF_WORDS;
-	GNPTXFSIZ = (NPTX_WORDS << 16) | RXF_WORDS;
-	DPTXFSIZ(1) = (EP1TX_WORDS << 16) | (RXF_WORDS + NPTX_WORDS);
-	DPTXFSIZ(2) = (EP2TX_WORDS << 16) |
-		      (RXF_WORDS + NPTX_WORDS + EP1TX_WORDS);
-
-	usb_dma = (GAHBCFG & GAHBCFG_DMA_EN) != 0;
-
+	/* FIFO map lives in dev_soft_init() (S-Boot: RX 512 @0, NPTX
+	 * 512 @512, no dedicated per-EP fifos — EP1 shares NPTX). */
 	dev_soft_init();
-
-	/* IN-DMA probe on EP1 (dedicated fifo1, no NPTX collision):
-	 * configure it exactly like SET_CONFIGURATION would, then arm
-	 * one DMA transfer.  Prefetch needs no host traffic; if the
-	 * engine runs at all, DTXFSTS(1)/DIEPDMA(1) will move. */
-	DIEPCTL(1) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(2) |
-		(1 << 22) | DXEPCTL_MPS(64) | DXEPCTL_SNAK;
-	memset(ep1_dma_buf, 0xA5, sizeof(ep1_dma_buf));
-	DIEPDMA(1) = (uint32_t)ep1_dma_buf;
-	DIEPTSIZ(1) = (1 << 19) | 16;
-	DIEPCTL(1) = (DIEPCTL(1) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
-		DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK;
 
 	/* One-shot connect: drop + re-raise the pullup so the host issues
 	 * a fresh enumeration against our already-configured EPs. */
@@ -829,10 +784,10 @@ int usbcdc4210_init(void)
 		if (configured)
 			break;
 		if ((i & 0x3fff) == 0x2000)
-			printk(KERN_INFO, "usbcdc: poll i=%d gints=%08x st%d dma%08x\n"
-				"  i0=%08x d1=%08x f1=%04x i1=%08x\n",
-			       i, GINTSTS, ep0_state, DIEPDMA(0),
-			       DIEPINT(0), DIEPDMA(1), DTXFSTS(1) & 0xffff, DIEPINT(1));
+			printk(KERN_INFO, "usbcdc: poll i=%d gints=%08x req%d\n"
+				"  i0=%08x o0=%08x ictl=%08x octl=%08x\n",
+			       i, GINTSTS, ep0_req,
+			       DIEPINT(0), DOEPINT(0), DIEPCTL(0), DOEPCTL(0));
 	}
 	printk(KERN_INFO, "usbcdc: enum=%d configured=%d gintsts=%08x dsts=%08x\n",
 	       enumerated, configured, GINTSTS, DSTS);
