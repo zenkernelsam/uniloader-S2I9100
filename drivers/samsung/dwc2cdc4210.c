@@ -539,6 +539,10 @@ static void ep0_in_done(void)
 			new_addr = 0;
 		}
 		ep0_state = EP0_WAIT_SETUP;
+		/* control transfer without data stage ends here: re-arm
+		 * EP0-OUT so the next setup (e.g. the GET_DESCRIPTOR the
+		 * host sends right after SET_ADDRESS) is not missed */
+		ep0_arm_setup();
 		break;
 	default:
 		break;
