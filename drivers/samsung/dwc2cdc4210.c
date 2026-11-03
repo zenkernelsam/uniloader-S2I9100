@@ -43,6 +43,11 @@
 #define GREG(x)		(*(volatile uint32_t *)(DWC2_BASE + (x)))
 #define GOTGCTL		GREG(0x000)
 #define GAHBCFG		GREG(0x008)
+#define GAHBCFG_GLBL_INTR_EN	(1u << 0)
+#define GAHBCFG_HBSTLEN_INCR4	(3u << 1)
+#define GAHBCFG_DMA_EN		(1u << 5)
+#define GAHBCFG_NPTXEMPLVL	(1u << 7)
+#define GAHBCFG_PTXEMPLVL	(1u << 8)
 #define GUSBCFG		GREG(0x00C)
 #define GRSTCTL		GREG(0x010)
 #define GINTSTS		GREG(0x014)
@@ -709,6 +714,14 @@ int usbcdc4210_init(void)
 	DPTXFSIZ(1) = (EP1TX_WORDS << 16) | (RXF_WORDS + NPTX_WORDS);
 	DPTXFSIZ(2) = (EP2TX_WORDS << 16) |
 		      (RXF_WORDS + NPTX_WORDS + EP1TX_WORDS);
+
+	/* GHWCFG2 arch = internal dedicated DMA (0x228ffc50
+	 * bits[4:3]=2): slave-mode TX cannot deliver a payload, the
+	 * engine only runs with DMA_EN set.  Setups still arrive via
+	 * the RX fifo either way. */
+	GAHBCFG = GAHBCFG_GLBL_INTR_EN | GAHBCFG_DMA_EN |
+		  GAHBCFG_HBSTLEN_INCR4 | GAHBCFG_NPTXEMPLVL |
+		  GAHBCFG_PTXEMPLVL;
 
 	dev_soft_init();
 
