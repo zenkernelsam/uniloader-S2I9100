@@ -351,9 +351,11 @@ static int ep0_tx_start(unsigned int len)
 	memcpy(ep0_dma_in, ep0_buf, len);
 	DIEPDMA(0) = (uint32_t)ep0_dma_in;
 	DIEPTSIZ(0) = (1 << 19) | len;
-	for (i = 0; i < words; i++) {
-		memcpy(&w, ep0_buf + i * 4, 4);
-		FIFO(0) = w;
+	if (!usb_dma) {
+		for (i = 0; i < words; i++) {
+			memcpy(&w, ep0_buf + i * 4, 4);
+			FIFO(0) = w;
+		}
 	}
 	/* control data stage starts on DATA1 (USB2.0 8.5.3); the core
 	 * toggles it internally per ACKed packet, so only the first
@@ -361,8 +363,8 @@ static int ep0_tx_start(unsigned int len)
 	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK |
 		(ep0_d1 ? DXEPCTL_SETD1PID : 0);
 	ep0_d1 = 0;
-	printk(KERN_INFO, "ep0i: tx %uB sp%u>%u dctl%08x\n",
-	       len, space, GNPTXSTS & 0xffff, DIEPCTL(0));
+	printk(KERN_INFO, "ep0i: tx %uB sp%u tsiz%08x dma%08x dctl%08x\n",
+	       len, space, DIEPTSIZ(0), DIEPDMA(0), DIEPCTL(0));
 	ep0_buf += len;
 	ep0_len -= len;
 	return 0;
