@@ -52,6 +52,7 @@
 #define GNPTXFSIZ	GREG(0x028)
 #define GNPTXSTS	GREG(0x02C)
 #define GSNPSID		GREG(0x040)
+#define GHWCFG2		GREG(0x048)
 #define GHWCFG4		GREG(0x050)
 #define DPTXFSIZ(n)	GREG(0x104 + ((n) - 1) * 4)
 
@@ -72,7 +73,9 @@
 #define DOEPCTL(n)	OEP(n)
 #define DOEPINT(n)	GREG(0xB08 + (n) * 0x20)
 #define DOEPTSIZ(n)	GREG(0xB10 + (n) * 0x20)
-#define DTXFSTS(n)	GREG(0x918 + (n) * 0x20)	/* INEPTFSPC per EP */
+#define DTXFSTS(n)	GREG(0x918 + (n) * 0x20)
+#define DIEPDMA(n)	GREG(0x914 + (n) * 0x20)
+#define DOEPDMA(n)	GREG(0xB14 + (n) * 0x20)	/* INEPTFSPC per EP */
 
 #define PCGCCTL		GREG(0xE00)
 #ifndef FIFO
@@ -217,6 +220,14 @@ static const uint8_t *ep0_buf;
 static unsigned int ep0_len;	/* remaining to send */
 static unsigned int ep0_asked;	/* wLength from host */
 static int ep0_d1;		/* next EP0-IN packet goes out DATA1 */
+/* This DWC2 may be a dedicated buffer-DMA core (trats only ever
+ * exercises it in DMA mode): setup packets still arrive via the
+ * RX fifo, but IN/OUT payloads are fetched from *DIEPDMA memory,
+ * not from words pushed into the fifo port.  Feed BOTH paths so
+ * either architecture answers correctly.  phys==virt, dcache off. */
+static uint8_t ep0_dma_in[64] __attribute__((aligned(32)));
+static uint8_t ep0_dma_out[64] __attribute__((aligned(32)));
+static uint8_t ep1_dma_buf[64] __attribute__((aligned(32)));
 
 #define TXRING 4096
 static char txring[TXRING];
@@ -311,6 +322,7 @@ static void dev_soft_init(void)
 
 static void ep0_arm_setup(void)
 {
+	DOEPDMA(0) = (uint32_t)ep0_dma_out;
 	DOEPTSIZ(0) = (3 << 29) | (1 << 19) | (8 * 3);	/* SUPCNT=3 */
 	DOEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
 }
@@ -329,6 +341,8 @@ static int ep0_tx_start(unsigned int len)
 	}
 
 	DIEPTSIZ(0) = (1 << 19) | len;
+	memcpy(ep0_dma_in, ep0_buf, len);
+	DIEPDMA(0) = (uint32_t)ep0_dma_in;
 	for (i = 0; i < words; i++) {
 		memcpy(&w, ep0_buf + i * 4, 4);
 		FIFO(0) = w;
@@ -361,6 +375,7 @@ static void ep0_status_in(void)
 	ep0_state = EP0_STATUS_IN;
 	ep0_buf = (const uint8_t *)"";
 	ep0_len = 0;
+	DIEPDMA(0) = (uint32_t)ep0_dma_in;
 	DIEPTSIZ(0) = (1 << 19) | 0;
 	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK | DXEPCTL_SETD1PID;
 }
@@ -430,6 +445,7 @@ static void ep0_setup(void)
 	}
 	if (rt == 0x21 && rq == 0x20) {		/* SET_LINE_CODING, 7B out */
 		ep0_state = EP0_DATA_OUT;
+		DOEPDMA(0) = (uint32_t)ep0_dma_out;
 		DOEPTSIZ(0) = (1 << 19) | 7;
 		DOEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
 		return;
@@ -514,6 +530,8 @@ static void ep1_kick(void)
 	if (space < (n + 3) / 4)
 		return;
 
+	memcpy(ep1_dma_buf, pkt, n);
+	DIEPDMA(1) = (uint32_t)ep1_dma_buf;
 	DIEPTSIZ(1) = (1 << 19) | n;
 	for (unsigned int i = 0; i < (n + 3) / 4; i++) {
 		w = pkt[i * 4] | (pkt[i * 4 + 1] << 8) |
@@ -703,8 +721,8 @@ int usbcdc4210_init(void)
 	usb_ok = 1;
 	console_register(&usbcon);
 	printk(KERN_INFO, "usbcdc: dwc2 device up, gsnpsid=%08x\n", GSNPSID);
-	printk(KERN_INFO, "usbcdc: hw ahb=%08x ghw4=%08x dcfg=%08x dctl=%08x\n",
-	       GAHBCFG, GHWCFG4, DCFG, DCTL);
+	printk(KERN_INFO, "usbcdc: hw ahb=%08x ghw2=%08x ghw4=%08x dctl=%08x\n",
+	       GAHBCFG, GHWCFG2, GHWCFG4, DCTL);
 
 	/* Dwell servicing EP0 while the host enumerates — bounded but
 	 * heartbeat-driven: udelay is uncalibrated on real silicon, so
