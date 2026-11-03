@@ -58,6 +58,7 @@
 #define GNPTXSTS	GREG(0x02C)
 #define GSNPSID		GREG(0x040)
 #define GHWCFG2		GREG(0x048)
+#define GHWCFG3		GREG(0x04C)
 #define GHWCFG4		GREG(0x050)
 #define DPTXFSIZ(n)	GREG(0x104 + ((n) - 1) * 4)
 
@@ -125,6 +126,7 @@
 #define DXEPINT_EPDISBLD	(1u << 1)
 
 #define DCTL_SFTDISCON		(1u << 1)
+#define DCTL_PWRONPRGDONE	(1u << 11)
 #define DXEPINT_B2BSTUP		(1u << 6)	/* OUT: back-to-back setup */
 #define DXEPINT_STSPHSERCVD	(1u << 5)	/* OUT: setup phase done */
 #define DXEPINT_OUTTKNEPDIS	(1u << 4)	/* OUT: token while dis */
@@ -216,7 +218,10 @@ static const uint8_t str3[] = {
 
 static int usb_ok;
 static int usb_dma;	/* GAHBCFG.DMA_EN: payloads + setup data move via
-			 * DIEPDMA/DOEPDMA buffers, not the fifo port */		/* controller + phy responded */
+			 * DIEPDMA/DOEPDMA buffers, not the fifo port */
+static int just_setup;	/* s3c quirk: skip CNAK on the arm
+			 * right after a setup stage */
+static uint32_t last_ei;		/* diepint print dedup */
 static int enumerated;		/* ENUMDONE seen */
 static int configured;		/* SET_CONFIGURATION seen */
 static int host_open;		/* SET_CONTROL_LINE_STATE seen (port open) */
@@ -333,6 +338,8 @@ static void dev_soft_init(void)
 	GRSTCTL = GRSTCTL_INTKNQFLSH;
 	bounded_wait(&GRSTCTL, GRSTCTL_INTKNQFLSH, 0, 100000);
 	DCTL |= DCTL_CGOUTNAK | DCTL_CGNPINNAK;
+	DCTL |= DCTL_PWRONPRGDONE;
+	just_setup = 0;
 
 	ep0_state = EP0_WAIT_SETUP;
 	ep0_len = 0;
@@ -366,8 +373,8 @@ static int ep0_tx_start(unsigned int len)
 	fifo_flush_tx(0);	/* EP0-IN uses the shared NPTX fifo; upstream
 	 * flushes the ep fifo before every DMA arm to drop stale state. */
 	memcpy(ep0_dma_in, ep0_buf, len);
-	DIEPDMA(0) = (uint32_t)ep0_dma_in;
 	DIEPTSIZ(0) = (1 << 19) | len;
+	DIEPDMA(0) = (uint32_t)ep0_dma_in;
 	tsiz0 = DIEPTSIZ(0);
 	if (!usb_dma) {
 		for (i = 0; i < words; i++) {
@@ -378,8 +385,14 @@ static int ep0_tx_start(unsigned int len)
 	/* control data stage starts on DATA1 (USB2.0 8.5.3); the core
 	 * toggles it internally per ACKed packet, so only the first
 	 * chunk of a reply needs SETD1PID.  Status stage is always D1. */
-	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK |
+	/* s3c-hsotg: "clearing the NAK here causes problems with
+	 * transmit on the S3C6400 ending up with the TXFIFO becoming
+	 * full" - the arm right after a setup skips CNAK on this
+	 * silicon family. */
+	DIEPCTL(0) |= DXEPCTL_EPENA |
+		(just_setup ? 0 : DXEPCTL_CNAK) |
 		(ep0_d1 && !usb_dma ? DXEPCTL_SETD1PID : 0);
+	just_setup = 0;
 	ep0_d1 = 0;
 	printk(KERN_INFO, "ep0i: tx %uB sp%u tsiz%x>%x dma%08x dctl%08x\n",
 	       len, space, tsiz0, DIEPTSIZ(0), DIEPDMA(0), DIEPCTL(0));
@@ -637,9 +650,11 @@ void usbcdc_poll(void)
 			DIEPINT(0) = ei;
 			if (ei & DXEPINT_XFERCOMPL)
 				ep0_in_done();
-			else if (ei)
+			else if (ei && ei != last_ei) {
+				last_ei = ei;
 				printk(KERN_INFO, "ep0i: diepint %08x dma %08x\n",
 				       ei, DIEPDMA(0));
+			}
 		}
 		if (d & 2) {
 			uint32_t ei = DIEPINT(1);
@@ -659,6 +674,8 @@ void usbcdc_poll(void)
 			 * buffer, not the RX fifo - STUP is the only doorbell. */
 			if (usb_dma && (oi & DXEPINT_STUP)) {
 				memcpy(setup_pkt, ep0_dma_out, 8);
+				just_setup = 1;
+				DOEPCTL(0) |= DXEPCTL_CNAK;
 				ep0_setup();
 			}
 			if (usb_dma && (oi & (DXEPINT_B2BSTUP |
@@ -776,8 +793,8 @@ int usbcdc4210_init(void)
 	usb_ok = 1;
 	console_register(&usbcon);
 	printk(KERN_INFO, "usbcdc: dwc2 device up, gsnpsid=%08x\n", GSNPSID);
-	printk(KERN_INFO, "usbcdc: hw ahb=%08x ghw2=%08x ghw4=%08x dctl=%08x\n",
-	       GAHBCFG, GHWCFG2, GHWCFG4, DCTL);
+	printk(KERN_INFO, "usbcdc: hw ahb=%08x ghw2=%08x ghw3=%08x ghw4=%08x dctl=%08x\n",
+	       GAHBCFG, GHWCFG2, GHWCFG3, GHWCFG4, DCTL);
 
 	/* Dwell servicing EP0 while the host enumerates — bounded but
 	 * heartbeat-driven: udelay is uncalibrated on real silicon, so
