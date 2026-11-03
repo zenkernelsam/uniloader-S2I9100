@@ -118,6 +118,7 @@
 #define DXEPCTL_USBACTEP	(1u << 15)
 #define DXEPCTL_MPS(x)		((x) & 0x7ff)
 
+#define DXEPINT_STUP		(1u << 3)
 #define DXEPINT_XFERCOMPL	(1u << 0)
 #define DXEPINT_TIMEOUT		(1u << 3)	/* IN: timeout / OUT: setup */
 #define DXEPINT_AHBERR		(1u << 2)
@@ -205,7 +206,9 @@ static const uint8_t str3[] = {
 
 /* ---------------- state ---------------- */
 
-static int usb_ok;		/* controller + phy responded */
+static int usb_ok;
+static int usb_dma;	/* GAHBCFG.DMA_EN: payloads + setup data move via
+			 * DIEPDMA/DOEPDMA buffers, not the fifo port */		/* controller + phy responded */
 static int enumerated;		/* ENUMDONE seen */
 static int configured;		/* SET_CONFIGURATION seen */
 static int host_open;		/* SET_CONTROL_LINE_STATE seen (port open) */
@@ -586,10 +589,13 @@ void usbcdc_poll(void)
 			 * strict order, don't fold into one declaration */
 			uint32_t lo = GRXSTSP;
 			uint32_t hi = GRXSTSP;
-			memcpy(setup_pkt, &lo, 4);
-			memcpy(setup_pkt + 4, &hi, 4);
+			if (!usb_dma) {
+				memcpy(setup_pkt, &lo, 4);
+				memcpy(setup_pkt + 4, &hi, 4);
+			}
 		} else if (ps == PKTSTS_SETUPDONE) {
-			ep0_setup();
+			if (!usb_dma)
+				ep0_setup();
 		} else if (ps == PKTSTS_OUTRX) {
 			unsigned int words = (bc + 3) / 4, i;
 			for (i = 0; i < words; i++)
@@ -624,6 +630,12 @@ void usbcdc_poll(void)
 			DOEPINT(0) = oi;
 			if (oi)
 				printk(KERN_INFO, "ep0o: %08x\n", oi);
+			/* internal-DMA core: setup bytes land in the DOEPDMA
+			 * buffer, not the RX fifo - STUP is the only doorbell. */
+			if (usb_dma && (oi & DXEPINT_STUP)) {
+				memcpy(setup_pkt, ep0_dma_out, 8);
+				ep0_setup();
+			}
 			if ((oi & DXEPINT_XFERCOMPL) &&
 			    ep0_state == EP0_STATUS_OUT) {
 				ep0_state = EP0_WAIT_SETUP;
@@ -722,6 +734,7 @@ int usbcdc4210_init(void)
 	GAHBCFG = GAHBCFG_GLBL_INTR_EN | GAHBCFG_DMA_EN |
 		  GAHBCFG_HBSTLEN_INCR4 | GAHBCFG_NPTXEMPLVL |
 		  GAHBCFG_PTXEMPLVL;
+	usb_dma = (GAHBCFG & GAHBCFG_DMA_EN) != 0;
 
 	dev_soft_init();
 
