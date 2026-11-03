@@ -65,6 +65,7 @@
 #define DREG(x)		GREG(0x800 + (x))
 #define DCFG		DREG(0x000)
 #define DCTL		DREG(0x004)
+#define DTHRCTL		DREG(0x030)
 #define DSTS		DREG(0x008)
 #define DIEPMSK		DREG(0x010)
 #define DOEPMSK		DREG(0x014)
@@ -339,6 +340,7 @@ static void dev_soft_init(void)
 	bounded_wait(&GRSTCTL, GRSTCTL_INTKNQFLSH, 0, 100000);
 	DCTL |= DCTL_CGOUTNAK | DCTL_CGNPINNAK;
 	DCTL |= DCTL_PWRONPRGDONE;
+	DTHRCTL = 0;
 	just_setup = 0;
 
 	ep0_state = EP0_WAIT_SETUP;
@@ -385,17 +387,15 @@ static int ep0_tx_start(unsigned int len)
 	/* control data stage starts on DATA1 (USB2.0 8.5.3); the core
 	 * toggles it internally per ACKed packet, so only the first
 	 * chunk of a reply needs SETD1PID.  Status stage is always D1. */
-	/* s3c-hsotg: "clearing the NAK here causes problems with
-	 * transmit on the S3C6400 ending up with the TXFIFO becoming
-	 * full" - the arm right after a setup skips CNAK on this
-	 * silicon family. */
-	DIEPCTL(0) |= DXEPCTL_EPENA |
-		(just_setup ? 0 : DXEPCTL_CNAK) |
+	/* absolute write: |= can carry a stale EPDIS left by the
+	 * init disable loop, which cancels the arm (EPENA dropped,
+	 * NAKSTS stuck - seen as diepint EPDISBLD on real hw). */
+	DIEPCTL(0) = DXEPCTL_USBACTEP | DXEPCTL_EPENA | DXEPCTL_CNAK |
 		(ep0_d1 && !usb_dma ? DXEPCTL_SETD1PID : 0);
 	just_setup = 0;
 	ep0_d1 = 0;
-	printk(KERN_INFO, "ep0i: tx %uB sp%u tsiz%x>%x dma%08x dctl%08x\n",
-	       len, space, tsiz0, DIEPTSIZ(0), DIEPDMA(0), DIEPCTL(0));
+	printk(KERN_INFO, "ep0i: tx %uB sp%u tsiz%x>%x dma%08x dctl%08x thr%08x\n",
+	       len, space, tsiz0, DIEPTSIZ(0), DIEPDMA(0), DIEPCTL(0), DTHRCTL);
 	ep0_buf += len;
 	ep0_len -= len;
 	return 0;
@@ -793,8 +793,8 @@ int usbcdc4210_init(void)
 	usb_ok = 1;
 	console_register(&usbcon);
 	printk(KERN_INFO, "usbcdc: dwc2 device up, gsnpsid=%08x\n", GSNPSID);
-	printk(KERN_INFO, "usbcdc: hw ahb=%08x ghw2=%08x ghw3=%08x ghw4=%08x dctl=%08x\n",
-	       GAHBCFG, GHWCFG2, GHWCFG3, GHWCFG4, DCTL);
+	printk(KERN_INFO, "usbcdc: hw ahb=%08x ghw2=%08x ghw3=%08x ghw4=%08x dctl=%08x thr=%08x\n",
+	       GAHBCFG, GHWCFG2, GHWCFG3, GHWCFG4, DCTL, DTHRCTL);
 
 	/* Dwell servicing EP0 while the host enumerates — bounded but
 	 * heartbeat-driven: udelay is uncalibrated on real silicon, so
