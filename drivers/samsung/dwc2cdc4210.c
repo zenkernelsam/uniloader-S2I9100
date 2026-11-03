@@ -322,9 +322,12 @@ static void dev_soft_init(void)
 	 * forever.  The one-shot pulse lives in usbcdc4210_init(). */
 
 	for (i = 0; i < 4; i++) {
-		DOEPCTL(i) = DXEPCTL_EPDIS | DXEPCTL_SNAK;
-		DIEPCTL(i) = DXEPCTL_EPDIS | DXEPCTL_SNAK;
-		if (DIEPCTL(i) & DXEPCTL_EPENA)
+		uint32_t de = DIEPCTL(i), oe = DOEPCTL(i);
+		DOEPCTL(i) = (oe & DXEPCTL_EPENA ? DXEPCTL_EPDIS : 0) |
+			DXEPCTL_SNAK;
+		DIEPCTL(i) = (de & DXEPCTL_EPENA ? DXEPCTL_EPDIS : 0) |
+			DXEPCTL_SNAK;
+		if (de & DXEPCTL_EPENA)
 			bounded_wait(&DIEPCTL(i), DXEPCTL_EPDIS, 0, 100000);
 		DIEPINT(i) = 0x3ff;
 		DOEPINT(i) = 0x3ff;
@@ -355,7 +358,8 @@ static void ep0_arm_setup(void)
 {
 	DOEPDMA(0) = (uint32_t)ep0_dma_out;
 	DOEPTSIZ(0) = (3 << 29) | (1 << 19) | (8 * 3);	/* SUPCNT=3 */
-	DOEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
+	DOEPCTL(0) = (DOEPCTL(0) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
+		DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK;
 }
 
 /* push a chunk (<=64B) into EP0-IN NPTX fifo and start it */
@@ -385,7 +389,8 @@ static int ep0_tx_start(unsigned int len)
 	/* control data stage starts on DATA1 (USB2.0 8.5.3); the core
 	 * toggles it internally per ACKed packet, so only the first
 	 * chunk of a reply needs SETD1PID.  Status stage is always D1. */
-	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK |
+	DIEPCTL(0) = (DIEPCTL(0) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
+		DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK |
 		(ep0_d1 && !usb_dma ? DXEPCTL_SETD1PID : 0);
 	just_setup = 0;
 	ep0_d1 = 0;
@@ -415,7 +420,9 @@ static void ep0_status_in(void)
 	ep0_len = 0;
 	DIEPDMA(0) = (uint32_t)ep0_dma_in;
 	DIEPTSIZ(0) = (1 << 19) | 0;
-	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK | (usb_dma ? 0 : DXEPCTL_SETD1PID);
+	DIEPCTL(0) = (DIEPCTL(0) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
+		DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK |
+		(usb_dma ? 0 : DXEPCTL_SETD1PID);
 }
 
 static void ep0_status_out(void)
@@ -486,7 +493,8 @@ static void ep0_setup(void)
 		ep0_state = EP0_DATA_OUT;
 		DOEPDMA(0) = (uint32_t)ep0_dma_out;
 		DOEPTSIZ(0) = (1 << 19) | 7;
-		DOEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
+		DOEPCTL(0) = (DOEPCTL(0) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
+			DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK;
 		return;
 	}
 	if (rt == 0xa1 && rq == 0x21) {		/* GET_LINE_CODING */
@@ -579,7 +587,8 @@ static void ep1_kick(void)
 		    ((i * 4 + 3 < n ? pkt[i * 4 + 3] : 0) << 24);
 		FIFO(1) = w;
 	}
-	DIEPCTL(1) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
+	DIEPCTL(1) = (DIEPCTL(1) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
+		DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK;
 	ep1_busy = 1;
 }
 
@@ -789,7 +798,8 @@ int usbcdc4210_init(void)
 	memset(ep1_dma_buf, 0xA5, sizeof(ep1_dma_buf));
 	DIEPDMA(1) = (uint32_t)ep1_dma_buf;
 	DIEPTSIZ(1) = (1 << 19) | 16;
-	DIEPCTL(1) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
+	DIEPCTL(1) = (DIEPCTL(1) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
+		DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK;
 
 	/* One-shot connect: drop + re-raise the pullup so the host issues
 	 * a fresh enumeration against our already-configured EPs. */
