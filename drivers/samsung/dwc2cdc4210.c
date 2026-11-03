@@ -348,9 +348,9 @@ static int ep0_tx_start(unsigned int len)
 		return -1;
 	}
 
-	DIEPTSIZ(0) = (1 << 19) | len;
 	memcpy(ep0_dma_in, ep0_buf, len);
 	DIEPDMA(0) = (uint32_t)ep0_dma_in;
+	DIEPTSIZ(0) = (1 << 19) | len;
 	for (i = 0; i < words; i++) {
 		memcpy(&w, ep0_buf + i * 4, 4);
 		FIFO(0) = w;
@@ -615,6 +615,9 @@ void usbcdc_poll(void)
 			DIEPINT(0) = ei;
 			if (ei & DXEPINT_XFERCOMPL)
 				ep0_in_done();
+			else if (ei)
+				printk(KERN_INFO, "ep0i: diepint %08x dma %08x\n",
+				       ei, DIEPDMA(0));
 		}
 		if (d & 2) {
 			uint32_t ei = DIEPINT(1);
@@ -761,8 +764,8 @@ int usbcdc4210_init(void)
 		if (configured)
 			break;
 		if ((i & 0x3fff) == 0x2000)
-			printk(KERN_INFO, "usbcdc: poll i=%d gints=%08x\n",
-			       i, GINTSTS);
+			printk(KERN_INFO, "usbcdc: poll i=%d gints=%08x st%d dma%08x\n",
+			       i, GINTSTS, ep0_state, DIEPDMA(0));
 	}
 	printk(KERN_INFO, "usbcdc: enum=%d configured=%d gintsts=%08x dsts=%08x\n",
 	       enumerated, configured, GINTSTS, DSTS);
