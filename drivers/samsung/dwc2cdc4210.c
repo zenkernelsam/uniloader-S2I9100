@@ -170,6 +170,17 @@ static const uint8_t cfg_desc[] = {
 	7, 5, 0x01, 2, 64, 0, 0,
 };
 
+/* bcdUSB 2.0 device at HIGH speed: the spec REQUIRES answering
+ * GET_DESCRIPTOR(QUALIFIER) — a stall tells Windows "illegal device".
+ * Reports what we'd be at full speed; body mirrors the fs config. */
+static const uint8_t qual_desc[] = {
+	10, 6,			/* bLength, DEVICE_QUALIFIER */
+	0x00, 0x02,		/* bcdUSB 2.0 */
+	2, 0, 0,		/* class CDC */
+	64,			/* MPS */
+	1, 0			/* bNumConfigurations, reserved */
+};
+
 static const uint8_t str0[] = { 4, 3, 0x09, 0x04 };
 static const uint8_t str1[] = {
 	30, 3, 'i',0,'9',0,'1',0,'0',0,'0',0,' ',0,
@@ -355,6 +366,8 @@ static void ep0_setup(void)
 	uint16_t wv = setup_pkt[2] | (setup_pkt[3] << 8);
 	uint16_t wl = setup_pkt[6] | (setup_pkt[7] << 8);
 
+	printk(KERN_INFO, "ep0: rq%02x %02x wv%04x wl%u\n",
+	       rt, rq, wv, wl);
 	if (rt == 0x80 && rq == 6) {		/* GET_DESCRIPTOR dev->host */
 		switch (wv >> 8) {
 		case 1: ep0_reply(dev_desc, sizeof(dev_desc), wl); return;
@@ -366,6 +379,14 @@ static void ep0_setup(void)
 			case 2: ep0_reply(str2, sizeof(str2), wl); return;
 			default: ep0_reply(str3, sizeof(str3), wl); return;
 			}
+		case 6: ep0_reply(qual_desc, sizeof(qual_desc), wl); return;
+		case 7: {	/* OTHER_SPEED: same body, type byte 7 */
+			static uint8_t osc[sizeof(cfg_desc)];
+			memcpy(osc, cfg_desc, sizeof(osc));
+			osc[1] = 7;
+			ep0_reply(osc, sizeof(osc), wl);
+			return;
+		}
 		}
 		ep0_stall();
 		return;
@@ -516,7 +537,10 @@ void usbcdc_poll(void)
 
 		GINTSTS = GINTSTS_RXFLVL;
 		if (ps == PKTSTS_SETUPRX) {
-			uint32_t lo = GRXSTSP, hi = GRXSTSP;
+			/* each GRXSTSP read POPS the fifo — two statements,
+			 * strict order, don't fold into one declaration */
+			uint32_t lo = GRXSTSP;
+			uint32_t hi = GRXSTSP;
 			memcpy(setup_pkt, &lo, 4);
 			memcpy(setup_pkt + 4, &hi, 4);
 		} else if (ps == PKTSTS_SETUPDONE) {
