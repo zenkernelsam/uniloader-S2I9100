@@ -391,12 +391,13 @@ static int ep0_tx_start(unsigned int len)
 	 * chunk of a reply needs SETD1PID.  Status stage is always D1. */
 	DIEPCTL(0) = (DIEPCTL(0) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
 		DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK |
-		(ep0_d1 && !usb_dma ? DXEPCTL_SETD1PID : 0);
+		(ep0_d1 ? DXEPCTL_SETD1PID : 0);
 	just_setup = 0;
 	ep0_d1 = 0;
 	printk(KERN_INFO, "ep0i: tx %uB sp%u tsiz%x>%x dma%08x dctl%08x\n"
-		"  octl%08x otsiz%08x odma%08x daint%08x\n",
+		"  buf%08x octl%08x otsiz%08x odma%08x daint%08x\n",
 	       len, space, tsiz0, DIEPTSIZ(0), DIEPDMA(0), DIEPCTL(0),
+	       *(volatile uint32_t *)ep0_dma_in,
 	       DOEPCTL(0), DOEPTSIZ(0), DOEPDMA(0), DAINT);
 	ep0_buf += len;
 	ep0_len -= len;
@@ -422,7 +423,7 @@ static void ep0_status_in(void)
 	DIEPTSIZ(0) = (1 << 19) | 0;
 	DIEPCTL(0) = (DIEPCTL(0) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
 		DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK |
-		(usb_dma ? 0 : DXEPCTL_SETD1PID);
+		DXEPCTL_SETD1PID;
 }
 
 static void ep0_status_out(void)
