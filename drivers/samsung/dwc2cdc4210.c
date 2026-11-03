@@ -202,6 +202,11 @@ static int configured;		/* SET_CONFIGURATION seen */
 static int host_open;		/* SET_CONTROL_LINE_STATE seen (port open) */
 static uint8_t new_addr;	/* pending SET_ADDRESS */
 static int ep1_busy;		/* IN transfer in flight on EP1 */
+static int in_poll;		/* reentrancy guard: printk inside a
+				   handler triggers usbcon_write ->
+				   usbcdc_poll; nested polls must
+				   return immediately or bookkeeping
+				   (e.g. ep0_len after tx) runs twice */
 
 enum { EP0_WAIT_SETUP, EP0_DATA_IN, EP0_STATUS_IN, EP0_STATUS_OUT,
        EP0_DATA_OUT } ep0_state;
@@ -516,8 +521,9 @@ void usbcdc_poll(void)
 {
 	uint32_t st;
 
-	if (!usb_ok)
+	if (!usb_ok || in_poll)
 		return;
+	in_poll = 1;
 
 	st = GINTSTS;
 	if (!st)
@@ -599,6 +605,7 @@ void usbcdc_poll(void)
 	}
 drain:
 	ep1_kick();
+	in_poll = 0;
 }
 
 static void usbcon_write(int level, const char *prefix, const char *msg)
