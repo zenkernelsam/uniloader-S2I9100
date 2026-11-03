@@ -340,10 +340,6 @@ static void dev_soft_init(void)
 
 	fifo_flush_rx();
 	fifo_flush_tx(0x10);
-	GRSTCTL = GRSTCTL_INTKNQFLSH;
-	bounded_wait(&GRSTCTL, GRSTCTL_INTKNQFLSH, 0, 100000);
-	DCTL |= DCTL_CGOUTNAK | DCTL_CGNPINNAK;
-	DCTL |= DCTL_PWRONPRGDONE;
 
 	just_setup = 0;
 
