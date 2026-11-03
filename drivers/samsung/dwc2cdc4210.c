@@ -52,6 +52,7 @@
 #define GNPTXFSIZ	GREG(0x028)
 #define GNPTXSTS	GREG(0x02C)
 #define GSNPSID		GREG(0x040)
+#define GHWCFG4		GREG(0x050)
 #define DPTXFSIZ(n)	GREG(0x104 + ((n) - 1) * 4)
 
 #define DREG(x)		GREG(0x800 + (x))
@@ -338,8 +339,8 @@ static int ep0_tx_start(unsigned int len)
 	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK |
 		(ep0_d1 ? DXEPCTL_SETD1PID : 0);
 	ep0_d1 = 0;
-	printk(KERN_INFO, "ep0i: tx %uB sp%u diepint%08x\n",
-	       len, space, DIEPINT(0));
+	printk(KERN_INFO, "ep0i: tx %uB sp%u>%u dctl%08x\n",
+	       len, space, GNPTXSTS & 0xffff, DIEPCTL(0));
 	ep0_buf += len;
 	ep0_len -= len;
 	return 0;
@@ -455,8 +456,8 @@ static void ep0_setup(void)
 
 static void ep0_in_done(void)
 {
-	printk(KERN_INFO, "ep0i: compl st=%d len=%u\n",
-	       ep0_state, ep0_len);
+	printk(KERN_INFO, "ep0i: compl st=%d len=%u tsiz%08x\n",
+	       ep0_state, ep0_len, DIEPTSIZ(0));
 	switch (ep0_state) {
 	case EP0_DATA_IN:
 		if (ep0_len) {
@@ -702,6 +703,8 @@ int usbcdc4210_init(void)
 	usb_ok = 1;
 	console_register(&usbcon);
 	printk(KERN_INFO, "usbcdc: dwc2 device up, gsnpsid=%08x\n", GSNPSID);
+	printk(KERN_INFO, "usbcdc: hw ahb=%08x ghw4=%08x dcfg=%08x dctl=%08x\n",
+	       GAHBCFG, GHWCFG4, DCFG, DCTL);
 
 	/* Dwell servicing EP0 while the host enumerates — bounded but
 	 * heartbeat-driven: udelay is uncalibrated on real silicon, so
