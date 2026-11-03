@@ -215,6 +215,7 @@ static uint8_t setup_pkt[8];
 static const uint8_t *ep0_buf;
 static unsigned int ep0_len;	/* remaining to send */
 static unsigned int ep0_asked;	/* wLength from host */
+static int ep0_d1;		/* next EP0-IN packet goes out DATA1 */
 
 #define TXRING 4096
 static char txring[TXRING];
@@ -301,6 +302,7 @@ static void dev_soft_init(void)
 
 	ep0_state = EP0_WAIT_SETUP;
 	ep0_len = 0;
+	ep0_d1 = 0;
 	ep1_busy = 0;
 	configured = 0;
 	host_open = 0;
@@ -330,7 +332,12 @@ static int ep0_tx_start(unsigned int len)
 		memcpy(&w, ep0_buf + i * 4, 4);
 		FIFO(0) = w;
 	}
-	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
+	/* control data stage starts on DATA1 (USB2.0 8.5.3); the core
+	 * toggles it internally per ACKed packet, so only the first
+	 * chunk of a reply needs SETD1PID.  Status stage is always D1. */
+	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK |
+		(ep0_d1 ? DXEPCTL_SETD1PID : 0);
+	ep0_d1 = 0;
 	printk(KERN_INFO, "ep0i: tx %uB sp%u diepint%08x\n",
 	       len, space, DIEPINT(0));
 	ep0_buf += len;
@@ -344,6 +351,7 @@ static void ep0_reply(const uint8_t *buf, unsigned int len, unsigned int asked)
 	ep0_len = len < asked ? len : asked;
 	ep0_asked = asked;
 	ep0_state = EP0_DATA_IN;
+	ep0_d1 = 1;		/* data stage starts on DATA1 */
 	ep0_tx_start(ep0_len > 64 ? 64 : ep0_len);
 }
 
@@ -353,7 +361,7 @@ static void ep0_status_in(void)
 	ep0_buf = (const uint8_t *)"";
 	ep0_len = 0;
 	DIEPTSIZ(0) = (1 << 19) | 0;
-	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
+	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK | DXEPCTL_SETD1PID;
 }
 
 static void ep0_status_out(void)
