@@ -125,6 +125,14 @@
 #define DXEPINT_EPDISBLD	(1u << 1)
 
 #define DCTL_SFTDISCON		(1u << 1)
+#define DXEPINT_B2BSTUP		(1u << 6)	/* OUT: back-to-back setup */
+#define DXEPINT_STSPHSERCVD	(1u << 5)	/* OUT: setup phase done */
+#define DXEPINT_OUTTKNEPDIS	(1u << 4)	/* OUT: token while dis */
+#define DXEPINT_INTKNTXFEMP	(1u << 4)	/* IN: token while empty */
+#define GRSTCTL_INTKNQFLSH	(1u << 3)
+#define DCTL_CGOUTNAK		(1u << 10)
+#define DCTL_CGNPINNAK		(1u << 8)
+
 
 #define GRXSTS_PKTSTS(x)	(((x) >> 17) & 0xf)
 #define GRXSTS_BYTECNT(x)	(((x) >> 4) & 0x7ff)
@@ -282,14 +290,17 @@ static void phy_init(void)
 
 static void fifo_flush_rx(void)
 {
+	bounded_wait(&GRSTCTL, GRSTCTL_AHBIDLE, GRSTCTL_AHBIDLE, 100000);
 	GRSTCTL = GRSTCTL_RXFFLSH;
 	bounded_wait(&GRSTCTL, GRSTCTL_RXFFLSH, 0, 100000);
 }
 
 static void fifo_flush_tx(unsigned int num)
 {
+	bounded_wait(&GRSTCTL, GRSTCTL_AHBIDLE, GRSTCTL_AHBIDLE, 100000);
 	GRSTCTL = GRSTCTL_TXFNUM(num) | GRSTCTL_TXFFLSH;
 	bounded_wait(&GRSTCTL, GRSTCTL_TXFFLSH, 0, 100000);
+	bounded_wait(&GRSTCTL, GRSTCTL_AHBIDLE, GRSTCTL_AHBIDLE, 100000);
 }
 
 static void dev_soft_init(void)
@@ -308,8 +319,8 @@ static void dev_soft_init(void)
 		DOEPCTL(i) = DXEPCTL_EPDIS | DXEPCTL_SNAK;
 		DIEPCTL(i) = DXEPCTL_EPDIS | DXEPCTL_SNAK;
 	}
-	DIEPMSK = (1 << 3) | (1 << 2) | (1 << 0);	/* timeout|ahberr|xfcompl */
-	DOEPMSK = (1 << 3) | (1 << 2) | (1 << 0);
+	DIEPMSK = (1 << 4) | (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
+	DOEPMSK = (1 << 6) | (1 << 5) | (1 << 4) | (1 << 3) | (1 << 2) | (1 << 0);
 	DAINTMSK = (1 << 16) | 1;			/* ep0 out+in */
 	/* Unmask what we poll: on some DWC2 integration the status bits
 	 * never raise in GINTSTS while masked — EP0 stayed deaf on the
@@ -319,6 +330,9 @@ static void dev_soft_init(void)
 
 	fifo_flush_rx();
 	fifo_flush_tx(0x10);
+	GRSTCTL = GRSTCTL_INTKNQFLSH;
+	bounded_wait(&GRSTCTL, GRSTCTL_INTKNQFLSH, 0, 100000);
+	DCTL |= DCTL_CGOUTNAK | DCTL_CGNPINNAK;
 
 	ep0_state = EP0_WAIT_SETUP;
 	ep0_len = 0;
@@ -341,6 +355,7 @@ static int ep0_tx_start(unsigned int len)
 	unsigned int words = (len + 3) >> 2, i;
 	uint32_t w;
 	unsigned int space = GNPTXSTS & 0xffff;
+	unsigned int tsiz0;
 
 	if (space < words) {
 		printk(KERN_INFO, "ep0i: nofifo sp%u need%u\n",
@@ -348,9 +363,12 @@ static int ep0_tx_start(unsigned int len)
 		return -1;
 	}
 
+	fifo_flush_tx(0);	/* EP0-IN uses the shared NPTX fifo; upstream
+	 * flushes the ep fifo before every DMA arm to drop stale state. */
 	memcpy(ep0_dma_in, ep0_buf, len);
 	DIEPDMA(0) = (uint32_t)ep0_dma_in;
 	DIEPTSIZ(0) = (1 << 19) | len;
+	tsiz0 = DIEPTSIZ(0);
 	if (!usb_dma) {
 		for (i = 0; i < words; i++) {
 			memcpy(&w, ep0_buf + i * 4, 4);
@@ -361,10 +379,10 @@ static int ep0_tx_start(unsigned int len)
 	 * toggles it internally per ACKed packet, so only the first
 	 * chunk of a reply needs SETD1PID.  Status stage is always D1. */
 	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK |
-		(ep0_d1 ? DXEPCTL_SETD1PID : 0);
+		(ep0_d1 && !usb_dma ? DXEPCTL_SETD1PID : 0);
 	ep0_d1 = 0;
-	printk(KERN_INFO, "ep0i: tx %uB sp%u tsiz%08x dma%08x dctl%08x\n",
-	       len, space, DIEPTSIZ(0), DIEPDMA(0), DIEPCTL(0));
+	printk(KERN_INFO, "ep0i: tx %uB sp%u tsiz%x>%x dma%08x dctl%08x\n",
+	       len, space, tsiz0, DIEPTSIZ(0), DIEPDMA(0), DIEPCTL(0));
 	ep0_buf += len;
 	ep0_len -= len;
 	return 0;
@@ -387,7 +405,7 @@ static void ep0_status_in(void)
 	ep0_len = 0;
 	DIEPDMA(0) = (uint32_t)ep0_dma_in;
 	DIEPTSIZ(0) = (1 << 19) | 0;
-	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK | DXEPCTL_SETD1PID;
+	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK | (usb_dma ? 0 : DXEPCTL_SETD1PID);
 }
 
 static void ep0_status_out(void)
@@ -401,6 +419,7 @@ static void ep0_stall(void)
 	DIEPCTL(0) |= DXEPCTL_STALL;
 	DOEPCTL(0) |= DXEPCTL_STALL;
 	ep0_state = EP0_WAIT_SETUP;
+	ep0_arm_setup();
 }
 
 /* handle one decoded setup packet */
@@ -541,6 +560,7 @@ static void ep1_kick(void)
 		return;
 
 	memcpy(ep1_dma_buf, pkt, n);
+	fifo_flush_tx(1);
 	DIEPDMA(1) = (uint32_t)ep1_dma_buf;
 	DIEPTSIZ(1) = (1 << 19) | n;
 	for (unsigned int i = 0; i < (n + 3) / 4; i++) {
@@ -641,6 +661,9 @@ void usbcdc_poll(void)
 				memcpy(setup_pkt, ep0_dma_out, 8);
 				ep0_setup();
 			}
+			if (usb_dma && (oi & (DXEPINT_B2BSTUP |
+				      DXEPINT_STSPHSERCVD)))
+				ep0_arm_setup();
 			if ((oi & DXEPINT_XFERCOMPL) &&
 			    ep0_state == EP0_STATUS_OUT) {
 				ep0_state = EP0_WAIT_SETUP;
@@ -718,6 +741,14 @@ int usbcdc4210_init(void)
 	if (bounded_wait(&GRSTCTL, GRSTCTL_CSFTRST, 0, 100000))
 		return -3;
 
+	/* GHWCFG2 arch = internal dedicated DMA (0x228ffc50
+	 * bits[4:3]=2): slave-mode TX cannot deliver a payload, the
+	 * engine only runs with DMA_EN set.  Upstream arms the bus
+	 * mode right after the core reset, before any fifo/EP cfg. */
+	GAHBCFG = GAHBCFG_GLBL_INTR_EN | GAHBCFG_DMA_EN |
+		  GAHBCFG_HBSTLEN_INCR4 | GAHBCFG_NPTXEMPLVL |
+		  GAHBCFG_PTXEMPLVL;
+
 	/* trats recipe: FDMOD + NP TXF rewind + TRDT 5 + UTMI 16-bit +
 	 * TOUTCAL 7.  u-boot reconfig_usbd() defaults the PHY interface
 	 * to 16-bit unless a board explicitly asks for 8; trats (the
@@ -732,13 +763,6 @@ int usbcdc4210_init(void)
 	DPTXFSIZ(2) = (EP2TX_WORDS << 16) |
 		      (RXF_WORDS + NPTX_WORDS + EP1TX_WORDS);
 
-	/* GHWCFG2 arch = internal dedicated DMA (0x228ffc50
-	 * bits[4:3]=2): slave-mode TX cannot deliver a payload, the
-	 * engine only runs with DMA_EN set.  Setups still arrive via
-	 * the RX fifo either way. */
-	GAHBCFG = GAHBCFG_GLBL_INTR_EN | GAHBCFG_DMA_EN |
-		  GAHBCFG_HBSTLEN_INCR4 | GAHBCFG_NPTXEMPLVL |
-		  GAHBCFG_PTXEMPLVL;
 	usb_dma = (GAHBCFG & GAHBCFG_DMA_EN) != 0;
 
 	dev_soft_init();
