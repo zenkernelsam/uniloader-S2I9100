@@ -344,7 +344,7 @@ static void dev_soft_init(void)
 	bounded_wait(&GRSTCTL, GRSTCTL_INTKNQFLSH, 0, 100000);
 	DCTL |= DCTL_CGOUTNAK | DCTL_CGNPINNAK;
 	DCTL |= DCTL_PWRONPRGDONE;
-	DTHRCTL = 0;
+
 	just_setup = 0;
 
 	ep0_state = EP0_WAIT_SETUP;
@@ -376,11 +376,9 @@ static int ep0_tx_start(unsigned int len)
 		return -1;
 	}
 
-	fifo_flush_tx(0);	/* EP0-IN uses the shared NPTX fifo; upstream
-	 * flushes the ep fifo before every DMA arm to drop stale state. */
 	memcpy(ep0_dma_in, ep0_buf, len);
-	DIEPTSIZ(0) = (1 << 19) | len;
 	DIEPDMA(0) = (uint32_t)ep0_dma_in;
+	DIEPTSIZ(0) = (1 << 19) | len;
 	tsiz0 = DIEPTSIZ(0);
 	if (!usb_dma) {
 		for (i = 0; i < words; i++) {
@@ -391,15 +389,14 @@ static int ep0_tx_start(unsigned int len)
 	/* control data stage starts on DATA1 (USB2.0 8.5.3); the core
 	 * toggles it internally per ACKed packet, so only the first
 	 * chunk of a reply needs SETD1PID.  Status stage is always D1. */
-	/* absolute write: |= can carry a stale EPDIS left by the
-	 * init disable loop, which cancels the arm (EPENA dropped,
-	 * NAKSTS stuck - seen as diepint EPDISBLD on real hw). */
-	DIEPCTL(0) = DXEPCTL_USBACTEP | DXEPCTL_EPENA | DXEPCTL_CNAK |
+	DIEPCTL(0) |= DXEPCTL_EPENA | DXEPCTL_CNAK |
 		(ep0_d1 && !usb_dma ? DXEPCTL_SETD1PID : 0);
 	just_setup = 0;
 	ep0_d1 = 0;
-	printk(KERN_INFO, "ep0i: tx %uB sp%u tsiz%x>%x dma%08x dctl%08x thr%08x\n",
-	       len, space, tsiz0, DIEPTSIZ(0), DIEPDMA(0), DIEPCTL(0), DTHRCTL);
+	printk(KERN_INFO, "ep0i: tx %uB sp%u tsiz%x>%x dma%08x dctl%08x\n"
+		"  octl%08x otsiz%08x odma%08x daint%08x\n",
+	       len, space, tsiz0, DIEPTSIZ(0), DIEPDMA(0), DIEPCTL(0),
+	       DOEPCTL(0), DOEPTSIZ(0), DOEPDMA(0), DAINT);
 	ep0_buf += len;
 	ep0_len -= len;
 	return 0;
@@ -787,6 +784,17 @@ int usbcdc4210_init(void)
 
 	dev_soft_init();
 
+	/* IN-DMA probe on EP1 (dedicated fifo1, no NPTX collision):
+	 * configure it exactly like SET_CONFIGURATION would, then arm
+	 * one DMA transfer.  Prefetch needs no host traffic; if the
+	 * engine runs at all, DTXFSTS(1)/DIEPDMA(1) will move. */
+	DIEPCTL(1) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(2) |
+		(1 << 22) | DXEPCTL_MPS(64) | DXEPCTL_SNAK;
+	memset(ep1_dma_buf, 0xA5, sizeof(ep1_dma_buf));
+	DIEPDMA(1) = (uint32_t)ep1_dma_buf;
+	DIEPTSIZ(1) = (1 << 19) | 16;
+	DIEPCTL(1) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
+
 	/* One-shot connect: drop + re-raise the pullup so the host issues
 	 * a fresh enumeration against our already-configured EPs. */
 	DCTL |= DCTL_SFTDISCON;
@@ -810,8 +818,10 @@ int usbcdc4210_init(void)
 		if (configured)
 			break;
 		if ((i & 0x3fff) == 0x2000)
-			printk(KERN_INFO, "usbcdc: poll i=%d gints=%08x st%d dma%08x\n",
-			       i, GINTSTS, ep0_state, DIEPDMA(0));
+			printk(KERN_INFO, "usbcdc: poll i=%d gints=%08x st%d dma%08x\n"
+				"  i0=%08x d1=%08x f1=%04x i1=%08x\n",
+			       i, GINTSTS, ep0_state, DIEPDMA(0),
+			       DIEPINT(0), DIEPDMA(1), DTXFSTS(1) & 0xffff, DIEPINT(1));
 	}
 	printk(KERN_INFO, "usbcdc: enum=%d configured=%d gintsts=%08x dsts=%08x\n",
 	       enumerated, configured, GINTSTS, DSTS);
