@@ -102,6 +102,7 @@
 #define PHYPWR		PHYREG(0x00)
 #define PHYCLK		PHYREG(0x04)
 #define PHYRST		PHYREG(0x08)
+#define PHYTUNE		PHYREG(0x24)
 
 /* bit names used (subset of dwc2_core.h) */
 #define GRSTCTL_AHBIDLE		(1u << 31)
@@ -283,14 +284,15 @@ static void phy_init(void)
 	/* otg_phy_init(), c210/universal flavour (PHY0_SLEEP path) */
 	*(volatile uint32_t *)PMU_USBPHYCTRL |= 1;	/* USB_PHY_CTRL_EN0 */
 
-	PHYPWR &= ~((1u << 5) | (1u << 4) | (1u << 3) | (1u << 0));
-	/* phyclk: clear ID_PULLUP0|COMMON_ON_N0, CLK_SEL_24MHZ */
-	PHYCLK = (PHYCLK & ~((1u << 2) | (1u << 4))) | 0x3;
-	/* rstcon: PHY_SW_RST0 pulse */
-	PHYRST = (PHYRST & ~((1u << 1) | (1u << 2))) | (1u << 0);
-	udelay(20);
-	PHYRST &= ~((1u << 0) | (1u << 1) | (1u << 2));
-	udelay(20);
+	/* S-Boot 量产真值：PHYPWR/PHYCLK/RSTCON/PHYTUNE 全部绝对值盖章，
+	 * sbl2.bin 0x4d416860 反汇编实录。 */
+	PHYPWR = 0x1f80;
+	PHYCLK = 3;
+	PHYRST = 1;
+	udelay(20000);
+	PHYRST = 0;
+	udelay(20000);
+	PHYTUNE = 0x001819bb;
 }
 
 static void fifo_flush_rx(void)
@@ -785,9 +787,11 @@ int usbcdc4210_init(void)
 			break;
 		if ((i & 0x3fff) == 0x2000)
 			printk(KERN_INFO, "usbcdc: poll i=%d gints=%08x req%d\n"
-				"  i0=%08x o0=%08x ictl=%08x octl=%08x\n",
+				"  i0=%08x o0=%08x ictl=%08x octl=%08x\n"
+				"  gotg=%08x dsts=%08x\n",
 			       i, GINTSTS, ep0_req,
-			       DIEPINT(0), DOEPINT(0), DIEPCTL(0), DOEPCTL(0));
+			       DIEPINT(0), DOEPINT(0), DIEPCTL(0), DOEPCTL(0),
+			       GOTGCTL, DSTS);
 	}
 	printk(KERN_INFO, "usbcdc: enum=%d configured=%d gintsts=%08x dsts=%08x\n",
 	       enumerated, configured, GINTSTS, DSTS);
