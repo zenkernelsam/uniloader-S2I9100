@@ -24,3 +24,5 @@ blob/ramdisk
 
 *.o.d
 zImage
+/out/
+/build/
