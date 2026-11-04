@@ -164,11 +164,15 @@
 #define GINTMSK_RUN		0x800c3810u
 #define GINTMSK_RXMASK		0x800c3800u
 
-/* EP0 arm values from S-Boot: plain EPENA|CNAK, MPS=0 (64B) for data,
- * MPS=3 (8B) for the ZLP status — it never touches the PID bits. */
-#define EP0_ARM_TX		0x84000000u
-#define EP0_ARM_ZLP		0x84000003u
-#define EP0_OUT_ARM		0x84000000u
+/* EP0 arm values, s3c-hsotg style (the working Exynos 4210 driver):
+ * USBACTEP is called RO in the databook but must be written for EP0 to
+ * activate, and EPENA is set when the reply is staged — never deferred
+ * to INTKNTXFEMP, which cannot fire on a disabled endpoint.  EP0's MPS
+ * field encodes 64B as 0, so the low bits stay clear. */
+#define EP0_ACT			0x00008000u	/* USBACTEP */
+#define EP0_ARM_TX		0x84008000u	/* EPENA|CNAK|USBACTEP */
+#define EP0_ARM_ZLP		0x84008000u
+#define EP0_OUT_ARM		0x84008000u
 #define EP0_OUT_TSIZ		0x20080008u	/* SUPCNT1|PKTCNT1|8B */
 
 /* ---------------- usb descriptors ---------------- */
@@ -295,21 +299,6 @@ static void phy_init(void)
 	PHYTUNE = 0x001819bb;
 }
 
-static void fifo_flush_rx(void)
-{
-	bounded_wait(&GRSTCTL, GRSTCTL_AHBIDLE, GRSTCTL_AHBIDLE, 100000);
-	GRSTCTL = GRSTCTL_RXFFLSH;
-	bounded_wait(&GRSTCTL, GRSTCTL_RXFFLSH, 0, 100000);
-}
-
-static void fifo_flush_tx(unsigned int num)
-{
-	bounded_wait(&GRSTCTL, GRSTCTL_AHBIDLE, GRSTCTL_AHBIDLE, 100000);
-	GRSTCTL = GRSTCTL_TXFNUM(num) | GRSTCTL_TXFFLSH;
-	bounded_wait(&GRSTCTL, GRSTCTL_TXFFLSH, 0, 100000);
-	bounded_wait(&GRSTCTL, GRSTCTL_AHBIDLE, GRSTCTL_AHBIDLE, 100000);
-}
-
 static void ep0_out_rearm(void);
 
 /* S-Boot 0x4d41b9f0 + 0x4d41b228: full device re-init, run on every
@@ -324,29 +313,11 @@ static void dev_soft_init(void)
 	 * USBRST path, where disconnecting would re-trigger enumeration
 	 * forever.  The one-shot pulse lives in usbcdc4210_init(). */
 
-	/* If a previous stage left IN EPs enabled, disable them and wait
-	 * for EPDISBLD — an async disable still in flight rejects the
-	 * next EPENA write on this core (the VID_0000 deadlock). */
-	for (i = 0; i < 4; i++) {
-		uint32_t de = DIEPCTL(i), oe = DOEPCTL(i);
-		if (de & DXEPCTL_EPENA) {
-			DIEPCTL(i) = (de & ~DXEPCTL_EPENA) | DXEPCTL_EPDIS;
-			bounded_wait(&DIEPINT(i), DXEPINT_EPDISBLD,
-				     DXEPINT_EPDISBLD, 100000);
-		}
-		if (oe & DXEPCTL_EPENA) {
-			DOEPCTL(i) = (oe & ~DXEPCTL_EPENA) | DXEPCTL_EPDIS;
-			bounded_wait(&DOEPINT(i), DXEPINT_EPDISBLD,
-				     DXEPINT_EPDISBLD, 100000);
-		}
-	}
-	for (i = 0; i < 4; i++) {
-		DIEPINT(i) = 0x3ff;
-		DOEPINT(i) = 0x3ff;
-	}
-
-	fifo_flush_rx();
-	fifo_flush_tx(0x10);	/* all TX fifos */
+	/* Deliberately no EPDIS loop and no FIFO flushes here: S-Boot's
+	 * USBRST handler (0x4d41b9f0) does neither, and this core's RX
+	 * fifo goes deaf if it is flushed while the device is live (the
+	 * status word still arrives, but the payload never lands where
+	 * DFIFO reads can see it).  CSRST at init already flushed. */
 
 	/* S-Boot: SNAK every OUT ep, then EPENA|CNAK every OUT ep. */
 	for (i = 0; i < 4; i++)
@@ -370,7 +341,11 @@ static void dev_soft_init(void)
 	DIEPINT(1) = 0x3ff;
 	DOEPINT(0) = 0x3ff;
 	DOEPINT(1) = 0x3ff;
-	DIEPCTL(0) = DXEPCTL_CNAK;
+	/* Activate EP0-IN without arming a transfer (s3c-hsotg:
+	 * "enable, but don't activate EP0in" writes mps|USBACTEP).  An
+	 * absolute CNAK write here would wipe USBACTEP, leaving every
+	 * later arm inert. */
+	DIEPCTL(0) = EP0_ACT;
 	ep0_out_rearm();
 
 	GINTMSK = GINTMSK_RUN;
@@ -391,53 +366,67 @@ static void ep0_out_rearm(void)
 	DOEPCTL(0) = EP0_OUT_ARM;
 }
 
-/* S-Boot 0x4d416f3c: push one 64B packet per pass through DFIFO0 and
- * rewrite DIEPTSIZ0 as (remaining_pkts<<19)|this_pkt_len each time;
- * between packets wait for IEPINT (previous packet went out).  The
- * caller armed DIEPCTL0 already. */
-static void ep0_tx(const uint8_t *buf, unsigned int len)
+/* Stage one control-IN transfer: arm EPENA FIRST, then push the whole
+ * payload into DFIFO0.  Max control data here is 67B (17 words), far
+ * below the 512-word NPTX fifo, so S-Boot's per-64B-packet pacing loop
+ * (which only exists for Odin's multi-KB descriptors) is unnecessary. */
+static void ep0_send(const uint8_t *buf, unsigned int len)
 {
-	const uint8_t *p = buf;
-	unsigned int rem = len;
 	unsigned int npackets = (len + 63) >> 6;
-	unsigned int i, j;
+	unsigned int words = (len + 3) >> 2;
+	unsigned int i;
 
-	for (i = 0; i < npackets; i++) {
-		unsigned int this_len = rem < 64 ? rem : 64;
-		uint32_t w;
+	if (words) {
+		/* Shared NPTX fifo: wait for room, but never hang boot */
+		for (i = 0; i < 100000; i++) {
+			if ((DTXFSTS(0) & 0xffff) >= words)
+				break;
+			udelay(1);
+		}
+	}
 
-		DIEPTSIZ(0) = ((npackets - i) << 19) | this_len;
-		for (j = 0; j < this_len; j += 4) {
-			w = p[j] | (p[j + 1] << 8) | (p[j + 2] << 16) |
-				((j + 3 < this_len ? p[j + 3] : 0) << 24);
-			FIFO(0) = w;
-		}
-		rem -= 64;
-		p += 64;
-		if (rem > 0) {
-			bounded_wait(&GINTSTS, GINTSTS_IEPINT,
-				     GINTSTS_IEPINT, 100000);
-			GINTSTS = GINTSTS_IEPINT;
-		}
+	DIEPTSIZ(0) = (npackets << 19) | len;
+	DIEPCTL(0) = EP0_ARM_TX;
+
+	for (i = 0; i < words; i++) {
+		unsigned int j = i * 4;
+		uint32_t w = (j < len ? buf[j] : 0) |
+			     (j + 1 < len ? buf[j + 1] << 8 : 0) |
+			     (j + 2 < len ? buf[j + 2] << 16 : 0) |
+			     (j + 3 < len ? buf[j + 3] << 24 : 0);
+
+		FIFO(0) = w;
 	}
 }
 
-/* S-Boot 0x4d4183dc: consume the request recorded by setup decode.
- * Runs when the host's IN token found the TX fifo empty. */
+static void ep0_arm_zlp(void)
+{
+	DIEPTSIZ(0) = (1 << 19) | 0;
+	DIEPCTL(0) = EP0_ARM_ZLP;
+}
+
+/* Transmit whatever the setup decoder staged: real data, or a status
+ * ZLP for no-data requests and zero-length replies (winusb can ask for
+ * wLength=0 — arming PKTCNT=0 would be illegal). */
+static void ep0_commit(void)
+{
+	if (ep0_req == REQ_DATA && ep0_plen) {
+		printk(KERN_INFO, "ep0i: tx %uB\n", ep0_plen);
+		ep0_send(ep0_ptr, ep0_plen);
+	} else if (ep0_req == REQ_DATA || ep0_req == REQ_ZLP) {
+		ep0_arm_zlp();
+	}
+	ep0_ptr = 0;
+	ep0_plen = 0;
+	ep0_req = REQ_NONE;
+}
+
+/* Fallback: if the host still knocks on an empty (but enabled) fifo
+ * while a reply is staged, push it here too. */
 static void ep0_kick(void)
 {
-	if (ep0_req == REQ_DATA) {
-		printk(KERN_INFO, "ep0i: tx %uB\n", ep0_plen);
-		DIEPCTL(0) = EP0_ARM_TX;
-		ep0_tx(ep0_ptr, ep0_plen);
-		ep0_ptr = 0;
-		ep0_plen = 0;
-		ep0_req = REQ_NONE;
-	} else if (ep0_req == REQ_ZLP) {
-		DIEPTSIZ(0) = (1 << 19) | 0;
-		DIEPCTL(0) = EP0_ARM_ZLP;
-		ep0_req = REQ_NONE;
-	}
+	if (ep0_req != REQ_NONE && ep0_req != REQ_OUT)
+		ep0_commit();
 }
 
 static void ep0_reply(const uint8_t *buf, unsigned int len, unsigned int asked)
@@ -460,9 +449,10 @@ static void ep0_stall(void)
 	ep0_out_rearm();
 }
 
-/* handle one decoded setup packet — S-Boot 0x4d417db8: only RECORDS
- * the request; the dispatcher tail then pre-arms a ZLP+CNAK so the
- * INTKNTXFEMP on the next IN token drives the real work. */
+/* handle one decoded setup packet: decode into the staged-reply state,
+ * then ep0_commit() arms EP0-IN and pushes the reply immediately.
+ * (S-Boot only records here and waits for INTKNTXFEMP; that model
+ * deadlocks on this core because the knock needs EPENA first.) */
 static void ep0_setup(void)
 {
 	uint8_t rt = setup_pkt[0], rq = setup_pkt[1];
@@ -539,11 +529,10 @@ static void ep0_setup(void)
 	else
 		ep0_status_in();
 tail:
-	/* S-Boot dispatcher tail (0x4d418090): pre-arm ZLP + CNAK —
-	 * releases NAK so the host's IN token raises INTKNTXFEMP,
-	 * which then runs ep0_kick() to do the real send. */
-	DIEPTSIZ(0) = (1 << 19) | 0;
-	DIEPCTL(0) = DXEPCTL_CNAK;
+	/* Send the reply NOW.  Waiting for INTKNTXFEMP deadlocks on this
+	 * core: that interrupt needs the endpoint already enabled, and
+	 * only this arm can enable it. */
+	ep0_commit();
 }
 
 /* ---------------- tx ring + console ---------------- */
@@ -628,10 +617,40 @@ void usbcdc_poll(void)
 		bc = GRXSTS_BYTECNT(gs);
 
 		if (ps == PKTSTS_SETUPRX) {	/* 6: setup payload in DFIFO0 */
-			uint32_t lo = FIFO_RD(0);
-			uint32_t hi = FIFO_RD(0);
-			memcpy(setup_pkt, &lo, 4);
-			memcpy(setup_pkt + 4, &hi, 4);
+			uint32_t w0, w1, echo, peek;
+			uint32_t raw[6];
+			int ri, pi = -1;
+
+			/* Instrumented: after the status pop, GRXSTSR peeks
+			 * the fifo head without consuming, then up to 6
+			 * DFIFO0 pops dump whatever is really queued.
+			 * Answers: payload present-at-depth-N vs fifo
+			 * empty (all reads = stale status echo). */
+			peek = GREG(0x01c);	/* GRXSTSR: head, no pop */
+			for (ri = 0; ri < 6; ri++)
+				raw[ri] = FIFO_RD(0);
+			printk(KERN_INFO, "ep0: gs=%08x peek=%08x\n"
+				"  raw %08x %08x %08x\n"
+				"      %08x %08x %08x\n",
+			       gs, peek,
+			       raw[0], raw[1], raw[2],
+			       raw[3], raw[4], raw[5]);
+			echo = ((uint32_t)PKTSTS_SETUPRX << 17) |
+			       (bc << 4) | (ep & 0xf);
+			for (ri = 0; ri < 5; ri++)
+				if ((raw[ri] & 0x1fffff) != echo) {
+					pi = ri;
+					break;
+				}
+			if (pi < 0) {		/* all echo: fifo was empty */
+				printk(KERN_INFO, "ep0: rx DRY\n");
+				w0 = w1 = 0;
+			} else {
+				w0 = raw[pi];
+				w1 = raw[pi + 1];
+			}
+			memcpy(setup_pkt, &w0, 4);
+			memcpy(setup_pkt + 4, &w1, 4);
 			ep0_setup();
 		} else if (ps == PKTSTS_OUTRX) {	/* 2: OUT data */
 			unsigned int i;
@@ -641,11 +660,18 @@ void usbcdc_poll(void)
 			(void)w;
 			if (ep == 0 && ep0_req == REQ_OUT) {
 				/* SET_LINE_CODING payload arrived;
-				 * line coding ignored, answer ZLP. */
-				ep0_status_in();
+				 * line coding ignored, answer ZLP now. */
+				ep0_req = REQ_NONE;
+				ep0_arm_zlp();
 			}
 		}
 		/* 1 goutnak / 3 outdone / 4 setupdone: ignored like S-Boot */
+		/* S-Boot re-arms EP0-OUT on every OUT-EP0 event.  Do it
+		 * here, *after* the entry is consumed: re-arming from the
+		 * OEPINT branch can land before the payload is read, and
+		 * this core then drops the fifo entry. */
+		if (ep == 0)
+			ep0_out_rearm();
 		GINTMSK = GINTMSK_RUN;
 	}
 	if (st & GINTSTS_IEPINT) {	/* 0x40000 */
@@ -675,7 +701,7 @@ void usbcdc_poll(void)
 			uint32_t oi = DOEPINT(0);
 			if (oi)
 				printk(KERN_INFO, "ep0o: %08x\n", oi);
-			ep0_out_rearm();	/* unconditional, like S-Boot */
+			/* re-arm happens after the RX entry is consumed */
 			DOEPINT(0) = oi;
 		}
 		if (d & 2) {
@@ -766,7 +792,7 @@ int usbcdc4210_init(void)
 	/* One-shot connect: drop + re-raise the pullup so the host issues
 	 * a fresh enumeration against our already-configured EPs. */
 	DCTL |= DCTL_SFTDISCON;
-	udelay(3000);
+	udelay(10000);		/* S-Boot delay(10): 10ms */
 	DCTL &= ~DCTL_SFTDISCON;
 
 	usb_ok = 1;
@@ -788,10 +814,12 @@ int usbcdc4210_init(void)
 		if ((i & 0x3fff) == 0x2000)
 			printk(KERN_INFO, "usbcdc: poll i=%d gints=%08x req%d\n"
 				"  i0=%08x o0=%08x ictl=%08x octl=%08x\n"
-				"  gotg=%08x dsts=%08x\n",
+				"  gotg=%08x dsts=%08x dtx=%08x\n"
+				"  grx=%08x nptx=%08x dma0=%08x ahb=%08x\n",
 			       i, GINTSTS, ep0_req,
 			       DIEPINT(0), DOEPINT(0), DIEPCTL(0), DOEPCTL(0),
-			       GOTGCTL, DSTS);
+			       GOTGCTL, DSTS, DTXFSTS(0),
+			       GRXFSIZ, GNPTXFSIZ, DOEPDMA(0), GAHBCFG);
 	}
 	printk(KERN_INFO, "usbcdc: enum=%d configured=%d gintsts=%08x dsts=%08x\n",
 	       enumerated, configured, GINTSTS, DSTS);
