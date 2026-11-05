@@ -839,7 +839,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 			extern int usbcdc4210_wait_host(unsigned int ms);
 
 			printk(KERN_INFO, "xnu: waiting for host before handoff\n");
-			usbcdc4210_wait_host(8000);
+			usbcdc4210_wait_host(30000);
 			printk(KERN_INFO, "xnu: jumping to %08x now\n",
 			       load_pa + entry_off);
 		}
