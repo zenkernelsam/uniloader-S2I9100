@@ -17,6 +17,11 @@
 #include <lib/debug.h>
 #include <soc/exynos4210.h>
 
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+extern int usbcdc4210_init(void);
+extern void usbcdc_poll(void);
+#endif
+
 #ifndef CONFIG_XNU_FB_BASE
 #define CONFIG_XNU_FB_BASE	0x43E00000
 #endif
@@ -137,6 +142,12 @@ int i9100_init(void)
 
 	/* Trigger I80 command */
 	fimd[0x1A4 / 4] = 3;
+
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+	/* Bring the CDC ACM console up as early as the panel is live; its
+	 * usbcon_write() hook also services EP0 on every printk. */
+	usbcdc4210_init();
+#endif
 
 	return 0;
 }

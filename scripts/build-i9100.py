@@ -61,8 +61,8 @@ def main():
         parser.error('Provide the XNU source directory and a positive job count')
     if any(c in args.extra_cmdline for c in '\n\r"\\') or not args.extra_cmdline.isascii():
         parser.error('Extra command line must be single-line ASCII without quotes or backslashes')
-    if sys.platform != 'darwin':
-        parser.error('This build recipe currently supports macOS only')
+    if sys.platform not in ('darwin', 'linux'):
+        parser.error('This build recipe supports macOS and Linux hosts')
     prefix = os.environ.get('I9100_CROSS_COMPILE','arm-none-eabi-')
     for tool in ('make', prefix+'gcc', prefix+'objcopy'):
         if not shutil.which(tool):

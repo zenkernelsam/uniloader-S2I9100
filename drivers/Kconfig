@@ -58,6 +58,15 @@ menu "Drivers"
 		  machine exposes on -serial.  The phone defconfig leaves
 		  this off so the panel console stays the only sink.
 
+	config EXYNOS_CDCACM4210
+		bool "Polling DWC2 CDC ACM console for Exynos 4210"
+		depends on SAMSUNG_I9100
+		default n
+		help
+		  Say Y to bring up the GT-I9100 OTG controller as a CDC ACM
+		  device, so uniLoader printk output appears as a COM port on
+		  the host over a plain micro-USB data cable.
+
 	config MEDIATEK_MCUSYS
 		bool "Support for MediaTek MCUSYS"
 		depends on MEDIATEK
