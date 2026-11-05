@@ -834,6 +834,16 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 		       entry_off == CONFIG_XNU_ENTRY_OFFSET ?
 		       "fallback" : "parsed");
 
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+		{
+			extern int usbcdc4210_wait_host(unsigned int ms);
+
+			printk(KERN_INFO, "xnu: waiting for host before handoff\n");
+			usbcdc4210_wait_host(8000);
+			printk(KERN_INFO, "xnu: jumping to %08x now\n",
+			       load_pa + entry_off);
+		}
+#endif
 		jump_to_xnu(load_pa + entry_off, ba_pa);
 	}
 

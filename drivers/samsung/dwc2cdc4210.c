@@ -743,6 +743,31 @@ drain:
 	in_poll = 0;
 }
 
+/* Keep the gadget alive until the host has actually opened the port.
+ * Windows only sends SET_CONTROL_LINE_STATE from Open(); once the loader
+ * jumps, the kernel adopt path cannot answer control transfers until it
+ * starts polling, which is too late for an Open issued after handoff.
+ * Bounded so an unplugged phone still boots after the timeout. */
+int usbcdc4210_wait_host(unsigned int ms)
+{
+	unsigned int i;
+
+	if (!usb_ok)
+		return 0;
+	printk(KERN_INFO, "usbcdc: waiting up to %u ms for host open\n", ms);
+	for (i = 0; i < ms; i++) {
+		usbcdc_poll();
+		if (host_open)
+			break;
+		if ((i % 500) == 0)
+			printk(KERN_INFO, "usbcdc: host not open yet (%u ms)\n", i);
+		udelay(1000);
+	}
+	printk(KERN_INFO, "usbcdc: host %s after %u ms\n",
+	       host_open ? "opened" : "did not open", i);
+	return host_open;
+}
+
 static void usbcon_write(int level, const char *prefix, const char *msg)
 {
 	(void)level;
