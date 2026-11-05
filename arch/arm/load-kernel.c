@@ -57,6 +57,34 @@ extern unsigned int inflate_in_pos;
 extern uint32_t delta_value;
 #define PAYLOAD_SYM(sym) (*(unsigned long *)((char *)&(sym) + delta_value))
 
+/* S-Boot loads zImage near 0x40008000. The expanded kernel starts at
+ * 0x40001000, so it overtakes a compressed .payload left at that load
+ * address. Stage ALL payloads at their linked home above the loader,
+ * including the size words, before any low-memory decode or BSS write. */
+static void stage_payloads(void **kernel, void **dt, void **ramdisk)
+{
+	extern unsigned char __payload_start, __payload_end;
+	extern unsigned char _kernel_start, _dt_start, _ramdisk_start;
+	unsigned long destination = (unsigned long)&__payload_start;
+	unsigned long source = destination + delta_value;
+	unsigned long size = (unsigned long)&__payload_end - destination;
+
+	if (source < destination) {
+		/* Backward copy also covers overlapping relocation ranges. */
+		for (unsigned long i = size; i; i--)
+			*(volatile unsigned char *)(destination + i - 1) =
+				*(volatile const unsigned char *)(source + i - 1);
+	} else if (source > destination) {
+		for (unsigned long i = 0; i < size; i++)
+			*(volatile unsigned char *)(destination + i) =
+				*(volatile const unsigned char *)(source + i);
+	}
+	delta_value = 0;
+	*kernel = &_kernel_start;
+	*dt = &_dt_start;
+	*ramdisk = &_ramdisk_start;
+}
+
 static void fb_mark(unsigned int byte_off, unsigned int color)
 {
 	volatile unsigned int *fb = (volatile unsigned int *)CONFIG_XNU_FB_BASE;
@@ -204,6 +232,8 @@ void arch_load_kernel_xnu(void *kernel, void *dt, void *ramdisk)
 		return;
 	printk(KERN_INFO, "xnu: SD boot not available, using payload\n");
 #endif
+	stage_payloads(&kernel, &dt, &ramdisk);
+	printk(KERN_INFO, "xnu: staged payload at %08x\n", (unsigned int)kernel);
 
 
 	/*
@@ -453,10 +483,29 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 	printk(KERN_INFO, "xnu: blob %u bytes, dt %u bytes\n",
 	       ksize, dtsize);
 
+	/* Derive every following address from the expanded kernel length.
+	 * Previously the larger post-decode clear erased DT/boot_args. */
+#ifdef CONFIG_XNU_BLOB_LZ4
+	{
+		unsigned int compressed = ksize;
+
+		printk(KERN_INFO, "xnu: decoding %u bytes...\n", compressed);
+		ksize = (unsigned int)lz4_decompress(kernel, compressed,
+			(void *)load_pa, CONFIG_XNU_MEMSIZE);
+		if (!ksize || ksize == 59 || ksize == 85 || ksize == 101) {
+			printk(KERN_EMERG, "lz4: kernel FAILED result %u\n", ksize);
+			fb_mark(0x140000, 0xFFFF0000);
+			while (1)
+				;
+		}
+		printk(KERN_INFO, "xnu: decoded %u bytes to 0x%08x\n", ksize, load_pa);
+	}
+#else
+	memcpy((void *)load_pa, kernel, ksize);
+#endif
+
 	/* Apple-format device tree right behind the kernel image.
-	 * Place DT, boot_args, and ramdisk FIRST before copying/zeroing the kernel,
-	 * because in raw DRAM payload mode, copying or zeroing the kernel would
-	 * otherwise overwrite the DT/ramdisk source blobs in DRAM. */
+	 * The sources now live safely at the staged .payload home. */
 	dt_pa = align_up(load_pa + ksize + 0x1000000, 4);
 	memcpy((void *)dt_pa, dt, dtsize);
 
@@ -692,45 +741,6 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 			       ((volatile unsigned char *)rd_pa)[1025]);
 		}
 	}
-
-#ifdef CONFIG_XNU_BLOB_LZ4
-	{
-		unsigned int compressed = ksize;
-
-		printk(KERN_INFO, "xnu: decoding %u bytes...\n", compressed);
-		/* The embedded blob is a raw LZ4 block; decode straight to
-		 * the load address (src lives in .payload, far from dst). */
-		ksize = (unsigned int) lz4_decompress(kernel, compressed,
-						      (void *)load_pa,
-						      CONFIG_XNU_MEMSIZE);
-		if (ksize == 59 || ksize == 85 || ksize == 101) {
-			printk(KERN_EMERG, "lz4: kernel FAILED line %u\n",
-			       ksize);
-			fb_mark(0x140000, 0xFFFF0000); /* red = lz4 died */
-			while (1)
-				;
-		}
-		if (!ksize) {
-			printk(KERN_EMERG, "lz4: decompression FAILED\n");
-			fb_mark(0x140000, 0xFFFF0000); /* red = lz4 died */
-			while (1)
-				;
-		}
-		printk(KERN_INFO, "xnu: decoded %u bytes to 0x%08x\n",
-		       ksize, load_pa);
-	}
-#else
-	memcpy((void *)load_pa, kernel, ksize);
-	{
-		volatile unsigned int *p = (volatile unsigned int *)load_pa;
-		unsigned int sum = 0, i;
-
-		for (i = 0; i < ksize; i += 4)
-			sum += p[i >> 2];
-		printk(KERN_INFO, "xnu: copied %u bytes to 0x%08x sum=%08x\n",
-		       ksize, load_pa, sum);
-	}
-#endif
 
 	/* Clear kernel BSS up to dt_pa */
 	memset((void *)(load_pa + ksize), 0, 0x1000000);
