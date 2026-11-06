@@ -192,6 +192,11 @@ def serial(host, plan, directory, device, verb, tag=None):
         require(verb == 'ping' or 'COMMAND_ACK ' in events, 'Missing reboot acknowledgement')
     require((directory / 'received.bin').stat().st_size > 0, 'Empty capture')
     save(directory / 'log-analysis.json', _logs.classify((directory / 'received.bin').read_bytes()))
+    if verb == 'root-status':
+        states = re.findall(r'^ROOT_STATE (BOOTING|WAIT_ROOT|NO_ROOT|MEDIA_FOUND)$', events, re.M)
+        require(len(states) == 1, 'Missing or ambiguous root-state acknowledgement')
+        return states[0]
+    return None
 
 
 class Plan:
@@ -202,9 +207,11 @@ class Plan:
         require(sha(self.path) == digest, 'Plan SHA256 was not approved or changed')
         self.data = json.loads(self.path.read_text())
         d = self.data
-        require(set(d) == {'schema', 'partition', 'validation', 'capture_seconds', 'boot_settle_seconds', 'control_tag', 'profile', 'files'}, 'Unexpected plan fields')
-        require(d['schema'] == 3 and d['partition'] == 'KERNEL', 'Only schema-3 KERNEL plans are permitted')
-        require(d['validation'] in ('control', 'logs'), 'Invalid validation mode')
+        require(set(d) == {'schema', 'partition', 'validation', 'root_status_protocol', 'capture_seconds', 'boot_settle_seconds', 'control_tag', 'profile', 'files'}, 'Unexpected plan fields')
+        require(d['schema'] == 4 and d['partition'] == 'KERNEL', 'Only schema-4 KERNEL plans are permitted')
+        require(d['validation'] in ('control', 'logs', 'maintenance'), 'Invalid validation mode')
+        require(type(d['root_status_protocol']) == bool, 'Invalid root-status capability')
+        require(d['validation'] != 'maintenance' or d['root_status_protocol'], 'Maintenance needs a root-status kernel')
         require(type(d['capture_seconds']) == int and 1 <= d['capture_seconds'] <= 900, 'Bad capture duration')
         require(type(d['boot_settle_seconds']) == int and 30 <= d['boot_settle_seconds'] <= 180, 'Bad boot settling duration')
         require(re.fullmatch('[0-9a-f]{16}', d['control_tag']) is not None, 'Missing kernel identity')
@@ -231,6 +238,8 @@ def create_plan(args):
         require(manifest.get('serial_control') is True, 'Use a control-enabled package or explicitly --diagnostic')
     else:
         require(manifest.get('diagnostic_control_bootargs_only') is True, 'Diagnostic package marker is missing')
+    require(not args.maintenance or manifest.get('root_status_protocol') is True,
+            'Maintenance needs an explicitly root-status-capable package')
     require(manifest['artifacts']['zImage']['sha256'] == sha(image), 'Package manifest does not match image')
     require(manifest['control_tag'] == manifest['artifacts']['mach_kernel']['sha256'][:16], 'Kernel tag mismatch')
     profile = json.loads(confined(args.profile, ROOT).read_text()) if args.profile else None
@@ -243,7 +252,9 @@ def create_plan(args):
         sources[name] = ROOT / 'assets/heimdall-win64' / name
     for name, src in sources.items():
         shutil.copyfile(src, dest / name)
-    data = {'schema': 3, 'partition': 'KERNEL', 'validation': 'logs' if args.diagnostic else 'control',
+    data = {'schema': 4, 'partition': 'KERNEL',
+            'validation': 'logs' if args.diagnostic else 'maintenance' if args.maintenance else 'control',
+            'root_status_protocol': manifest.get('root_status_protocol') is True,
             'capture_seconds': args.seconds,
             'boot_settle_seconds': args.boot_settle_seconds,
             'control_tag': manifest['control_tag'], 'profile': profile,
@@ -291,7 +302,7 @@ def immutable_snapshots(plan):
 
 def cycle(host, plan, mode, journal):
     profile = plan.data['profile']
-    require(plan.data['validation'] == 'control' or mode == 'bootstrap',
+    require(plan.data['validation'] != 'logs' or mode == 'bootstrap',
             'A diagnostic kernel permits one bootstrap and read-only logs, never commands or a cycle')
     if mode != 'reboot-only':
         require(profile is not None, 'Measure and approve a download profile first')
@@ -330,9 +341,14 @@ def cycle(host, plan, mode, journal):
     require(device is not None and normalize_location(device['location']) == profile['location'],
             'CDC changed during boot settling; no port opened')
     journal.event('VERIFY_KERNEL', control_tag=plan.data['control_tag'])
-    if plan.data['validation'] == 'control':
-        serial(host, plan, plan.parent / 'after', device, 'ping', plan.data['control_tag'])
-        journal.event('DONE', meaning='KERNEL flash, expected build handshake and timed log capture completed')
+    if plan.data['validation'] != 'logs':
+        query = 'root-status' if plan.data['root_status_protocol'] else 'ping'
+        root_state = serial(host, plan, plan.parent / 'after', device, query, plan.data['control_tag'])
+        if plan.data['root_status_protocol']:
+            expected = 'NO_ROOT' if plan.data['validation'] == 'maintenance' else 'MEDIA_FOUND'
+            require(root_state == expected, f'Expected root state {expected}, observed {root_state}')
+        journal.event('DONE_MAINTENANCE' if plan.data['validation'] == 'maintenance' else 'DONE',
+                      root_state=root_state, meaning='Build/ping/capture verified; root state is media discovery, not filesystem integrity')
     else:
         serial(host, plan, plan.parent / 'after', device, None)
         data = (plan.parent / 'after/received.bin').read_bytes()
@@ -347,7 +363,9 @@ def main():
     p = sub.add_parser('plan', help='Offline snapshot only; never opens USB')
     p.add_argument('--image', type=Path, required=True)
     p.add_argument('--profile', type=Path)
-    p.add_argument('--diagnostic', action='store_true', help='Explicit log-only baseline-kernel diagnostic; never send commands')
+    checks = p.add_mutually_exclusive_group()
+    checks.add_argument('--diagnostic', action='store_true', help='Explicit log-only baseline-kernel diagnostic; never send commands')
+    checks.add_argument('--maintenance', action='store_true', help='Expect NO_ROOT with working USB commands; not normal system boot')
     p.add_argument('--seconds', type=int, choices=range(1, 901), default=30, metavar='1..900')
     p.add_argument('--boot-settle-seconds', type=int, choices=range(30, 181), default=90, metavar='30..180')
     p = sub.add_parser('observe-download', help='Real-device PnP observation; phone must already be in download mode')

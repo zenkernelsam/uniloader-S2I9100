@@ -1,7 +1,7 @@
 param([ValidatePattern('^COM[0-9]+$')][string]$Port,
       [ValidateRange(1,3600)][int]$Seconds=900,
       [string]$ReaderExe,
-      [ValidateSet('ping','status','reboot','reboot-download')][string]$Send,
+      [ValidateSet('ping','status','root-status','reboot','reboot-download')][string]$Send,
       [ValidatePattern('^[0-9a-f]{16}$')][string]$ExpectBuild)
 $ErrorActionPreference='Stop'
 $loader=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))

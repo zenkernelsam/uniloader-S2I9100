@@ -24,7 +24,8 @@ class FakePlan:
     def __init__(self):
         self.parent = BASE / uuid.uuid4().hex[:8]
         self.parent.mkdir()
-        self.data = dict(profile=PROFILE, validation='control', capture_seconds=1, boot_settle_seconds=90,
+        self.data = dict(profile=PROFILE, validation='control', root_status_protocol=False,
+                         capture_seconds=1, boot_settle_seconds=90,
                          control_tag='0123456789abcdef', files={'zImage':'0'*64})
         self.bad_hash = False
 
@@ -57,7 +58,13 @@ class FakeHost:
         if self.fault == 'serial-open': raise RuntimeError('injected blocked opener; no kill')
         if self.state == 'boot' and self.fault == 'boot-identity': raise RuntimeError('wrong build tag')
         reboot = 'reboot-download' in args
-        (directory/'events.txt').write_text('PING_OK tick_ms=10\n' + ('COMMAND_ACK tick_ms=20\n' if reboot and self.fault!='missing-ack' else ''))
+        root_query='root-status' in args
+        event_text='PING_OK tick_ms=10\n'
+        if (reboot or root_query) and self.fault!='missing-ack': event_text+='COMMAND_ACK tick_ms=20\n'
+        if root_query:
+            root_state='NO_ROOT' if self.fault=='no-root' else 'WAIT_ROOT' if self.fault=='waiting-root' else 'MEDIA_FOUND'
+            event_text+='ROOT_STATE '+root_state+'\n'
+        (directory/'events.txt').write_text(event_text)
         (directory/'received.bin').write_bytes(b'arm_init: fixture log bytes')
         if reboot: self.state = 'dl'
 
@@ -103,6 +110,18 @@ class Tests(unittest.TestCase):
         with self.assertRaises(ValueError): o.cycle(host,plan,'cycle',o.Journal(plan.parent))
         self.assertEqual(len(host.calls),2)
 
+    def test_maintenance_is_distinct_from_system_boot(self):
+        for validation, observed, passes in [('maintenance','no-root',True),
+                ('control',None,True),('control','no-root',False),
+                ('maintenance',None,False),('maintenance','waiting-root',False)]:
+            with self.subTest(validation=validation,observed=observed):
+                plan, host=FakePlan(), FakeHost(observed,initial='dl')
+                plan.data.update(validation=validation,root_status_protocol=True)
+                if passes: o.cycle(host,plan,'bootstrap',o.Journal(plan.parent))
+                else:
+                    with self.assertRaises(ValueError): o.cycle(host,plan,'bootstrap',o.Journal(plan.parent))
+                self.assertEqual(len(host.calls),2)
+                self.assertIn('root-status',host.calls[1])
     def test_fail_before_flash(self):
         for fault in ('two-cdc','serial-open','missing-ack','two-download','wrong-port','wrong-driver'):
             with self.subTest(fault=fault):
@@ -159,8 +178,9 @@ class Tests(unittest.TestCase):
         dest = BASE/'guard-plan'; dest.mkdir()
         import shutil
         data = json.loads(src.read_text())
-        data['schema'] = 3
+        data['schema'] = 4
         data['validation'] = 'control'
+        data['root_status_protocol'] = False
         data['boot_settle_seconds'] = 90
         for name in data['files']: shutil.copyfile(src.parent/name,dest/name)
         path = dest/'plan.json'

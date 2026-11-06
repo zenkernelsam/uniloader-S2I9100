@@ -110,6 +110,7 @@ def main():
         'kernel': identity,
         'usb_serial': 'S2I9100-OS6',
         'serial_control': args.control and not args.control_bootargs_only,
+        'root_status_protocol': b'OK root=NO_ROOT' in raw_data,
         'diagnostic_control_bootargs_only': args.control_bootargs_only,
         'control_tag': sha(kernel)[:16] if args.control else None,
         'memory': {'load_pa':hex(0x40001000),'raw_end':hex(raw_end),

@@ -24,5 +24,13 @@ int main(void)
     for(unsigned i=0;i<1000;i++)control_receive(&s,'x');
     receive(&s,"I9CTL1 READY control=1\n");assert(!s.ready);
     receive(&s,"I9CTL1 READY control=1\n");assert(s.ready);
+    control_request(&s,wire,0x21,"root-status");
+    receive(&s,"I9CTL1 00000021 OK root=NO_");assert(!s.matched);
+    receive(&s,"ROOT\n");assert(s.matched && !strcmp(s.root_state,"NO_ROOT"));
+    control_request(&s,wire,0x22,"root-status");
+    receive(&s,"I9CTL1 00000021 OK root=MEDIA_FOUND\n");assert(!s.matched);
+    receive(&s,"I9CTL1 00000022 OK root=MEDIA_FOUND\n");assert(s.matched);
+    control_request(&s,wire,0x23,"root-status");
+    receive(&s,"I9CTL1 00000023 OK root=MADE_UP\n");assert(s.rejected && !s.matched);
     puts("PASS host framing, correlated ACK, build mismatch, overflow recovery");
 }

@@ -65,7 +65,7 @@ static void filename(const WCHAR *suffix)
 static DWORD run(void)
 {
     int count=parse();
-    if(count!=4 && count!=6 && count!=8){text(GetStdHandle((DWORD)-11),"Usage: rawcom COMnumber seconds existing-output-directory [-Send ping|status|reboot|reboot-download [-Expect 16hex-build-tag]]\r\nSend: wait READY, ping, capture, then send final command; one open, no retries.\r\n");return 2;}
+    if(count!=4 && count!=6 && count!=8){text(GetStdHandle((DWORD)-11),"Usage: rawcom COMnumber seconds existing-output-directory [-Send ping|status|root-status|reboot|reboot-download [-Expect 16hex-build-tag]]\r\nSend: wait READY, ping, capture, then send final command; one open, no retries.\r\n");return 2;}
     if(count>=6) {
         const WCHAR *flag=(const WCHAR *)L"-Send";
         unsigned j=0; while(flag[j]&&flag[j]==args[4][j])j++;
@@ -74,7 +74,7 @@ static DWORD run(void)
             if(j>=sizeof(verb)-1||args[5][j]>127)return 2;
             verb[j]=(char)args[5][j];
         }
-        if(!same(verb,"ping")&&!same(verb,"status")&&!same(verb,"reboot")&&!same(verb,"reboot-download"))return 2;
+        if(!same(verb,"ping")&&!same(verb,"status")&&!same(verb,"root-status")&&!same(verb,"reboot")&&!same(verb,"reboot-download"))return 2;
     }
     if(count==8) {
         const WCHAR *flag=(const WCHAR *)L"-Expect";
@@ -133,6 +133,9 @@ static DWORD run(void)
             if(count==4 || same(verb,"ping"))break;
             send=1;phase=3;deadline=now+10000;
         } else if(count>=6 && phase==3 && protocol.matched) {
+            if(same(verb,"root-status")) {
+                text(events,"ROOT_STATE ");text(events,protocol.root_state);text(events,"\r\n");
+            }
             event("COMMAND_ACK tick_ms=",now);break;
         }
         if(send) {
