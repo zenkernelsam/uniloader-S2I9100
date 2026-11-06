@@ -30,8 +30,10 @@ def device_tree():
     # It also name-matches "arm-io" and enumerates the SoC peripherals
     # underneath — the display node lives at /arm-io/clcd on real iOS.
     clcd = node([('name', b'clcd\0'), ('compatible', b'clcd,exynos4210\0'),
+                 ('device_type', b'clcd\0'),
                  ('reg', struct.pack('<II', 0x11C00000, 0x10000))])
     armio = node([('name', b'arm-io\0'), ('compatible', b'arm-io,exynos4210\0'),
+                  ('device_type', b'arm-io\0'),
                   ('#address-cells', struct.pack('<I', 1)),
                   ('#size-cells', struct.pack('<I', 1)),
                   ('ranges', b'')], [clcd])
