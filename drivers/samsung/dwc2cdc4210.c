@@ -191,7 +191,7 @@ static const uint8_t dev_desc[] = {
 	1
 };
 
-static const uint8_t cfg_desc[] = {
+static uint8_t cfg_desc[] = {
 	9, 2, 67, 0, 2, 1, 0, 0x80, 250 >> 1,	/* cfg hdr, 2 ifaces, bus-pow 500mA? (fa=125*2) */
 	/* iface0: CDC comm */
 	9, 4, 0, 0, 1, 2, 2, 1, 0,
@@ -204,7 +204,7 @@ static const uint8_t cfg_desc[] = {
 	/* union functional */
 	5, 0x24, 6, 0, 1,
 	/* EP2 IN interrupt (never serviced) */
-	7, 5, 0x82, 3, 8, 0, 255,
+	7, 5, 0x82, 3, 8, 0, 16,
 	/* iface1: CDC data */
 	9, 4, 1, 0, 2, 10, 0, 0, 0,
 	/* EP1 IN bulk */
@@ -234,7 +234,8 @@ static const uint8_t str2[] = {
 	'L',0,'O',0,'G',0
 };
 static const uint8_t str3[] = {
-	20, 3, 'S',0,'2',0,'I',0,'9',0,'1',0,'0',0,'0',0,'-',0,'1',0
+	24, 3, 'S',0,'2',0,'I',0,'9',0,'1',0,'0',0,'0',0,'-',0,
+	'O',0,'S',0,'6',0
 };
 
 /* ---------------- state ---------------- */
@@ -242,6 +243,7 @@ static const uint8_t str3[] = {
 static int usb_ok;
 static int enumerated;		/* ENUMDONE seen */
 static int configured;		/* SET_CONFIGURATION seen */
+static unsigned int bulk_mps = 64;
 static int host_open;		/* SET_CONTROL_LINE_STATE seen (port open) */
 static int ep1_busy;		/* IN transfer in flight on EP1 */
 static int ep1_dbg;		/* one-shot DTXFSTS probe */
@@ -485,6 +487,9 @@ static void ep0_setup(void)
 			static uint8_t osc[sizeof(cfg_desc)];
 			memcpy(osc, cfg_desc, sizeof(osc));
 			osc[1] = 7;
+			unsigned int mps = bulk_mps == 512 ? 64 : 512;
+			osc[57] = osc[64] = mps & 255;
+			osc[58] = osc[65] = mps >> 8;
 			ep0_reply(osc, sizeof(osc), wl);
 			goto tail;
 		}
@@ -504,14 +509,14 @@ static void ep0_setup(void)
 		 * MPS 64, DATA0) but let ep1_kick set EPENA per packet.
 		 * S-Boot's 0x84088840 assumed DMA and TXFNUM=0. */
 		DIEPCTL(1) = DXEPCTL_EPTYPE(2) | DXEPCTL_USBACTEP |
-			DXEPCTL_MPS(64) | (1 << 22) /* TXFNUM=1 */ |
+			DXEPCTL_MPS(bulk_mps) | (1 << 22) /* TXFNUM=1 */ |
 			DXEPCTL_SETD0PID;
 		printk(KERN_INFO, "usbcdc: ep1 ctl=%08x txf=%08x dtx=%08x\n",
 		       DIEPCTL(1), DPTXFSIZ(1), DTXFSTS(1));
 		DIEPCTL(2) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(3) |
 			DXEPCTL_MPS(8) | DXEPCTL_SNAK;
 		DOEPCTL(1) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(2) |
-			DXEPCTL_MPS(64) | DXEPCTL_EPENA | DXEPCTL_CNAK;
+			DXEPCTL_MPS(bulk_mps) | DXEPCTL_EPENA | DXEPCTL_CNAK;
 		configured = 1;
 		ep0_status_in();
 		goto tail;
@@ -593,10 +598,10 @@ static void ep1_kick(void)
 	DIEPTSIZ(1) = (1 << 19) | n | 0x20000000;
 	size_set = DIEPTSIZ(1);
 
-	/* Keep the 21:49 FIFO-before-enable experiment while measuring
-	 * each phase. A zero PKTCNT readback alone does not prove a ZLP
-	 * reached the host. The reference s3c-hsotg actually enables the
-	 * endpoint BEFORE its PIO FIFO write. No printk between stages. */
+	/* Match s3c-hsotg and the kernel: TSIZ -> EPENA -> FIFO. With
+	 * HS MPS512, each <=64-byte log packet is explicitly a short packet. */
+	DIEPCTL(1) = (DIEPCTL(1) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
+		DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK;
 	for (unsigned int i = 0; i < (n + 3) / 4; i++) {
 		w = (uint32_t)pkt[i * 4] | ((uint32_t)pkt[i * 4 + 1] << 8) |
 		    ((uint32_t)pkt[i * 4 + 2] << 16) |
@@ -605,8 +610,6 @@ static void ep1_kick(void)
 	}
 	size_fifo = DIEPTSIZ(1);
 	space_fifo = DTXFSTS(1);
-	DIEPCTL(1) = (DIEPCTL(1) & ~(DXEPCTL_EPDIS | DXEPCTL_SNAK |
-		DXEPCTL_STALL)) | DXEPCTL_EPENA | DXEPCTL_CNAK;
 	DIEPINT(1) = DXEPINT_INTKNTXFEMP;	/* clear knock, like s3c-hsotg */
 	if (ep1_dbg < 8) {
 		/* Capture before printk can delay servicing the next event. */
@@ -643,6 +646,9 @@ void usbcdc_poll(void)
 		dev_soft_init();
 	if (st & GINTSTS_ENUMDONE) {	/* 0x2000 */
 		enumerated = 1;
+		bulk_mps = ((DSTS >> 1) & 3) == 0 ? 512 : 64;
+		cfg_desc[57] = cfg_desc[64] = bulk_mps & 255;
+		cfg_desc[58] = cfg_desc[65] = bulk_mps >> 8;
 		/* S-Boot reads DSTS enum speed then patches descriptor
 		 * MPS; our MPS stays 64 (legal for FS too). */
 		printk(KERN_INFO, "usbcdc: enumdone dsts=%08x\n", DSTS);

@@ -83,11 +83,31 @@ static uint32_t parse_atag_fb(void)
 
 int i9100_init(void)
 {
+	volatile uint32_t *trace = (volatile uint32_t *)0x10020818;
+	volatile uint32_t *cell = (volatile uint32_t *)0x7ffe0000;
+	uint32_t previous = trace[0], reason = trace[1];
+	uint32_t ddr_valid = cell[0] == 0xcafebabeU && cell[1] <= 0xffffU;
+	uint32_t ddr_stage = ddr_valid ? cell[1] : 0;
+	uint32_t ddr_reason = ddr_valid ? cell[2] : 0;
+	uint32_t pc = ddr_valid ? cell[3] : 0;
+	/* Consume the previous record before starting another attempt. */
+	cell[0] = 0;
+	trace[0] = 0x77660001U;
+	trace[1] = 0;
+	__asm__ __volatile__("dsb sy" ::: "memory");
 	volatile uint32_t *fimd = (volatile uint32_t *)0x11C00000;
 	volatile uint32_t *sysreg = (volatile uint32_t *)0x10010000;
 
 	/* Enable FIMD bypass in SYSREG */
 	sysreg[0x210 / 4] |= (1 << 1);
+	/* QEMU has no S-Boot panel initialization. Leaving VIDTCON2 at
+	 * reset makes its global surface 1x1 while window 0 is 480x800,
+	 * which corrupts the 6.2 FIMD model's host-side framebuffer. */
+	if (!i9100_is_real_hardware() && fimd[0x18 / 4] == 0) {
+		fimd[0x10 / 4] = (1U << 16) | (27U << 8);
+		fimd[0x14 / 4] = (15U << 16) | (15U << 8) | 1U;
+		fimd[0x18 / 4] = ((FB_HEIGHT - 1) << 11) | (FB_WIDTH - 1);
+	}
 
 	uint32_t live_buf = fimd[0xA0 / 4];
 	if (live_buf >= 0x40000000 && live_buf < 0x80000000) {
@@ -148,6 +168,12 @@ int i9100_init(void)
 	 * usbcon_write() hook also services EP0 on every printk. */
 	usbcdc4210_init();
 #endif
+	if ((previous & 0xffff0000U) == 0x77660000U)
+		printk(KERN_INFO, "i9100: previous stage=%08x reason=%08x pc=%08x\n",
+		       previous, reason, pc);
+	else if (ddr_valid)
+		printk(KERN_INFO, "i9100: previous DDR stage=%08x reason=%08x pc=%08x\n",
+		       ddr_stage, ddr_reason, pc);
 
 	return 0;
 }

@@ -45,9 +45,11 @@ size_t lz4_decompress(const uint8_t *in, size_t inlen, uint8_t *out,
 		if (ll == 15) {
 			uint8_t b;
 			do {
+				if (ip == ie)
+					return 0;
 				b = *ip++;
 				ll += b;
-			} while (b == 255 && ip < ie);
+			} while (b == 255);
 		}
 		if (ll > (size_t)(ie - ip) || ll > (size_t)(oe - op)) {
 			fb_mark_asm(0x110000, 0xFFFF3333); /* red */
@@ -56,7 +58,7 @@ size_t lz4_decompress(const uint8_t *in, size_t inlen, uint8_t *out,
 			    (unsigned)(ip - in), (unsigned)ll,
 			    (unsigned)(ie - ip), (unsigned)(op - out),
 			    (unsigned)(oe - op));
-			return (__LINE__);
+			return 0;
 		}
 		/* Byte copy ONLY: __memcpy_arm issues word loads at
 		 * arbitrary alignments, which aborts under SCTLR.A=1
@@ -73,6 +75,8 @@ size_t lz4_decompress(const uint8_t *in, size_t inlen, uint8_t *out,
 
 		/* Byte loads ONLY: gcc merges these into LDRH, which faults
 		 * on odd addresses when SCTLR.A=1 (S-Boot handover state). */
+		if ((size_t)(ie - ip) < 2)
+			return 0;
 		volatile const uint8_t *vip = ip;
 		size_t off = (size_t)vip[0] | ((size_t)vip[1] << 8);
 		ip += 2;
@@ -82,23 +86,25 @@ size_t lz4_decompress(const uint8_t *in, size_t inlen, uint8_t *out,
 		    "lz4bad O: tok=%02x off=%u op=%u ip=%u\n",
 			    tok, (unsigned)off, (unsigned)(op - out),
 			    (unsigned)(ip - in));
-			return (__LINE__);
+			return 0;
 		}
 
 		size_t ml = tok & 0xF;
 		if (ml == 15) {
 			uint8_t b;
 			do {
+				if (ip == ie)
+					return 0;
 				b = *ip++;
 				ml += b;
-			} while (b == 255 && ip < ie);
+			} while (b == 255);
 		}
 		ml += 4;
 		if (ml > (size_t)(oe - op)) {
 			fb_mark_asm(0x110000, 0xFF33FFFF); /* cyan */
 			printk(6, "lz4bad M: ml=%u op=%u\n",
 			    (unsigned)ml, (unsigned)(op - out));
-			return (__LINE__);
+			return 0;
 		}
 
 		volatile const uint8_t *mp = op - off;

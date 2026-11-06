@@ -233,6 +233,9 @@ void arch_load_kernel_xnu(void *kernel, void *dt, void *ramdisk)
 	printk(KERN_INFO, "xnu: SD boot not available, using payload\n");
 #endif
 	stage_payloads(&kernel, &dt, &ramdisk);
+#ifdef CONFIG_SAMSUNG_I9100
+	*(volatile unsigned int *)0x10020818 = 0x77660002U;
+#endif
 	printk(KERN_INFO, "xnu: staged payload at %08x\n", (unsigned int)kernel);
 
 
@@ -499,6 +502,9 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 				;
 		}
 		printk(KERN_INFO, "xnu: decoded %u bytes to 0x%08x\n", ksize, load_pa);
+#ifdef CONFIG_SAMSUNG_I9100
+		*(volatile unsigned int *)0x10020818 = 0x77660003U;
+#endif
 	}
 #else
 	memcpy((void *)load_pa, kernel, ksize);
@@ -853,6 +859,10 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 			printk(KERN_INFO, "xnu: jumping to %08x now\n",
 			       load_pa + entry_off);
 		}
+#endif
+#ifdef CONFIG_SAMSUNG_I9100
+		*(volatile unsigned int *)0x10020818 = 0x77660004U;
+		__asm__ __volatile__("dsb sy" ::: "memory");
 #endif
 		jump_to_xnu(load_pa + entry_off, ba_pa);
 	}

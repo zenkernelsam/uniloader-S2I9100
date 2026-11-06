@@ -1,0 +1,14 @@
+LIBRARY KERNEL32.dll
+EXPORTS
+GetCommandLineW
+CreateFileW
+ReadFile
+WriteFile
+FlushFileBuffers
+CloseHandle
+GetLastError
+GetTickCount64
+GetStdHandle
+CreateMutexW
+ExitProcess
+SetCommTimeouts

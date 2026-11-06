@@ -6,6 +6,8 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 def run(arguments, cwd):
@@ -21,13 +23,22 @@ def main():
     repo = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--kernel-blob', type=Path)
     parser.add_argument('sources', nargs='*')
     args = parser.parse_args()
     output = args.output.resolve()
     if not output.is_relative_to(repo / 'out'):
         parser.error('Output must be inside the loader out directory')
     output.mkdir(parents=True, exist_ok=True)
+    if args.kernel_blob:
+        blob = args.kernel_blob.resolve()
+        if not blob.is_relative_to(repo / 'out') or not blob.is_file():
+            parser.error('Kernel blob must be a file inside loader out')
+        if 'arch/arm/start.S' not in args.sources:
+            parser.error('A new blob requires recompiling arch/arm/start.S')
     replacements = {}
+    head = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'], cwd=repo, text=True).strip()
+    label = f'({head}) - date ' + datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S')
     for source_name in args.sources:
         source = Path(source_name)
         if source.is_absolute() or '..' in source.parts or source.suffix not in ('.c', '.S'):
@@ -36,6 +47,11 @@ def main():
         cmdfile = repo / original.parent / ('.' + original.name + '.cmd')
         command = shlex.split(cmdfile.read_text().splitlines()[0].split(':=', 1)[1])
         command = [arg for arg in command if not arg.startswith('-Wp,-MD,')]
+        command = [arg for arg in command if not arg.startswith('-DVER_TAG=')]
+        if source.suffix == '.c':
+            command.append('-DVER_TAG="' + label + '"')
+        if source_name == 'arch/arm/start.S' and args.kernel_blob:
+            command.append('-DI9100_KERNEL_BLOB="' + str(blob) + '"')
         new_object = output / original
         new_object.parent.mkdir(parents=True, exist_ok=True)
         command[command.index('-o') + 1] = str(new_object)
@@ -44,7 +60,7 @@ def main():
 
     # Preserve the archive member list, replacing only newly built members.
     archives = []
-    for group in ('drivers', 'lib', 'board', 'soc'):
+    for group in ('soc', 'board', 'drivers', 'lib'):
         original = repo / group / 'lib.a'
         members = subprocess.check_output(['arm-none-eabi-ar', 't', original], text=True).splitlines()
         objects = []

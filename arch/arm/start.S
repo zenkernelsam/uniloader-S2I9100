@@ -364,7 +364,10 @@ boot_reg_r2:
 .section .payload, "ax", %progbits
 .globl _kernel_start
 _kernel_start:
-	.incbin "blob/Image"
+#ifndef I9100_KERNEL_BLOB
+#define I9100_KERNEL_BLOB "blob/Image"
+#endif
+	.incbin I9100_KERNEL_BLOB
 .globl _kernel_end
 _kernel_end:
 
