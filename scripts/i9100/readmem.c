@@ -1,5 +1,6 @@
 /* Windows read-memory client for the kernel I9CTL1 maintenance channel.
- * Sends "I9CTL1 <seq> read-memory <pa8> <len8>\n", waits for the
+ * Sends one or more "I9CTL1 <seq> read-memory <pa8> <len8>\n" requests
+ * (kernel stages at most 32 KiB per request), waits for each
  * "I9CTL1 <seq> OK DATA <pa8> <len8>\n" header, then writes exactly <len>
  * raw payload bytes to the output file. Same no-CRT/no-SetCommState style
  * as rawcom.c: one open, timeouts only, no retries. */
@@ -91,8 +92,8 @@ static int prefix(const char *s)
     while(s[i]&&line[i]==s[i])i++;
     return !s[i];
 }
-/* Feed one byte; returns 1 when the DATA header just completed,
- * 2 for an ERR reply, else 0. */
+/* Feed one byte; returns 1 when the DATA header completed, 2 for an ERR
+ * reply, 3 when any other reply line finished (inspect line[]). */
 static int feed(unsigned char c)
 {
     if(!stage){
@@ -104,7 +105,7 @@ static int feed(unsigned char c)
     if(c=='\n'){
         int r;
         line[line_at]=0;
-        r=prefix("OK DATA ")?1:prefix("ERR")?2:0;
+        r=prefix("OK DATA ")?1:prefix("ERR")?2:3;
         stage=0;mark_at=0;
         return r;
     }
@@ -125,8 +126,8 @@ static DWORD run(void)
     if(p[0]!='C'||p[1]!='O'||p[2]!='M'||!p[3])return 2;
     unsigned i=3;
     for(;p[i];i++)if(p[i]<'0'||p[i]>'9'||i>=20)return 2;
-    unsigned addr=hexw(args[2]), len=hexw(args[3]);
-    if(addr==0xffffffffU||!len||len>32768)return 2;
+    unsigned addr=hexw(args[2]), total=hexw(args[3]);
+    if(addr==0xffffffffU||!total||total>0x40000000U)return 2;
 
     HANDLE lock=CreateMutexW(0,1,(const WCHAR *)L"Local\\I9100OneShotRawReader");
     if(!lock||GetLastError()==183){if(lock)CloseHandle(lock);return 33;}
@@ -142,71 +143,108 @@ static DWORD run(void)
       if(!SetCommTimeouts(h,&t)){result=GetLastError();msg("TIMEOUT_ERROR code=",result);goto closed;} }
 
     unsigned seq=(unsigned)GetTickCount64();
-    if(!seq||seq>0xfffffffcU)seq=1;
-    mark_setup(seq);
-    { static const char hex[]="0123456789abcdef";
-      char wire[64]; unsigned n=0;
-      const char *s="I9CTL1 "; while(*s)wire[n++]=*s++;
-      for(i=0;i<8;i++)wire[n++]=hex[(seq>>(28-i*4))&15];
-      wire[n++]=' ';
-      s="read-memory "; while(*s)wire[n++]=*s++;
-      for(i=0;i<8;i++)wire[n++]=hex[(addr>>(28-i*4))&15];
-      wire[n++]=' ';
-      for(i=0;i<8;i++)wire[n++]=hex[(len>>(28-i*4))&15];
-      wire[n++]='\n';
-      DWORD w=0;
-      if(!WriteFile(h,wire,n,&w,0)||w!=n){
-          result=GetLastError();if(!result)result=41;
-          msg("SEND_ERROR code=",result);goto closed;
-      }
-    }
-    msg("SENT addr=",addr);msg("SENT len=",len);
+    if(!seq||seq>0xfffff000U)seq=1;
+    static const char hex[]="0123456789abcdef";
 
-    /* Wait for header then collect exactly len bytes. Progress every 64K. */
-    unsigned got=0,header=0,next_report=65536;
-    U64 deadline=GetTickCount64()+600000; /* 10 min ceiling */
-    U64 last_rx=GetTickCount64();
-    while(got<len){
-        DWORD n=0,w=0;
-        if(!ReadFile(h,bytes,sizeof(bytes),&n,0)){
-            result=GetLastError();msg("READ_ERROR code=",result);goto closed;
+    /* The kernel drops command bytes that arrive while a reply/log packet
+     * is in flight, so every phase retries with a fresh seq until a reply
+     * line is seen. Phase 1: ping until OK control=1. */
+    char wire[64];
+    unsigned ready=0;
+    for(unsigned attempt=0;attempt<10 && !ready;attempt++){
+        mark_setup(++seq);
+        unsigned wn=0; const char *s="I9CTL1 "; while(*s)wire[wn++]=*s++;
+        for(i=0;i<8;i++)wire[wn++]=hex[(seq>>(28-i*4))&15];
+        wire[wn++]=' ';
+        s="ping"; while(*s)wire[wn++]=*s++;
+        wire[wn++]='\n';
+        DWORD w=0;
+        if(!WriteFile(h,wire,wn,&w,0)||w!=wn){
+            result=GetLastError();if(!result)result=41;
+            msg("SEND_ERROR code=",result);goto closed;
         }
-        if(!n){
-            if(GetTickCount64()>deadline||GetTickCount64()-last_rx>120000){
-                msg(header?"STALL got=":"NO_HEADER got=",got);
-                result=header?43:44;goto closed;
+        U64 until=GetTickCount64()+4000;
+        while(GetTickCount64()<until){
+            DWORD n=0;
+            if(!ReadFile(h,bytes,sizeof(bytes),&n,0)){
+                result=GetLastError();msg("READ_ERROR code=",result);goto closed;
             }
-            continue;
+            for(i=0;i<n;i++)if(feed(bytes[i])==3 && prefix("OK control=")){ready=1;break;}
+            if(ready)break;
         }
-        last_rx=GetTickCount64();
-        if(!header){
-            for(i=0;i<n;i++){
-                int r=feed(bytes[i]);
-                if(r==2){msg("ERR_REPLY line_at=",line_at);
-                    result=45;goto closed;}
-                if(r==1){header=1;msg("HEADER pos=",i);break;}
+    }
+    if(!ready){msg("NO_CONTROL attempts=",10);result=46;goto closed;}
+    msg("CONTROL_UP seq=",seq);
+
+    /* Kernel stages 32 KiB per request; loop until the whole range is read. */
+    for(unsigned done=0;done<total;){
+        unsigned chunk=total-done>32768?32768:total-done;
+        unsigned pa=addr+done;
+        unsigned got=0,header=0,sent=0;
+        for(unsigned attempt=0;attempt<8;attempt++){
+            mark_setup(++seq);
+            unsigned wn=0; const char *s="I9CTL1 "; while(*s)wire[wn++]=*s++;
+            for(i=0;i<8;i++)wire[wn++]=hex[(seq>>(28-i*4))&15];
+            wire[wn++]=' ';
+            s="read-memory "; while(*s)wire[wn++]=*s++;
+            for(i=0;i<8;i++)wire[wn++]=hex[(pa>>(28-i*4))&15];
+            wire[wn++]=' ';
+            for(i=0;i<8;i++)wire[wn++]=hex[(chunk>>(28-i*4))&15];
+            wire[wn++]='\n';
+            DWORD w=0;
+            if(!WriteFile(h,wire,wn,&w,0)||w!=wn){
+                result=GetLastError();if(!result)result=41;
+                msg("SEND_ERROR code=",result);goto closed;
             }
-            if(!header)continue;
-            /* remaining bytes in this buffer are payload */
-            unsigned start=i+1,avail=n-start;
-            if(avail){
-                DWORD w2=0;unsigned take=avail>len?len:avail;
-                if(!WriteFile(out,bytes+start,take,&w2,0)||w2!=take){
+            sent=1;
+            U64 last_rx=GetTickCount64(),giveup=last_rx+8000;
+            while(got<chunk){
+                DWORD n=0,w2=0;
+                if(!ReadFile(h,bytes,sizeof(bytes),&n,0)){
+                    result=GetLastError();msg("READ_ERROR code=",result);goto closed;
+                }
+                if(!n){
+                    if(GetTickCount64()>giveup)break;
+                    continue;
+                }
+                last_rx=GetTickCount64();
+                giveup=last_rx+30000;
+                if(!header){
+                    for(i=0;i<n;i++){
+                        int r=feed(bytes[i]);
+                        if(r==2){msg("ERR_REPLY at=",pa);
+                            result=45;goto closed;}
+                        if(r==1){header=1;break;}
+                    }
+                    if(!header)continue;
+                    unsigned start=i+1,avail=n-start;
+                    if(avail){
+                        unsigned take=avail>chunk?chunk:avail;
+                        if(!WriteFile(out,bytes+start,take,&w2,0)||w2!=take){
+                            result=GetLastError();msg("FILE_ERROR code=",result);goto closed;
+                        }
+                        got+=take;
+                    }
+                    continue;
+                }
+                unsigned take=n>chunk-got?chunk-got:n;
+                if(!WriteFile(out,bytes,take,&w2,0)||w2!=take){
                     result=GetLastError();msg("FILE_ERROR code=",result);goto closed;
                 }
                 got+=take;
             }
-            continue;
+            if(got>=chunk)break;      /* chunk complete */
+            if(header){               /* mid-payload stall: retry whole chunk */
+                msg("STALL retry got=",got);result=43;goto closed;
+            }
+            /* No header: command was dropped; resend with next seq. */
         }
-        unsigned take=n>len-got?len-got:n;
-        if(!WriteFile(out,bytes,take,&w,0)||w!=take){
-            result=GetLastError();msg("FILE_ERROR code=",result);goto closed;
-        }
-        got+=take;
-        if(got>=next_report){msg("GOT bytes=",got);next_report+=65536;}
+        if(!sent||got<chunk){msg("GIVEUP at=",pa);result=47;goto closed;}
+        done+=got;
+        if((done&0x7ffff)==0||done==total)msg("GOT bytes=",done);
+        FlushFileBuffers(out);
     }
-    FlushFileBuffers(out);
-    msg("DONE bytes=",got);
+    msg("DONE bytes=",total);
 closed:
     CloseHandle(h);
 done:
