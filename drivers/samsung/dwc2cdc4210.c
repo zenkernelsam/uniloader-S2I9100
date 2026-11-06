@@ -674,7 +674,7 @@ void usbcdc_poll(void)
 			unsigned int i;
 			uint32_t w;
 			for (i = 0; i < bc; i += 4)
-				w = FIFO_RD(0);	/* slave RX payload always uses FIFO0 */
+				w = FIFO_RD(ep);	/* baseline loader receive path */
 			(void)w;
 			if (ep == 0 && ep0_req == REQ_OUT) {
 				/* SET_LINE_CODING payload arrived;

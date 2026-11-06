@@ -143,6 +143,11 @@ void uart_puts(const char *s);
 #ifndef CONFIG_XNU_CMDLINE
 #define CONFIG_XNU_CMDLINE	"-v keepsyms=1 kprintf=1 debug=0x14e"
 #endif
+#ifdef I9100_CONTROL_BUILD
+#define I9100_EFFECTIVE_CMDLINE CONFIG_XNU_CMDLINE " i9100control=1 _i9100build=" I9100_CONTROL_TAG
+#else
+#define I9100_EFFECTIVE_CMDLINE CONFIG_XNU_CMDLINE
+#endif
 #ifndef CONFIG_XNU_CACHESLICE_TOP
 #define CONFIG_XNU_CACHESLICE_TOP	0x55E00000
 #endif
@@ -787,17 +792,9 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 	ba->deviceTreeP = (void *)(dt_pa - phys_base + virt_base);
 	ba->deviceTreeLength = dtsize;
 
-	memcpy(ba->CommandLine, CONFIG_XNU_CMDLINE,
-	       sizeof(CONFIG_XNU_CMDLINE) - 1);
-#ifdef I9100_CONTROL_BUILD
-	/* Explicit opt-in for the maintenance validation package. */
-	{
-		static const char ctl[] = " i9100control=1 _i9100build=" I9100_CONTROL_TAG;
-		unsigned int len = strlen(ba->CommandLine);
-		if (len + sizeof(ctl) <= sizeof(ba->CommandLine))
-			memcpy(ba->CommandLine + len, ctl, sizeof(ctl));
-	}
-#endif
+	/* Keep the proven one-copy bootargs path; compose opt-ins at compile time. */
+	memcpy(ba->CommandLine, I9100_EFFECTIVE_CMDLINE,
+	       sizeof(I9100_EFFECTIVE_CMDLINE) - 1);
 #ifdef CONFIG_SAMSUNG_I9100
 	/* Preserve the bootloader's board revision, not boot_args.Revision (ABI).
 	 * The XNU power driver must select MAX8997 versus MAX8922 correctly. */
