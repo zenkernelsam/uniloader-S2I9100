@@ -21,10 +21,15 @@ def device_tree():
     # iOS 7 MobileGestalt reads /chosen/display-scale as four-byte native
     # uint32 OSData. Missing data becomes scale 0, and GraphicsServices then
     # divides pixel dimensions by zero. This is integer 1, not float 1.0.
+    # backboardd also reads /chosen/display-rotation (u32 angle); absent read
+    # logs as a miss on the live path probe, so publish an explicit zero.
     chosen = node([('name', b'chosen\0'), ('firmware-version', b'uniLoader-i9100\0'),
-                   ('debug-enabled', b'\1'), ('display-scale', struct.pack('<I', 1))])
+                   ('debug-enabled', b'\1'), ('display-scale', struct.pack('<I', 1)),
+                   ('display-rotation', struct.pack('<I', 0))])
+    # backboardd reads region-info on the machine node for MobileGestalt.
     return node([('name', b'device-tree\0'), ('model', b'Samsung Galaxy S2 (GT-I9100)\0'),
-                 ('compatible', b'samsung,i9100\0samsung,exynos4210\0')], [chosen])
+                 ('compatible', b'samsung,i9100\0samsung,exynos4210\0'),
+                 ('region-info', b'LL/A\0')], [chosen])
 
 
 def main():
