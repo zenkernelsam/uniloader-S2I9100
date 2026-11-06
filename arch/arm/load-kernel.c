@@ -789,6 +789,15 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 
 	memcpy(ba->CommandLine, CONFIG_XNU_CMDLINE,
 	       sizeof(CONFIG_XNU_CMDLINE) - 1);
+#ifdef I9100_CONTROL_BUILD
+	/* Explicit opt-in for the maintenance validation package. */
+	{
+		static const char ctl[] = " i9100control=1 i9100build=" I9100_CONTROL_TAG;
+		unsigned int len = strlen(ba->CommandLine);
+		if (len + sizeof(ctl) <= sizeof(ba->CommandLine))
+			memcpy(ba->CommandLine + len, ctl, sizeof(ctl));
+	}
+#endif
 #ifdef CONFIG_SAMSUNG_I9100
 	/* Preserve the bootloader's board revision, not boot_args.Revision (ABI).
 	 * The XNU power driver must select MAX8997 versus MAX8922 correctly. */

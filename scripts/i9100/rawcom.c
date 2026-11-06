@@ -1,4 +1,4 @@
-/* Minimal Windows reader, cross-built in WSL. No CRT, WMI, SetCommState,
+/* Windows capture/control client, cross-built in WSL. No CRT, WMI, SetCommState,
  * DTR/RTS changes, retries or forced process termination. CreateFile can
  * still wait on usbser: keep one opener until device disconnects. */
 typedef unsigned long DWORD;
@@ -21,9 +21,12 @@ API void ExitProcess(DWORD);
 struct Timeouts { DWORD interval,multiplier,constant,write_multiplier,write_constant; };
 API BOOL SetCommTimeouts(HANDLE,struct Timeouts *);
 #define INVALID ((HANDLE)(long long)-1)
-static WCHAR args[5][1024], path[1200], device[32];
+static WCHAR args[8][1024], path[1200], device[32];
 static unsigned char bytes[4096];
 static HANDLE events, capture;
+#include "control-session.h"
+static struct ControlSession protocol;
+static char verb[24], wire[64];
 
 static void text(HANDLE h,const char *s)
 { DWORD n=0,written; while(s[n])n++; WriteFile(h,s,n,&written,0); }
@@ -38,7 +41,7 @@ static void event(const char *label,U64 value)
 static int parse(void)
 {
     WCHAR *s=GetCommandLineW(); unsigned n=0;
-    while(*s&&n<5){
+    while(*s&&n<8){
         while(*s==' '||*s=='\t')s++;
         if(!*s)break;
         unsigned i=0,quote=0;
@@ -49,7 +52,7 @@ static int parse(void)
         }
         args[n++][i]=0;
     }
-    return n;
+    return *s ? 0 : (int)n;
 }
 static void filename(const WCHAR *suffix)
 {
@@ -62,7 +65,28 @@ static void filename(const WCHAR *suffix)
 static DWORD run(void)
 {
     int count=parse();
-    if(count!=4){text(GetStdHandle((DWORD)-11),"Usage: rawcom COMnumber seconds existing-output-directory\r\n");return 2;}
+    if(count!=4 && count!=6 && count!=8){text(GetStdHandle((DWORD)-11),"Usage: rawcom COMnumber seconds existing-output-directory [-Send ping|status|reboot|reboot-download [-Expect 16hex-build-tag]]\r\nSend: wait READY, ping, capture, then send final command; one open, no retries.\r\n");return 2;}
+    if(count>=6) {
+        const WCHAR *flag=(const WCHAR *)L"-Send";
+        unsigned j=0; while(flag[j]&&flag[j]==args[4][j])j++;
+        if(flag[j]||args[4][j])return 2;
+        for(j=0;args[5][j];j++) {
+            if(j>=sizeof(verb)-1||args[5][j]>127)return 2;
+            verb[j]=(char)args[5][j];
+        }
+        if(!same(verb,"ping")&&!same(verb,"status")&&!same(verb,"reboot")&&!same(verb,"reboot-download"))return 2;
+    }
+    if(count==8) {
+        const WCHAR *flag=(const WCHAR *)L"-Expect";
+        unsigned j=0;while(flag[j]&&flag[j]==args[6][j])j++;
+        if(flag[j]||args[6][j])return 2;
+        for(j=0;j<16;j++) {
+            WCHAR c=args[7][j];
+            if(!((c>='0'&&c<='9')||(c>='a'&&c<='f')))return 2;
+            protocol.expected_tag[j]=(char)c;
+        }
+        if(args[7][16])return 2;
+    }
     WCHAR *p=args[1];
     if(p[0]!='C'||p[1]!='O'||p[2]!='M'||!p[3])return 2;
     unsigned i=3;
@@ -85,18 +109,47 @@ static DWORD run(void)
     for(i=0;p[i];i++)device[4+i]=p[i];device[4+i]=0;
     U64 begin=GetTickCount64(),total=0;
     event("OPEN_BEGIN tick_ms=",begin);
-    HANDLE h=CreateFileW(device,0x80000000,0,0,3,0,0);
+    HANDLE h=CreateFileW(device,count>=6?0xc0000000:0x80000000,0,0,3,0,0);
     DWORD result=0;
     if(h==INVALID){result=GetLastError();event("OPEN_ERROR code=",result);goto done;}
     event("OPEN_OK elapsed_ms=",GetTickCount64()-begin);
-    struct Timeouts t={0,0,250,0,0};
+    struct Timeouts t={0,0,250,0,1000};
     if(!SetCommTimeouts(h,&t)){result=GetLastError();event("TIMEOUT_SETUP_ERROR code=",result);goto closed;}
     begin=GetTickCount64();
-    while(GetTickCount64()-begin<(U64)seconds*1000){
+    unsigned phase=count>=6?0:2, seq=(unsigned)GetTickCount64();
+    if(!seq || seq>0xfffffffcU) seq=1;
+    U64 deadline=begin+(count>=6?90000:(U64)seconds*1000);
+    while(1){
+        U64 now=GetTickCount64();
+        if(count>=6 && (protocol.rejected || (now>=deadline && phase!=2))) {
+            result=40;event("CONTROL_TIMEOUT_OR_REJECT phase=",phase);break;
+        }
+        int send=0;
+        if(count>=6 && phase==0 && protocol.ready && protocol.tag_seen) {
+            event("CONTROL_READY tick_ms=",now);send=1;phase=1;deadline=now+10000;
+        } else if(count>=6 && phase==1 && protocol.matched) {
+            event("PING_OK tick_ms=",now);phase=2;deadline=now+(U64)seconds*1000;
+        } else if(phase==2 && now>=deadline) {
+            if(count==4 || same(verb,"ping"))break;
+            send=1;phase=3;deadline=now+10000;
+        } else if(count>=6 && phase==3 && protocol.matched) {
+            event("COMMAND_ACK tick_ms=",now);break;
+        }
+        if(send) {
+            DWORD written=0;
+            unsigned len=control_request(&protocol,wire,++seq,phase==1?"ping":verb);
+            event("SEND_BEGIN sequence=",seq);
+            if(!WriteFile(h,wire,len,&written,0)||written!=len){
+                result=GetLastError();if(!result)result=41;
+                event("SEND_ERROR code=",result);break;
+            }
+            event("SEND_OK bytes=",written);
+        }
         DWORD n=0,w=0;
         if(!ReadFile(h,bytes,sizeof(bytes),&n,0)){result=GetLastError();event("READ_ERROR code=",result);break;}
         if(n){
-            if(!WriteFile(capture,bytes,n,&w,0)||w!=n){result=GetLastError();event("FILE_ERROR code=",result);break;}
+            if(!WriteFile(capture,bytes,n,&w,0)||w!=n){result=GetLastError();if(!result)result=42;event("FILE_ERROR code=",result);break;}
+            if(count>=6)for(unsigned j=0;j<n;j++)control_receive(&protocol,bytes[j]);
             total+=n;FlushFileBuffers(capture);event("RECEIVED total=",total);
         }
     }

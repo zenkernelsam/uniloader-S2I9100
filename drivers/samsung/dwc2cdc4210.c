@@ -515,6 +515,7 @@ static void ep0_setup(void)
 		       DIEPCTL(1), DPTXFSIZ(1), DTXFSTS(1));
 		DIEPCTL(2) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(3) |
 			DXEPCTL_MPS(8) | DXEPCTL_SNAK;
+		DOEPTSIZ(1) = (1u << 19) | bulk_mps;
 		DOEPCTL(1) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(2) |
 			DXEPCTL_MPS(bulk_mps) | DXEPCTL_EPENA | DXEPCTL_CNAK;
 		configured = 1;
@@ -674,7 +675,7 @@ void usbcdc_poll(void)
 			unsigned int i;
 			uint32_t w;
 			for (i = 0; i < bc; i += 4)
-				w = FIFO_RD(ep);	/* drain payload */
+				w = FIFO_RD(0);	/* slave RX payload always uses FIFO0 */
 			(void)w;
 			if (ep == 0 && ep0_req == REQ_OUT) {
 				/* SET_LINE_CODING payload arrived;
@@ -682,6 +683,9 @@ void usbcdc_poll(void)
 				ep0_req = REQ_NONE;
 				ep0_arm_zlp();
 			}
+		} else if (ps == PKTSTS_OUTDONE && ep == 1 && configured) {
+			DOEPTSIZ(1) = (1u << 19) | bulk_mps;
+			DOEPCTL(1) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
 		}
 		/* 1 goutnak / 3 outdone / 4 setupdone: ignored like S-Boot */
 		/* S-Boot re-arms EP0-OUT on every OUT-EP0 event.  Do it

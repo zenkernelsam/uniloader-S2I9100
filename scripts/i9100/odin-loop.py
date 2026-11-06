@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+"""Reviewed, one-shot KERNEL iteration plans. Default commands are offline.
+
+Real-device commands: observe-download, execute. No driver changes, partition
+options, process killing, serial retries, or automatic failed-run recovery.
+"""
+import argparse
+from contextlib import contextmanager, ExitStack
+from datetime import datetime, timezone
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import time
+import uuid
+
+sys.dont_write_bytecode = True
+REPO = Path(__file__).resolve().parents[2]
+ROOT = REPO.parents[1]
+OUT = REPO / 'out/automation'
+CDC = r'USB\VID_0525&PID_A4A7\S2I9100-OS6'
+HEIMDALL_SHA = '4ddae318a50509a1c5ed8f23dc2fadda2a7a4ef913b0cac47fef1b27843db708'
+DLLS = ('libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll')
+_spec = importlib.util.spec_from_file_location('i9100_log', Path(__file__).with_name('classify-log.py'))
+_logs = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_logs)
+
+
+def require(ok, message):
+    if not ok:
+        raise ValueError(message)
+
+
+def sha(path):
+    with Path(path).open('rb') as f:
+        return hashlib.file_digest(f, 'sha256').hexdigest()
+
+
+def save(path, value):
+    with Path(path).open('x', encoding='utf-8') as f:
+        json.dump(value, f, indent=2, ensure_ascii=False)
+        f.write('\n')
+
+
+def confined(path, parent):
+    path, parent = Path(path).resolve(), Path(parent).resolve()
+    require(path.is_relative_to(parent), f'Path must be inside {parent}: {path}')
+    return path
+
+
+def image_check(path):
+    size = path.stat().st_size
+    require(0x30 <= size < 8 * 1024 * 1024, 'KERNEL image size outside whitelist')
+    with path.open('rb') as f:
+        header = f.read(0x30)
+    magic, begin, end = struct.unpack_from('<III', header, 0x24)
+    require((magic, begin, end) == (0x016f2818, 0x40008000, 0x40008000 + size),
+            'Expected raw i9100 zImage; tar/PIT/other images are not accepted')
+
+
+def normalize_location(value):
+    return value.upper().split('#USBMI(')[0]
+
+
+def samsung(devices):
+    return [d for d in devices if re.match(r'^USB\\VID_04E8&PID_[0-9A-F]{4}\\', d['instance'].upper())]
+
+
+def cdc(devices):
+    matches = [d for d in devices if d['instance'].upper() == CDC]
+    require(len(matches) <= 1, 'Ambiguous CDC device')
+    if not matches:
+        return None
+    d = matches[0]
+    require(d['status'] == 'OK' and re.fullmatch(r'COM[0-9]+', d['port'] or ''),
+            'CDC device is not a healthy COM port')
+    return d
+
+
+def make_profile(devices):
+    candidates = samsung(devices)
+    require(len(candidates) == 1, 'Need exactly one physical Samsung USB device')
+    d = candidates[0]
+    require(d['status'] == 'OK' and d['location'] and d['hardware'], 'Incomplete device evidence')
+    return {'schema': 1, 'instance': d['instance'], 'hardware': d['hardware'],
+            'service': d['service'], 'location': normalize_location(d['location'])}
+
+
+def validate_profile(profile):
+    require(set(profile) == {'schema', 'instance', 'hardware', 'service', 'location'}, 'Invalid profile fields')
+    require(profile['schema'] == 1 and len(samsung([profile])) == 1, 'Not a Samsung USB profile')
+    require(profile['service'].lower() in ('winusb', 'libusbk', 'libusb0'),
+            'Download interface needs a separately approved Heimdall-compatible driver; no driver is changed here')
+    require(bool(profile['location']) and bool(profile['hardware']), 'Missing device identity/topology')
+
+
+def download(devices, profile):
+    actual = make_profile(devices)
+    require(actual == profile, f'Download identity/driver/topology changed: {actual}')
+    require(cdc(devices) is None, 'CDC and download device are simultaneously present')
+    return actual
+
+
+class Host:
+    def inventory(self):
+        require(os.name == 'nt', 'Device access runs only on Windows')
+        # PnP property enumeration only. Never query Win32_SerialPort.
+        script = r'''
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+$rows=@(Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -match '^USB\\VID_(0525|04E8)&' } | ForEach-Object {
+    $d=$_
+    $p=@(Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName 'DEVPKEY_Device_LocationPaths','DEVPKEY_Device_Service','DEVPKEY_Device_HardwareIds' -ErrorAction Stop)
+    $loc=@(($p|Where-Object KeyName -eq 'DEVPKEY_Device_LocationPaths').Data)
+    $hw=@(($p|Where-Object KeyName -eq 'DEVPKEY_Device_HardwareIds').Data)
+    [pscustomobject]@{instance=$d.InstanceId;status=[string]$d.Status;name=$d.FriendlyName;
+        port=[regex]::Match([string]$d.FriendlyName,'\bCOM[0-9]+\b').Value;
+        service=[string](($p|Where-Object KeyName -eq 'DEVPKEY_Device_Service').Data);
+        location=[string]($loc|Select-Object -First 1);hardware=[string]($hw|Select-Object -First 1)}
+})
+ConvertTo-Json -InputObject $rows -Compress -Depth 4
+'''
+        # Popen.wait timeout never kills a blocked child; no automatic re-query.
+        proc = subprocess.Popen(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            stdout, stderr = proc.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f'PnP query blocked, PID {proc.pid}; STOP, no kill/retry')
+        require(proc.returncode == 0, 'PnP query failed: ' + stderr.decode('utf-8', 'replace'))
+        return json.loads(stdout.decode('utf-8-sig'))
+
+    def run(self, argv, directory, timeout):
+        with (directory / 'stdout.txt').open('xb') as stdout, (directory / 'stderr.txt').open('xb') as stderr:
+            proc = subprocess.Popen(list(map(str, argv)), stdout=stdout, stderr=stderr, cwd=directory)
+            save(directory / 'process.json', {'pid': proc.pid, 'argv': list(map(str, argv))})
+            try:
+                result = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f'Process {proc.pid} exceeded deadline; state uncertain, NO kill/retry')
+        require(result == 0, f'Process failed ({result}); see {directory}')
+
+    def sleep(self):
+        time.sleep(1)
+
+
+class Journal:
+    def __init__(self, directory):
+        self.path = directory / 'timeline.jsonl'
+
+    def event(self, phase, **extra):
+        record = dict(time=datetime.now(timezone.utc).isoformat(), phase=phase, **extra)
+        with self.path.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+            f.flush()
+            os.fsync(f.fileno())
+        print(phase, extra, flush=True)
+
+
+def wait_for(host, predicate, seconds, label):
+    deadline = time.monotonic() + seconds
+    while True:
+        devices = host.inventory()
+        value = predicate(devices)
+        if value:
+            return value
+        require(time.monotonic() < deadline, f'Timeout: {label}; no retry')
+        host.sleep()
+
+
+def serial(host, plan, directory, device, verb, tag=None):
+    directory.mkdir()
+    args = [plan.parent / 'rawcom.exe', device['port'], str(plan.data['capture_seconds']), directory, '-Send', verb]
+    if tag:
+        args += ['-Expect', tag]
+    host.run(args, directory, plan.data['capture_seconds'] + 120)
+    events = (directory / 'events.txt').read_text()
+    require('PING_OK ' in events, 'Missing correlated kernel ping')
+    require(verb == 'ping' or 'COMMAND_ACK ' in events, 'Missing reboot acknowledgement')
+    require((directory / 'received.bin').stat().st_size > 0, 'Empty capture')
+    save(directory / 'log-analysis.json', _logs.classify((directory / 'received.bin').read_bytes()))
+
+
+class Plan:
+    def __init__(self, path, digest):
+        self.path = confined(path, OUT)
+        require(self.path.name == 'plan.json', 'Expected a plan.json snapshot')
+        self.parent = self.path.parent
+        require(sha(self.path) == digest, 'Plan SHA256 was not approved or changed')
+        self.data = json.loads(self.path.read_text())
+        d = self.data
+        require(set(d) == {'schema', 'partition', 'capture_seconds', 'control_tag', 'profile', 'files'}, 'Unexpected plan fields')
+        require(d['schema'] == 1 and d['partition'] == 'KERNEL', 'Only KERNEL is permitted')
+        require(type(d['capture_seconds']) == int and 1 <= d['capture_seconds'] <= 900, 'Bad capture duration')
+        require(re.fullmatch('[0-9a-f]{16}', d['control_tag']) is not None, 'Missing kernel identity')
+        require(set(d['files']) == {'zImage', 'rawcom.exe', 'heimdall.exe', *DLLS}, 'Unexpected snapshot files')
+        if d['profile'] is not None:
+            validate_profile(d['profile'])
+        self.verify()
+
+    def verify(self):
+        for name, digest in self.data['files'].items():
+            path = confined(self.parent / name, self.parent)
+            require(sha(path) == digest, 'Snapshot SHA256 changed: ' + name)
+        require(self.data['files']['heimdall.exe'] == HEIMDALL_SHA, 'Unreviewed Heimdall binary')
+        image_check(self.parent / 'zImage')
+        require(('i9100build=' + self.data['control_tag']).encode() in (self.parent / 'zImage').read_bytes(),
+                'Build identity is not embedded in this loader image')
+
+
+def create_plan(args):
+    image = confined(args.image, REPO / 'out')
+    image_check(image)
+    manifest = json.loads(image.with_name('manifest.json').read_text())
+    require(manifest.get('serial_control') is True, 'Use an explicitly control-enabled package')
+    require(manifest['artifacts']['zImage']['sha256'] == sha(image), 'Package manifest does not match image')
+    require(manifest['control_tag'] == manifest['artifacts']['mach_kernel']['sha256'][:16], 'Kernel tag mismatch')
+    profile = json.loads(confined(args.profile, ROOT).read_text()) if args.profile else None
+    if profile:
+        validate_profile(profile)
+    dest = OUT / ('plan-' + datetime.now().strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:8])
+    dest.mkdir(parents=True)
+    sources = {'zImage': image, 'rawcom.exe': REPO / 'out/one-shot/host/rawcom.exe'}
+    for name in ('heimdall.exe', *DLLS):
+        sources[name] = ROOT / 'assets/heimdall-win64' / name
+    for name, src in sources.items():
+        shutil.copyfile(src, dest / name)
+    data = {'schema': 1, 'partition': 'KERNEL', 'capture_seconds': args.seconds,
+            'control_tag': manifest['control_tag'], 'profile': profile,
+            'files': {name: sha(dest / name) for name in sources}}
+    save(dest / 'plan.json', data)
+    digest = sha(dest / 'plan.json')
+    Plan(dest / 'plan.json', digest)
+    print(json.dumps({'plan': str(dest / 'plan.json'), 'approve_plan_sha256': digest,
+                     'confirm_kernel_sha256': data['files']['zImage'], 'profile_present': bool(profile)}, indent=2))
+
+
+@contextmanager
+def host_lock():
+    require(os.name == 'nt', 'Execution requires Windows')
+    import msvcrt
+    OUT.mkdir(parents=True, exist_ok=True)
+    with (OUT / 'host.lock').open('a+b') as lock:
+        lock.seek(0)
+        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        try:
+            yield
+        finally:
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+@contextmanager
+def immutable_snapshots(plan):
+    # Deny write/delete while Heimdall opens the same snapshot for reading.
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    with ExitStack() as stack:
+        for name in ('plan.json', *plan.data['files']):
+            h = kernel.CreateFileW(str(plan.parent / name), 0x80000000, 1, None, 3, 0, None)
+            require(h != ctypes.c_void_p(-1).value, f'Cannot freeze {name}')
+            stack.callback(kernel.CloseHandle, h)
+        plan.verify()
+        yield
+
+
+def cycle(host, plan, mode, journal):
+    profile = plan.data['profile']
+    if mode != 'reboot-only':
+        require(profile is not None, 'Measure and approve a download profile first')
+    if mode != 'bootstrap':
+        device = cdc(host.inventory())
+        require(device is not None, 'Expected running command-enabled kernel')
+        require(not samsung(host.inventory()), 'Disconnect other Samsung USB devices')
+        if profile:
+            require(normalize_location(device['location']) == profile['location'], 'CDC moved to another USB port')
+        journal.event('CAPTURE_AND_REBOOT', device=device)
+        serial(host, plan, plan.parent / 'before', device, 'reboot-download')
+        journal.event('REBOOT_ACK')
+        wait_for(host, lambda ds: not cdc(ds), 30, 'CDC disconnect')
+        devices = wait_for(host, lambda ds: ds if samsung(ds) else None, 60, 'Samsung download enumeration')
+        observed = make_profile(devices)
+        require(observed['location'] == normalize_location(device['location']), 'New device is on a different USB port')
+        save(plan.parent / 'observed-download.json', observed)
+        journal.event('DOWNLOAD_OBSERVED', profile=observed)
+        if mode == 'reboot-only':
+            journal.event('DONE_REBOOT_ONLY')
+            return
+    download(host.inventory(), profile)
+    plan.verify()
+    journal.event('FLASH_KERNEL_BEGIN', sha256=plan.data['files']['zImage'])
+    flashdir = plan.parent / 'flash'
+    flashdir.mkdir()
+    # Fixed argv. No user partition names, PIT writes, or arbitrary options.
+    host.run([plan.parent / 'heimdall.exe', 'flash', '--KERNEL', plan.parent / 'zImage', '--stdout-errors'], flashdir, 180)
+    journal.event('FLASH_TOOL_OK')
+    wait_for(host, lambda ds: not samsung(ds), 60, 'download disconnect after flash')
+    device = wait_for(host, cdc, 120, 'new CDC boot')
+    require(normalize_location(device['location']) == profile['location'], 'Post-flash device topology changed')
+    journal.event('VERIFY_KERNEL', control_tag=plan.data['control_tag'])
+    serial(host, plan, plan.parent / 'after', device, 'ping', plan.data['control_tag'])
+    journal.event('DONE', meaning='KERNEL flash, expected build handshake and timed log capture completed')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='command', required=True)
+    p = sub.add_parser('plan', help='Offline snapshot only; never opens USB')
+    p.add_argument('--image', type=Path, required=True)
+    p.add_argument('--profile', type=Path)
+    p.add_argument('--seconds', type=int, choices=range(1, 901), default=30, metavar='1..900')
+    p = sub.add_parser('observe-download', help='Real-device PnP observation; phone must already be in download mode')
+    p.add_argument('--output', type=Path, required=True)
+    p = sub.add_parser('execute', help='Use only after user approves this concrete plan and hardware operation')
+    p.add_argument('--plan', type=Path, required=True)
+    p.add_argument('--approve-plan', required=True)
+    p.add_argument('--mode', choices=('reboot-only', 'bootstrap', 'cycle'), required=True)
+    p.add_argument('--confirm-kernel', help='Second confirmation: exact zImage SHA256 (required for writes)')
+    args = parser.parse_args()
+    if args.command == 'plan':
+        create_plan(args)
+        return
+    if args.command == 'observe-download':
+        save(confined(args.output, OUT), make_profile(Host().inventory()))
+        return
+    plan = Plan(args.plan, args.approve_plan)
+    if args.mode != 'reboot-only':
+        require(args.confirm_kernel == plan.data['files']['zImage'], 'KERNEL write needs a second SHA256 confirmation')
+    with host_lock(), immutable_snapshots(plan):
+        # A consumed plan is never retried, including after a crash/timeout.
+        save(plan.parent / 'started.json', {'mode': args.mode, 'time': datetime.now(timezone.utc).isoformat()})
+        journal = Journal(plan.parent)
+        try:
+            cycle(Host(), plan, args.mode, journal)
+        except Exception as exc:
+            journal.event('STOP', error=str(exc), retry=False)
+            raise
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as exc:
+        print('STOP: ' + str(exc), file=sys.stderr)
+        sys.exit(1)
