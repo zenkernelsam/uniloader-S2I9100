@@ -24,7 +24,7 @@ class FakePlan:
     def __init__(self):
         self.parent = BASE / uuid.uuid4().hex[:8]
         self.parent.mkdir()
-        self.data = dict(profile=PROFILE, capture_seconds=1, boot_settle_seconds=90,
+        self.data = dict(profile=PROFILE, validation='control', capture_seconds=1, boot_settle_seconds=90,
                          control_tag='0123456789abcdef', files={'zImage':'0'*64})
         self.bad_hash = False
 
@@ -58,7 +58,7 @@ class FakeHost:
         if self.state == 'boot' and self.fault == 'boot-identity': raise RuntimeError('wrong build tag')
         reboot = 'reboot-download' in args
         (directory/'events.txt').write_text('PING_OK tick_ms=10\n' + ('COMMAND_ACK tick_ms=20\n' if reboot and self.fault!='missing-ack' else ''))
-        (directory/'received.bin').write_bytes(b'fixture log bytes')
+        (directory/'received.bin').write_bytes(b'arm_init: fixture log bytes')
         if reboot: self.state = 'dl'
 
     def sleep(self):
@@ -93,6 +93,15 @@ class Tests(unittest.TestCase):
     def test_bootstrap(self):
         host, _ = self.run_case(mode='bootstrap')
         self.assertEqual(len(host.calls), 2)
+
+    def test_diagnostic_never_sends_commands(self):
+        host, plan=FakeHost(initial='dl'), FakePlan()
+        plan.data['validation']='logs'
+        o.cycle(host,plan,'bootstrap',o.Journal(plan.parent))
+        self.assertEqual(len(host.calls),2)
+        self.assertNotIn('-Send',host.calls[1])
+        with self.assertRaises(ValueError): o.cycle(host,plan,'cycle',o.Journal(plan.parent))
+        self.assertEqual(len(host.calls),2)
 
     def test_fail_before_flash(self):
         for fault in ('two-cdc','serial-open','missing-ack','two-download','wrong-port','wrong-driver'):
@@ -150,7 +159,8 @@ class Tests(unittest.TestCase):
         dest = BASE/'guard-plan'; dest.mkdir()
         import shutil
         data = json.loads(src.read_text())
-        data['schema'] = 2
+        data['schema'] = 3
+        data['validation'] = 'control'
         data['boot_settle_seconds'] = 90
         for name in data['files']: shutil.copyfile(src.parent/name,dest/name)
         path = dest/'plan.json'

@@ -36,7 +36,11 @@ def main():
     parser.add_argument('--kernel', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--control', action='store_true', help='Enable serial maintenance resets')
+    parser.add_argument('--control-bootargs-only', action='store_true',
+                        help='Diagnostic: control loader bootargs with a baseline kernel; no command capability claim')
     args = parser.parse_args()
+    if args.control_bootargs_only and not args.control:
+        parser.error('--control-bootargs-only requires --control')
     output = args.output.resolve()
     kernel = args.kernel.resolve()
     if not output.is_relative_to(loader/'out') or output.exists():
@@ -105,7 +109,8 @@ def main():
         'xnu': identity_module.git_head(loader.parent/'xnu'),
         'kernel': identity,
         'usb_serial': 'S2I9100-OS6',
-        'serial_control': args.control,
+        'serial_control': args.control and not args.control_bootargs_only,
+        'diagnostic_control_bootargs_only': args.control_bootargs_only,
         'control_tag': sha(kernel)[:16] if args.control else None,
         'memory': {'load_pa':hex(0x40001000),'raw_end':hex(raw_end),
             'device_tree_pa':hex(dt_pa),'payload_staging_pa':hex(sym['__payload_start'])},

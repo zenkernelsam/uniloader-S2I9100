@@ -180,13 +180,16 @@ def wait_for(host, predicate, seconds, label):
 
 def serial(host, plan, directory, device, verb, tag=None):
     directory.mkdir()
-    args = [plan.parent / 'rawcom.exe', device['port'], str(plan.data['capture_seconds']), directory, '-Send', verb]
+    args = [plan.parent / 'rawcom.exe', device['port'], str(plan.data['capture_seconds']), directory]
+    if verb:
+        args += ['-Send', verb]
     if tag:
         args += ['-Expect', tag]
     host.run(args, directory, plan.data['capture_seconds'] + 120)
     events = (directory / 'events.txt').read_text()
-    require('PING_OK ' in events, 'Missing correlated kernel ping')
-    require(verb == 'ping' or 'COMMAND_ACK ' in events, 'Missing reboot acknowledgement')
+    if verb:
+        require('PING_OK ' in events, 'Missing correlated kernel ping')
+        require(verb == 'ping' or 'COMMAND_ACK ' in events, 'Missing reboot acknowledgement')
     require((directory / 'received.bin').stat().st_size > 0, 'Empty capture')
     save(directory / 'log-analysis.json', _logs.classify((directory / 'received.bin').read_bytes()))
 
@@ -199,8 +202,9 @@ class Plan:
         require(sha(self.path) == digest, 'Plan SHA256 was not approved or changed')
         self.data = json.loads(self.path.read_text())
         d = self.data
-        require(set(d) == {'schema', 'partition', 'capture_seconds', 'boot_settle_seconds', 'control_tag', 'profile', 'files'}, 'Unexpected plan fields')
-        require(d['schema'] == 2 and d['partition'] == 'KERNEL', 'Only schema-2 KERNEL plans are permitted')
+        require(set(d) == {'schema', 'partition', 'validation', 'capture_seconds', 'boot_settle_seconds', 'control_tag', 'profile', 'files'}, 'Unexpected plan fields')
+        require(d['schema'] == 3 and d['partition'] == 'KERNEL', 'Only schema-3 KERNEL plans are permitted')
+        require(d['validation'] in ('control', 'logs'), 'Invalid validation mode')
         require(type(d['capture_seconds']) == int and 1 <= d['capture_seconds'] <= 900, 'Bad capture duration')
         require(type(d['boot_settle_seconds']) == int and 30 <= d['boot_settle_seconds'] <= 180, 'Bad boot settling duration')
         require(re.fullmatch('[0-9a-f]{16}', d['control_tag']) is not None, 'Missing kernel identity')
@@ -223,7 +227,10 @@ def create_plan(args):
     image = confined(args.image, REPO / 'out')
     image_check(image)
     manifest = json.loads(image.with_name('manifest.json').read_text())
-    require(manifest.get('serial_control') is True, 'Use an explicitly control-enabled package')
+    if not args.diagnostic:
+        require(manifest.get('serial_control') is True, 'Use a control-enabled package or explicitly --diagnostic')
+    else:
+        require(manifest.get('diagnostic_control_bootargs_only') is True, 'Diagnostic package marker is missing')
     require(manifest['artifacts']['zImage']['sha256'] == sha(image), 'Package manifest does not match image')
     require(manifest['control_tag'] == manifest['artifacts']['mach_kernel']['sha256'][:16], 'Kernel tag mismatch')
     profile = json.loads(confined(args.profile, ROOT).read_text()) if args.profile else None
@@ -236,7 +243,8 @@ def create_plan(args):
         sources[name] = ROOT / 'assets/heimdall-win64' / name
     for name, src in sources.items():
         shutil.copyfile(src, dest / name)
-    data = {'schema': 2, 'partition': 'KERNEL', 'capture_seconds': args.seconds,
+    data = {'schema': 3, 'partition': 'KERNEL', 'validation': 'logs' if args.diagnostic else 'control',
+            'capture_seconds': args.seconds,
             'boot_settle_seconds': args.boot_settle_seconds,
             'control_tag': manifest['control_tag'], 'profile': profile,
             'files': {name: sha(dest / name) for name in sources}}
@@ -283,6 +291,8 @@ def immutable_snapshots(plan):
 
 def cycle(host, plan, mode, journal):
     profile = plan.data['profile']
+    require(plan.data['validation'] == 'control' or mode == 'bootstrap',
+            'A diagnostic kernel permits one bootstrap and read-only logs, never commands or a cycle')
     if mode != 'reboot-only':
         require(profile is not None, 'Measure and approve a download profile first')
     if mode != 'bootstrap':
@@ -320,8 +330,15 @@ def cycle(host, plan, mode, journal):
     require(device is not None and normalize_location(device['location']) == profile['location'],
             'CDC changed during boot settling; no port opened')
     journal.event('VERIFY_KERNEL', control_tag=plan.data['control_tag'])
-    serial(host, plan, plan.parent / 'after', device, 'ping', plan.data['control_tag'])
-    journal.event('DONE', meaning='KERNEL flash, expected build handshake and timed log capture completed')
+    if plan.data['validation'] == 'control':
+        serial(host, plan, plan.parent / 'after', device, 'ping', plan.data['control_tag'])
+        journal.event('DONE', meaning='KERNEL flash, expected build handshake and timed log capture completed')
+    else:
+        serial(host, plan, plan.parent / 'after', device, None)
+        data = (plan.parent / 'after/received.bin').read_bytes()
+        require(any(marker in data for marker in (b'arm_init:', b'PE_init_iokit', b'launchd[1]', b'exec_activate_image')),
+                'Diagnostic capture has no kernel log markers; stop without retry')
+        journal.event('DONE_DIAGNOSTIC', bytes=len(data), meaning='Kernel logs observed; no command or build handshake attempted')
 
 
 def main():
@@ -330,6 +347,7 @@ def main():
     p = sub.add_parser('plan', help='Offline snapshot only; never opens USB')
     p.add_argument('--image', type=Path, required=True)
     p.add_argument('--profile', type=Path)
+    p.add_argument('--diagnostic', action='store_true', help='Explicit log-only baseline-kernel diagnostic; never send commands')
     p.add_argument('--seconds', type=int, choices=range(1, 901), default=30, metavar='1..900')
     p.add_argument('--boot-settle-seconds', type=int, choices=range(30, 181), default=90, metavar='30..180')
     p = sub.add_parser('observe-download', help='Real-device PnP observation; phone must already be in download mode')
