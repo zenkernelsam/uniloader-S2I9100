@@ -27,9 +27,17 @@ def device_tree():
                    ('debug-enabled', b'\1'), ('display-scale', struct.pack('<I', 1)),
                    ('display-rotation', struct.pack('<I', 0))])
     # backboardd reads region-info on the machine node for MobileGestalt.
+    # It also name-matches "arm-io" and enumerates the SoC peripherals
+    # underneath — the display node lives at /arm-io/clcd on real iOS.
+    clcd = node([('name', b'clcd\0'), ('compatible', b'clcd,exynos4210\0'),
+                 ('reg', struct.pack('<II', 0x11C00000, 0x10000))])
+    armio = node([('name', b'arm-io\0'), ('compatible', b'arm-io,exynos4210\0'),
+                  ('#address-cells', struct.pack('<I', 1)),
+                  ('#size-cells', struct.pack('<I', 1)),
+                  ('ranges', b'')], [clcd])
     return node([('name', b'device-tree\0'), ('model', b'Samsung Galaxy S2 (GT-I9100)\0'),
                  ('compatible', b'samsung,i9100\0samsung,exynos4210\0'),
-                 ('region-info', b'LL/A\0')], [chosen])
+                 ('region-info', b'LL/A\0')], [chosen, armio])
 
 
 def main():
