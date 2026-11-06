@@ -149,6 +149,10 @@ ConvertTo-Json -InputObject $rows -Compress -Depth 4
     def sleep(self):
         time.sleep(1)
 
+    def settle(self, seconds):
+        for _ in range(seconds):
+            time.sleep(1)
+
 
 class Journal:
     def __init__(self, directory):
@@ -195,9 +199,10 @@ class Plan:
         require(sha(self.path) == digest, 'Plan SHA256 was not approved or changed')
         self.data = json.loads(self.path.read_text())
         d = self.data
-        require(set(d) == {'schema', 'partition', 'capture_seconds', 'control_tag', 'profile', 'files'}, 'Unexpected plan fields')
-        require(d['schema'] == 1 and d['partition'] == 'KERNEL', 'Only KERNEL is permitted')
+        require(set(d) == {'schema', 'partition', 'capture_seconds', 'boot_settle_seconds', 'control_tag', 'profile', 'files'}, 'Unexpected plan fields')
+        require(d['schema'] == 2 and d['partition'] == 'KERNEL', 'Only schema-2 KERNEL plans are permitted')
         require(type(d['capture_seconds']) == int and 1 <= d['capture_seconds'] <= 900, 'Bad capture duration')
+        require(type(d['boot_settle_seconds']) == int and 30 <= d['boot_settle_seconds'] <= 180, 'Bad boot settling duration')
         require(re.fullmatch('[0-9a-f]{16}', d['control_tag']) is not None, 'Missing kernel identity')
         require(set(d['files']) == {'zImage', 'rawcom.exe', 'heimdall.exe', *DLLS}, 'Unexpected snapshot files')
         if d['profile'] is not None:
@@ -231,7 +236,8 @@ def create_plan(args):
         sources[name] = ROOT / 'assets/heimdall-win64' / name
     for name, src in sources.items():
         shutil.copyfile(src, dest / name)
-    data = {'schema': 1, 'partition': 'KERNEL', 'capture_seconds': args.seconds,
+    data = {'schema': 2, 'partition': 'KERNEL', 'capture_seconds': args.seconds,
+            'boot_settle_seconds': args.boot_settle_seconds,
             'control_tag': manifest['control_tag'], 'profile': profile,
             'files': {name: sha(dest / name) for name in sources}}
     save(dest / 'plan.json', data)
@@ -308,6 +314,11 @@ def cycle(host, plan, mode, journal):
     wait_for(host, lambda ds: not samsung(ds), 60, 'download disconnect after flash')
     device = wait_for(host, cdc, 120, 'new CDC boot')
     require(normalize_location(device['location']) == profile['location'], 'Post-flash device topology changed')
+    journal.event('WAIT_KERNEL_BOOT', seconds=plan.data['boot_settle_seconds'])
+    host.settle(plan.data['boot_settle_seconds'])
+    device = cdc(host.inventory())
+    require(device is not None and normalize_location(device['location']) == profile['location'],
+            'CDC changed during boot settling; no port opened')
     journal.event('VERIFY_KERNEL', control_tag=plan.data['control_tag'])
     serial(host, plan, plan.parent / 'after', device, 'ping', plan.data['control_tag'])
     journal.event('DONE', meaning='KERNEL flash, expected build handshake and timed log capture completed')
@@ -320,6 +331,7 @@ def main():
     p.add_argument('--image', type=Path, required=True)
     p.add_argument('--profile', type=Path)
     p.add_argument('--seconds', type=int, choices=range(1, 901), default=30, metavar='1..900')
+    p.add_argument('--boot-settle-seconds', type=int, choices=range(30, 181), default=90, metavar='30..180')
     p = sub.add_parser('observe-download', help='Real-device PnP observation; phone must already be in download mode')
     p.add_argument('--output', type=Path, required=True)
     p = sub.add_parser('execute', help='Use only after user approves this concrete plan and hardware operation')

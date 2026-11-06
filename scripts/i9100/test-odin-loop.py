@@ -24,7 +24,8 @@ class FakePlan:
     def __init__(self):
         self.parent = BASE / uuid.uuid4().hex[:8]
         self.parent.mkdir()
-        self.data = dict(profile=PROFILE, capture_seconds=1, control_tag='0123456789abcdef', files={'zImage':'0'*64})
+        self.data = dict(profile=PROFILE, capture_seconds=1, boot_settle_seconds=90,
+                         control_tag='0123456789abcdef', files={'zImage':'0'*64})
         self.bad_hash = False
 
     def verify(self):
@@ -34,6 +35,7 @@ class FakePlan:
 class FakeHost:
     def __init__(self, fault=None, initial='cdc'):
         self.state, self.fault, self.calls = initial, fault, []
+        self.delays = []
 
     def inventory(self):
         if self.state == 'cdc':
@@ -62,6 +64,9 @@ class FakeHost:
     def sleep(self):
         raise AssertionError('Unexpected wait in immediate-transition fixture')
 
+    def settle(self, seconds):
+        self.delays.append(seconds)
+
 
 class Tests(unittest.TestCase):
     def run_case(self, fault=None, mode='cycle'):
@@ -79,6 +84,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(len(host.calls), 3)
         self.assertEqual(host.calls[1][1:], ['flash','--KERNEL',str(plan.parent/'zImage'),'--stdout-errors'])
         self.assertEqual(host.calls[2][-2:], ['-Expect', plan.data['control_tag']])
+        self.assertEqual(host.delays, [90])
 
     def test_reboot_only_never_flashes(self):
         host, _ = self.run_case(mode='reboot-only')
@@ -144,6 +150,8 @@ class Tests(unittest.TestCase):
         dest = BASE/'guard-plan'; dest.mkdir()
         import shutil
         data = json.loads(src.read_text())
+        data['schema'] = 2
+        data['boot_settle_seconds'] = 90
         for name in data['files']: shutil.copyfile(src.parent/name,dest/name)
         path = dest/'plan.json'
         o.save(path,data)
