@@ -26,6 +26,8 @@ def device_tree():
     chosen = node([('name', b'chosen\0'), ('firmware-version', b'uniLoader-i9100\0'),
                    ('debug-enabled', b'\1'), ('display-scale', struct.pack('<I', 1)),
                    ('display-rotation', struct.pack('<I', 0))])
+    # NOTE: software-behavior intentionally absent — an all-zero blob made
+    # SpringBoard SIGABRT after reading it on-device.
     # backboardd reads region-info on the machine node for MobileGestalt.
     # It also name-matches "arm-io" and enumerates the SoC peripherals
     # underneath — the display node lives at /arm-io/clcd on real iOS.
@@ -40,6 +42,9 @@ def device_tree():
     return node([('name', b'device-tree\0'), ('model', b'Samsung Galaxy S2 (GT-I9100)\0'),
                  ('compatible', b'samsung,i9100\0samsung,exynos4210\0'),
                  ('region-info', b'LL/A\0')], [chosen, armio])
+    # NOTE: no-sdio-devices withheld pending bisect — SpringBoard aborted
+    # immediately after reading it hit=1 (same point with/without
+    # software-behavior).
 
 
 def main():
