@@ -300,10 +300,37 @@ def immutable_snapshots(plan):
         yield
 
 
+def verify_kernel(host, plan, device, journal, verify_only=False):
+    journal.event('VERIFY_KERNEL', control_tag=plan.data['control_tag'])
+    if plan.data['validation'] != 'logs':
+        query = 'root-status' if plan.data['root_status_protocol'] else 'ping'
+        root_state = serial(host, plan, plan.parent / 'after', device, query, plan.data['control_tag'])
+        if plan.data['root_status_protocol']:
+            expected = 'NO_ROOT' if plan.data['validation'] == 'maintenance' else 'MEDIA_FOUND'
+            require(root_state == expected, f'Expected root state {expected}, observed {root_state}')
+        phase = 'DONE_VERIFY_ONLY' if verify_only else 'DONE_MAINTENANCE' if plan.data['validation'] == 'maintenance' else 'DONE'
+        journal.event(phase, root_state=root_state,
+                      meaning='Build/ping/capture verified; root state is media discovery, not filesystem integrity')
+    else:
+        serial(host, plan, plan.parent / 'after', device, None)
+        data = (plan.parent / 'after/received.bin').read_bytes()
+        require(any(marker in data for marker in (b'arm_init:', b'PE_init_iokit', b'launchd[1]', b'exec_activate_image')),
+                'Diagnostic capture has no kernel log markers; stop without retry')
+        journal.event('DONE_DIAGNOSTIC', bytes=len(data), meaning='Kernel logs observed; no command or build handshake attempted')
+
+
 def cycle(host, plan, mode, journal):
     profile = plan.data['profile']
     require(plan.data['validation'] != 'logs' or mode == 'bootstrap',
             'A diagnostic kernel permits one bootstrap and read-only logs, never commands or a cycle')
+    if mode == 'verify-only':
+        device = cdc(host.inventory())
+        require(device is not None, 'Expected a running kernel for verification')
+        if profile:
+            require(normalize_location(device['location']) == profile['location'], 'CDC moved to another USB port')
+        plan.verify()
+        verify_kernel(host, plan, device, journal, verify_only=True)
+        return
     if mode != 'reboot-only':
         require(profile is not None, 'Measure and approve a download profile first')
     if mode != 'bootstrap':
@@ -340,21 +367,7 @@ def cycle(host, plan, mode, journal):
     device = cdc(host.inventory())
     require(device is not None and normalize_location(device['location']) == profile['location'],
             'CDC changed during boot settling; no port opened')
-    journal.event('VERIFY_KERNEL', control_tag=plan.data['control_tag'])
-    if plan.data['validation'] != 'logs':
-        query = 'root-status' if plan.data['root_status_protocol'] else 'ping'
-        root_state = serial(host, plan, plan.parent / 'after', device, query, plan.data['control_tag'])
-        if plan.data['root_status_protocol']:
-            expected = 'NO_ROOT' if plan.data['validation'] == 'maintenance' else 'MEDIA_FOUND'
-            require(root_state == expected, f'Expected root state {expected}, observed {root_state}')
-        journal.event('DONE_MAINTENANCE' if plan.data['validation'] == 'maintenance' else 'DONE',
-                      root_state=root_state, meaning='Build/ping/capture verified; root state is media discovery, not filesystem integrity')
-    else:
-        serial(host, plan, plan.parent / 'after', device, None)
-        data = (plan.parent / 'after/received.bin').read_bytes()
-        require(any(marker in data for marker in (b'arm_init:', b'PE_init_iokit', b'launchd[1]', b'exec_activate_image')),
-                'Diagnostic capture has no kernel log markers; stop without retry')
-        journal.event('DONE_DIAGNOSTIC', bytes=len(data), meaning='Kernel logs observed; no command or build handshake attempted')
+    verify_kernel(host, plan, device, journal)
 
 
 def main():
@@ -373,7 +386,7 @@ def main():
     p = sub.add_parser('execute', help='Use only after user approves this concrete plan and hardware operation')
     p.add_argument('--plan', type=Path, required=True)
     p.add_argument('--approve-plan', required=True)
-    p.add_argument('--mode', choices=('reboot-only', 'bootstrap', 'cycle'), required=True)
+    p.add_argument('--mode', choices=('verify-only', 'reboot-only', 'bootstrap', 'cycle'), required=True)
     p.add_argument('--confirm-kernel', help='Second confirmation: exact zImage SHA256 (required for writes)')
     args = parser.parse_args()
     if args.command == 'plan':
@@ -383,7 +396,7 @@ def main():
         save(confined(args.output, OUT), make_profile(Host().inventory()))
         return
     plan = Plan(args.plan, args.approve_plan)
-    if args.mode != 'reboot-only':
+    if args.mode in ('bootstrap', 'cycle'):
         require(args.confirm_kernel == plan.data['files']['zImage'], 'KERNEL write needs a second SHA256 confirmation')
     with host_lock(), immutable_snapshots(plan):
         # A consumed plan is never retried, including after a crash/timeout.

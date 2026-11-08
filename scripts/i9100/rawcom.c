@@ -1,6 +1,6 @@
-/* Windows capture/control client, cross-built in WSL. No CRT, WMI, SetCommState,
- * DTR/RTS changes, retries or forced process termination. CreateFile can
- * still wait on usbser: keep one opener until device disconnects. */
+/* Windows capture/control client, cross-built in WSL. Control sessions request
+ * DTR once so a late opener gets a fresh READY/BUILD. No CRT, WMI, SetCommState,
+ * RTS changes, retries or forced termination; retain a blocked opener. */
 typedef unsigned long DWORD;
 typedef unsigned long long U64;
 typedef int BOOL;
@@ -20,6 +20,7 @@ API HANDLE CreateMutexW(void *,BOOL,const WCHAR *);
 API void ExitProcess(DWORD);
 struct Timeouts { DWORD interval,multiplier,constant,write_multiplier,write_constant; };
 API BOOL SetCommTimeouts(HANDLE,struct Timeouts *);
+API BOOL EscapeCommFunction(HANDLE,DWORD);
 #define INVALID ((HANDLE)(long long)-1)
 static WCHAR args[8][1024], path[1200], device[32];
 static unsigned char bytes[4096];
@@ -65,7 +66,7 @@ static void filename(const WCHAR *suffix)
 static DWORD run(void)
 {
     int count=parse();
-    if(count!=4 && count!=6 && count!=8){text(GetStdHandle((DWORD)-11),"Usage: rawcom COMnumber seconds existing-output-directory [-Send ping|status|root-status|reboot|reboot-download [-Expect 16hex-build-tag]]\r\nSend: wait READY, ping, capture, then send final command; one open, no retries.\r\n");return 2;}
+    if(count!=4 && count!=6 && count!=8){text(GetStdHandle((DWORD)-11),"Usage: rawcom COMnumber seconds existing-output-directory [-Send ping|status|root-status|reboot|reboot-download [-Expect 16hex-build-tag]]\r\nSend: request DTR, wait READY, ping, capture, then send final command; one open, no retries.\r\n");return 2;}
     if(count>=6) {
         const WCHAR *flag=(const WCHAR *)L"-Send";
         unsigned j=0; while(flag[j]&&flag[j]==args[4][j])j++;
@@ -115,6 +116,13 @@ static DWORD run(void)
     event("OPEN_OK elapsed_ms=",GetTickCount64()-begin);
     struct Timeouts t={0,0,250,0,1000};
     if(!SetCommTimeouts(h,&t)){result=GetLastError();event("TIMEOUT_SETUP_ERROR code=",result);goto closed;}
+    if(count>=6) {
+        /* Kernel SET_CONTROL_LINE_STATE re-advertises identity. The original
+         * boot banner may already have been consumed before this open. */
+        event("DTR_BEGIN tick_ms=",GetTickCount64());
+        if(!EscapeCommFunction(h,5)){result=GetLastError();event("DTR_ERROR code=",result);goto closed;}
+        event("DTR_OK tick_ms=",GetTickCount64());
+    }
     begin=GetTickCount64();
     unsigned phase=count>=6?0:2, seq=(unsigned)GetTickCount64();
     if(!seq || seq>0xfffffffcU) seq=1;

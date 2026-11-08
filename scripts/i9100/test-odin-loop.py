@@ -101,6 +101,21 @@ class Tests(unittest.TestCase):
         host, _ = self.run_case(mode='bootstrap')
         self.assertEqual(len(host.calls), 2)
 
+    def test_verify_only_never_reboots_or_flashes(self):
+        host, plan = self.run_case(mode='verify-only')
+        self.assertEqual(len(host.calls),1)
+        self.assertEqual(host.delays,[])
+        self.assertIn('-Expect',host.calls[0])
+        self.assertNotIn('reboot-download',host.calls[0])
+        self.assertIn('DONE_VERIFY_ONLY',(plan.parent/'timeline.jsonl').read_text())
+
+    def test_verify_only_checks_identity_before_open(self):
+        plan, host=FakePlan(), FakeHost()
+        plan.data['profile']=dict(PROFILE,location='other-port')
+        with self.assertRaises(ValueError):
+            o.cycle(host,plan,'verify-only',o.Journal(plan.parent))
+        self.assertEqual(host.calls,[])
+
     def test_diagnostic_never_sends_commands(self):
         host, plan=FakeHost(initial='dl'), FakePlan()
         plan.data['validation']='logs'

@@ -12,3 +12,4 @@ GetStdHandle
 CreateMutexW
 ExitProcess
 SetCommTimeouts
+EscapeCommFunction
