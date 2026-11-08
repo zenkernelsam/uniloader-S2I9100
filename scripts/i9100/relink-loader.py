@@ -27,6 +27,7 @@ def main():
     parser.add_argument('--control', action='store_true')
     parser.add_argument('--control-tag')
     parser.add_argument('--ls-bootstrap', action='store_true')
+    parser.add_argument('--xpc-diag', action='store_true')
     parser.add_argument('sources', nargs='*')
     args = parser.parse_args()
     if args.control and (not args.control_tag or len(args.control_tag) != 16 or
@@ -34,6 +35,8 @@ def main():
         parser.error('--control needs a 16 lowercase hex --control-tag')
     if args.ls_bootstrap and not args.control:
         parser.error('--ls-bootstrap requires --control')
+    if args.xpc_diag and not args.control:
+        parser.error('--xpc-diag requires --control')
     output = args.output.resolve()
     if not output.is_relative_to(repo / 'out'):
         parser.error('Output must be inside the loader out directory')
@@ -63,6 +66,8 @@ def main():
             command.append('-DI9100_CONTROL_TAG="' + args.control_tag + '"')
             if args.ls_bootstrap:
                 command.append('-DI9100_LS_BOOTSTRAP_BUILD=1')
+            if args.xpc_diag:
+                command.append('-DI9100_XPC_DIAG_BUILD=1')
         if source_name == 'arch/arm/start.S' and args.kernel_blob:
             command.append('-DI9100_KERNEL_BLOB="' + str(blob) + '"')
         new_object = output / original
