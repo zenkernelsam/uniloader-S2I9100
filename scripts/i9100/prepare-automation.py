@@ -4,18 +4,22 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import argparse
 from datetime import datetime
 
 if os.environ.get('I9100_CPU_CAPPED') != '1':
     os.execvpe('taskset', ['taskset', '-c', '0-13', 'nice', '-n10', 'ionice', '-c2', '-n7',
                          sys.executable, __file__, *sys.argv[1:]], dict(os.environ, I9100_CPU_CAPPED='1'))
 repo = Path(__file__).resolve().parents[2]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--ls-bootstrap', action='store_true')
+args = parser.parse_args()
 xnu = repo.parent / 'xnu'
 label = 'control-' + datetime.now().strftime('%Y%m%d-%H%M%S')
 kernel = xnu / 'out/automation' / label
 package = repo / 'out/automation' / label
 objects = ['pexpert/i9100_usbcdc.o', 'pexpert/i9100_timer.o', 'pexpert/pe_exynos4210_i9100.o',
-           'osfmk/locore.o', 'osfmk/hw_lock.o', 'osfmk/ipc_kobject.o', 'osfmk/trap.o', 'bsd/kern_exec.o',
+           'osfmk/locore.o', 'osfmk/hw_lock.o', 'osfmk/ipc_kobject.o', 'osfmk/mach_msg.o', 'osfmk/trap.o', 'bsd/kern_exec.o',
            'bsd/unix_syscalls.o', 'bsd/vfs_subr.o', 'bsd/kdebug.o', 'bsd/decmpfs.o', 'iokit/IOKitBSDInit.cpo',
            'iokit/IOPMrootDomain.cpo', 'iokit/IOS7LeoDisplay.cpo', 'iokit/IOUserClient.cpo',
            'iokit/IOS7LeoHIDTouch.cpo',
@@ -24,5 +28,6 @@ objects = ['pexpert/i9100_usbcdc.o', 'pexpert/i9100_timer.o', 'pexpert/pe_exynos
 subprocess.run([sys.executable, xnu / 'tools/rebuild-i9100.py', '--output', kernel, '--link', *objects], check=True)
 subprocess.run(['bash', repo / 'scripts/i9100/build-rawcom.sh'], check=True)
 subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--kernel', kernel / 'mach_kernel',
-                '--output', package, '--control'], check=True)
+                '--output', package, '--control',
+                *(['--ls-bootstrap'] if args.ls_bootstrap else [])], check=True)
 print('OFFLINE READY:', package, flush=True)

@@ -36,9 +36,12 @@ def main():
     parser.add_argument('--kernel', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--control', action='store_true', help='Enable serial maintenance resets')
+    parser.add_argument('--ls-bootstrap', action='store_true', help='Bound the observed iOS6 LS/MI initialization cycle')
     parser.add_argument('--control-bootargs-only', action='store_true',
                         help='Diagnostic: control loader bootargs with a baseline kernel; no command capability claim')
     args = parser.parse_args()
+    if args.ls_bootstrap and not args.control:
+        parser.error('--ls-bootstrap requires --control')
     if args.control_bootargs_only and not args.control:
         parser.error('--control-bootargs-only requires --control')
     output = args.output.resolve()
@@ -64,6 +67,7 @@ def main():
     build = output/'loader'
     run([sys.executable, helpers/'relink-loader.py', '--output', build,
         *(['--control', '--control-tag', sha(kernel)[:16]] if args.control else []),
+        *(['--ls-bootstrap'] if args.ls_bootstrap else []),
         '--kernel-blob', blob, 'arch/arm/start.S', 'arch/arm/load-kernel.c',
         'arch/arm/lz4dec.c', 'board/samsung/board-i9100.c',
         'drivers/samsung/dwc2cdc4210.c', 'main/main.c'], loader, output/'loader-build.log')
@@ -78,6 +82,8 @@ def main():
     assert b'ios7lab_vmabi=0' in data
     if args.control:
         assert b'i9100control=1' in data
+    if args.ls_bootstrap:
+        assert b'i9100lsbootstrap=1' in data
     assert 'S2I9100-OS6'.encode('utf-16le') in data
     symbols = subprocess.check_output(['arm-none-eabi-nm','-n',str(build/'uniLoader.o')],text=True)
     (output/'loader-symbols.txt').write_text(symbols)
@@ -110,6 +116,7 @@ def main():
         'kernel': identity,
         'usb_serial': 'S2I9100-OS6',
         'serial_control': args.control and not args.control_bootargs_only,
+        'ls_bootstrap': args.ls_bootstrap,
         'root_status_protocol': b'OK root=NO_ROOT' in raw_data,
         'diagnostic_control_bootargs_only': args.control_bootargs_only,
         'control_tag': sha(kernel)[:16] if args.control else None,
