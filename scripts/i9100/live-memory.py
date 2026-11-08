@@ -52,7 +52,9 @@ class Symbols:
 
 class PageMap:
     def __init__(self, read_phys, l1_phys, l1_size=0x4000):
-        if l1_phys & 0x3fff or l1_size <= 0 or l1_size > 0x4000 or l1_size & 3:
+        # TTBR0 may use a reduced table (the live i9100 user maps start at
+        # 4KiB, TTBCR.N=2); only the kernel's full L1 requires 16KiB alignment.
+        if l1_size not in (0x1000, 0x2000, 0x4000) or l1_phys & (l1_size - 1):
             raise MappingError('Invalid ARM L1 geometry')
         ram(l1_phys, l1_size)
         self.read_phys = read_phys

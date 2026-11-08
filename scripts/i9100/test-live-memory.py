@@ -45,6 +45,13 @@ class Tests(unittest.TestCase):
         p=self.setup_map(0xc20578c0,0x42000001,bytearray(0x400))
         with self.assertRaises(m.MappingError):p.translate(0xc20578c0)
 
+    def test_reduced_user_l1_geometry(self):
+        data=bytearray(0x1000)
+        struct.pack_into('<I',data,(0x3acc2eb4>>20)*4,0x45000002)
+        p=m.PageMap(lambda pa,n:bytes(data),0x50502000,0x1000)
+        self.assertEqual(p.translate(0x3acc2eb4),0x450c2eb4)
+        with self.assertRaises(m.MappingError):p.translate(0x40000000)
+
     def test_mmio_and_out_of_range_blocked(self):
         for entry in (0x10000002,0x10000001,0x80000002):
             p=self.setup_map(0xc20578c0,entry)
