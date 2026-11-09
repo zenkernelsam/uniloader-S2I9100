@@ -149,7 +149,14 @@ def run(plan, output, trigger, record):
             odin.require(active == 0, 'Kernel has already panicked; use a new collect-only run')
             _, threads = session.command('threads SpringBoard')
             (output / 'threads-before-panic.txt').write_bytes(threads)
+            springboard_seen = bool(threads)
+            if not threads:
+                # Recovery also has to work during early userspace startup.
+                # An empty, successful query is not a failed command retry.
+                _, threads = session.command('threads')
+                (output / 'threads-all-before-panic.txt').write_bytes(threads)
             odin.require(b'snapshot=raw-irq' in threads, 'Missing real interrupt-safe thread snapshot')
+            record('THREAD_SNAPSHOT_VERIFIED', bytes=len(threads), springboard_seen=springboard_seen)
             session.command('root-status')
             origin = time.monotonic()
             session.command('panic-test')
