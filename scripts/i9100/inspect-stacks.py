@@ -19,6 +19,81 @@ def module(name, path):
     return result
 
 
+def capture_process(session,kernel,name,out,m,dyld_info=False):
+    _,data=session.command('threads '+name)
+    (out/(name+'-threads.txt')).write_bytes(data)
+    text=data.decode()
+    proc=dict(process=name,threads=[])
+    current=None
+    for line in text.splitlines():
+        if ' thr=' in line:
+            fields=dict(re.findall(r'([a-z0-9]+)=(0x[0-9a-f]+|[0-9a-f]+)',line))
+            current=dict(thread=int(fields['thr'],16),bsd=line.strip())
+            proc['threads'].append(current)
+        elif ' pc=' in line and current is not None:
+            current['wait']=line.strip()
+    if not proc['threads']:
+        return proc
+    task=kernel.u32(proc['threads'][0]['thread']+0x3a0)
+    mapva=kernel.u32(task+0x18);pmapva=kernel.u32(mapva+0x2c)
+    proc.update(task=hex(task),map=hex(mapva),pmap=hex(pmapva))
+    user=kernel.user_pmap(pmapva)
+    pages={}
+    def user_read(va,n):
+        result=bytearray()
+        while n:
+            page=va&~4095;offset=va&4095;take=min(n,4096-offset)
+            if page not in pages:
+                pages[page]=user.read(page,4096)
+                (out/f'{name}-user-{page:08x}.bin').write_bytes(pages[page])
+            result.extend(pages[page][offset:offset+take]);va+=take;n-=take
+        return bytes(result)
+    if dyld_info:
+        try:
+            # ARM task offsets are from the matching trap.o DWARF.
+            # mach_vm_address_t/size_t are 32-bit in this build.
+            address,size=struct.unpack('<2I',kernel.read(task+0x210,8))
+            if not 0<address<0x40000000 or not 12<=size<=4096:
+                raise m.MappingError('Invalid live dyld header range')
+            raw=user_read(address,min(size,84))
+            (out/(name+'-dyld-info.bin')).write_bytes(raw)
+            words=struct.unpack('<'+str(len(raw)//4)+'I',raw)
+            proc['dyld_info']=dict(address=hex(address),size=size,
+                version=words[0],image_count=words[1],image_array=hex(words[2]),
+                words=[hex(value) for value in words])
+            if words[0]>=12 and len(words)>=21:
+                proc['dyld_info']['cache_slide']=hex(words[20])
+                print(name,'CACHE_SLIDE',hex(words[20]),flush=True)
+        except (m.MappingError,struct.error) as exc:
+            proc['dyld_info_error']=str(exc)
+    for thread in proc['threads']:
+        try:
+            uss=kernel.u32(thread['thread']+0x22c)
+            regs=struct.unpack('<17I',kernel.read(uss,68))
+            thread.update(uss=hex(uss),registers={**{f'r{i}':hex(regs[i]) for i in range(13)},
+                             'sp':hex(regs[13]),'lr':hex(regs[14]),'pc':hex(regs[15]),'cpsr':hex(regs[16])})
+            sp=regs[13];fp=regs[7];frames=[];seen=set()
+            while fp not in seen and len(frames)<14 and sp<=fp<sp+0x20000 and not fp&3:
+                seen.add(fp)
+                previous,lr=struct.unpack('<2I',user_read(fp,8))
+                frames.append(dict(fp=hex(fp),previous=hex(previous),lr=hex(lr)))
+                if previous<=fp:break
+                fp=previous
+            thread['frames']=frames
+            stack=user_read(sp,min(256,4096-(sp&4095)))
+            thread['stack_words']=[hex(x) for x in struct.unpack('<'+str(len(stack)//4)+'I',stack)]
+            # For mutex/condition waits preserve the live argument's
+            # user words; they are evidence, not an owner inference.
+            if regs[12] in (301,305) and 0x1000<=regs[0]<0xc0000000:
+                try:thread['sync_argument']=[hex(x) for x in struct.unpack('<16I',user_read(regs[0],64))]
+                except m.MappingError as exc:thread['sync_argument_error']=str(exc)
+            print(name,hex(thread['thread']),hex(regs[15]),'r12='+hex(regs[12]),
+                  'frames='+','.join(x['lr'] for x in frames),flush=True)
+        except (m.MappingError,struct.error) as exc:
+            thread['error']=str(exc);print(name,hex(thread['thread']),'unavailable',str(exc),flush=True)
+    return proc
+
+
 def main():
     here=Path(__file__).resolve().parent
     f=module('forensic',here/'forensic-session.py')
@@ -37,7 +112,7 @@ def main():
     with odin.host_lock():
         device=odin.cdc(odin.Host().inventory())
         if device is None:raise RuntimeError('No live CDC device')
-        profile=json.loads((f.REPO/'out/automation/inventory-20261108-recovery-download.json').read_text())
+        profile=json.loads((f.REPO/'out/automation/inventory-20261108-recovery-download.json').read_text(encoding='utf-8'))
         if odin.normalize_location(device['location'])!=profile['location']:raise RuntimeError('Wrong USB topology')
         out.mkdir(parents=True);transport=None
         with (out/'events.jsonl').open('x') as events,(out/'received.bin').open('xb') as capture:
@@ -51,77 +126,7 @@ def main():
                 session.handshake();kernel=m.Kernel(session,symbols)
                 results=[]
                 for name in a.process:
-                    _,data=session.command('threads '+name)
-                    (out/(name+'-threads.txt')).write_bytes(data)
-                    text=data.decode()
-                    proc=dict(process=name,threads=[])
-                    current=None
-                    for line in text.splitlines():
-                        if ' thr=' in line:
-                            fields=dict(re.findall(r'([a-z0-9]+)=(0x[0-9a-f]+|[0-9a-f]+)',line))
-                            current=dict(thread=int(fields['thr'],16),bsd=line.strip())
-                            proc['threads'].append(current)
-                        elif ' pc=' in line and current is not None:
-                            current['wait']=line.strip()
-                    if not proc['threads']:
-                        results.append(proc);continue
-                    task=kernel.u32(proc['threads'][0]['thread']+0x3a0)
-                    mapva=kernel.u32(task+0x18);pmapva=kernel.u32(mapva+0x2c)
-                    proc.update(task=hex(task),map=hex(mapva),pmap=hex(pmapva))
-                    user=kernel.user_pmap(pmapva)
-                    pages={}
-                    def user_read(va,n):
-                        result=bytearray()
-                        while n:
-                            page=va&~4095;offset=va&4095;take=min(n,4096-offset)
-                            if page not in pages:
-                                pages[page]=user.read(page,4096)
-                                (out/f'{name}-user-{page:08x}.bin').write_bytes(pages[page])
-                            result.extend(pages[page][offset:offset+take]);va+=take;n-=take
-                        return bytes(result)
-                    if a.dyld_info:
-                        try:
-                            # ARM task offsets are from the matching trap.o DWARF.
-                            # mach_vm_address_t/size_t are 32-bit in this build.
-                            address,size=struct.unpack('<2I',kernel.read(task+0x210,8))
-                            if not 0<address<0x40000000 or not 12<=size<=4096:
-                                raise m.MappingError('Invalid live dyld header range')
-                            raw=user_read(address,min(size,84))
-                            (out/(name+'-dyld-info.bin')).write_bytes(raw)
-                            words=struct.unpack('<'+str(len(raw)//4)+'I',raw)
-                            proc['dyld_info']=dict(address=hex(address),size=size,
-                                version=words[0],image_count=words[1],image_array=hex(words[2]),
-                                words=[hex(value) for value in words])
-                            if words[0]>=12 and len(words)>=21:
-                                proc['dyld_info']['cache_slide']=hex(words[20])
-                                print(name,'CACHE_SLIDE',hex(words[20]),flush=True)
-                        except (m.MappingError,struct.error) as exc:
-                            proc['dyld_info_error']=str(exc)
-                    for thread in proc['threads']:
-                        try:
-                            uss=kernel.u32(thread['thread']+0x22c)
-                            regs=struct.unpack('<17I',kernel.read(uss,68))
-                            thread.update(uss=hex(uss),registers={**{f'r{i}':hex(regs[i]) for i in range(13)},
-                                             'sp':hex(regs[13]),'lr':hex(regs[14]),'pc':hex(regs[15]),'cpsr':hex(regs[16])})
-                            sp=regs[13];fp=regs[7];frames=[];seen=set()
-                            while fp not in seen and len(frames)<14 and sp<=fp<sp+0x20000 and not fp&3:
-                                seen.add(fp)
-                                previous,lr=struct.unpack('<2I',user_read(fp,8))
-                                frames.append(dict(fp=hex(fp),previous=hex(previous),lr=hex(lr)))
-                                if previous<=fp:break
-                                fp=previous
-                            thread['frames']=frames
-                            stack=user_read(sp,min(256,4096-(sp&4095)))
-                            thread['stack_words']=[hex(x) for x in struct.unpack('<'+str(len(stack)//4)+'I',stack)]
-                            # For mutex/condition waits preserve the live argument's
-                            # user words; they are evidence, not an owner inference.
-                            if regs[12] in (301,305) and 0x1000<=regs[0]<0xc0000000:
-                                try:thread['sync_argument']=[hex(x) for x in struct.unpack('<16I',user_read(regs[0],64))]
-                                except m.MappingError as exc:thread['sync_argument_error']=str(exc)
-                            print(name,hex(thread['thread']),hex(regs[15]),'r12='+hex(regs[12]),
-                                  'frames='+','.join(x['lr'] for x in frames),flush=True)
-                        except (m.MappingError,struct.error) as exc:
-                            thread['error']=str(exc);print(name,hex(thread['thread']),'unavailable',str(exc),flush=True)
+                    proc=capture_process(session,kernel,name,out,m,a.dyld_info)
                     results.append(proc)
                     (out/'stacks.json').write_text(json.dumps(dict(tag=symbols.tag,processes=results),indent=2)+'\n')
                 record('DONE',processes=len(results))

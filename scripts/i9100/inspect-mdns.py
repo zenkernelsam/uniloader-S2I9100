@@ -55,6 +55,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kernel', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--stacks', action='store_true',
+                        help='Capture SB/configd/backboardd/MDNS stacks before closing this handle')
     a = parser.parse_args()
     symbols = m.Symbols(a.kernel)
     for symbol, _, _, _ in TABLES.values():
@@ -82,6 +84,13 @@ def main():
                 session.handshake()
                 kernel = m.Kernel(session, symbols)
                 result = dict(tag=symbols.tag, device=device, tables={})
+                result['resources'] = {}
+                for name in ('_maxproc', '_maxprocperuid', '_hard_maxproc', '_nprocs', '_vm_page_free_count'):
+                    if name in symbols.values:
+                        data = kernel.read(symbols[name], 4)
+                        (out/(name.lstrip('_')+'.bin')).write_bytes(data)
+                        result['resources'][name] = struct.unpack('<I', data)[0]
+                print('resources', json.dumps(result['resources']), flush=True)
                 for name, (symbol, cap, stride, fields) in TABLES.items():
                     data = kernel.read(symbols[symbol], (1+cap*stride)*4)
                     (out/(name+'.bin')).write_bytes(data)
@@ -104,9 +113,19 @@ def main():
                 result['stderr'] = dict(sequence=sequence, pid=pid, task=hex(task), role=role,
                     used=used, copy_error=error, text=data[24:24+used].decode('utf-8', 'replace'))
                 print('stderr', json.dumps(result['stderr']), flush=True)
-                for process in ('mDNSResponder', 'mDNSResponderHel', 'launchd', 'configd', 'SpringBoard'):
-                    _, data = session.command('threads '+process)
-                    (out/(process+'-threads.txt')).write_bytes(data)
+                if a.stacks:
+                    stack_tool = module('stack_tool', here/'inspect-stacks.py')
+                    processes = []
+                    for process in ('SpringBoard', 'configd', 'backboardd', 'mDNSResponder'):
+                        processes.append(stack_tool.capture_process(session, kernel, process, out, m, True))
+                        (out/'stacks.json').write_text(json.dumps(dict(tag=symbols.tag,
+                            processes=processes), indent=2)+'\n', encoding='utf-8')
+                    _, data = session.command('threads launchd')
+                    (out/'launchd-threads.txt').write_bytes(data)
+                else:
+                    for process in ('mDNSResponder', 'mDNSResponderHel', 'launchd', 'configd', 'SpringBoard'):
+                        _, data = session.command('threads '+process)
+                        (out/(process+'-threads.txt')).write_bytes(data)
                 (out/'results.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
                 record('DONE')
             except BaseException as exc:
