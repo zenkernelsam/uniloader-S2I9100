@@ -59,6 +59,36 @@ def capture_ui_observations(kernel, symbols, out):
         if length>128:raise ValueError('Invalid retained render payload')
         result['render_payload']=dict(sequence=sequence,pid=pid,length=length,id=msgid,
                                      bits=bits,status=status,hex=data[24:24+length].hex())
+    key='_i9100_render_commit_payload'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(6+32)*4)
+        (out/'render-commit-payload.bin').write_bytes(data)
+        sequence,pid,length,msgid,bits,wire_size=struct.unpack_from('<6I',data)
+        if length>128:raise ValueError('Invalid retained commit prefix')
+        result['render_commit_payload']=dict(sequence=sequence,pid=pid,length=length,id=msgid,
+            bits=bits,wire_size=wire_size,hex=data[24:24+length].hex())
+    key='_i9100_render_transport_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+128*10)*4)
+        (out/'render-transport.bin').write_bytes(data)
+        words=struct.unpack('<1281I',data)
+        fields=['sequence','pid','thread','stage','id','size','user_size','bits','options','result']
+        rows=[dict(zip(fields,words[1+n*10:1+(n+1)*10])) for n in range(128) if words[1+n*10]]
+        result['render_transport']=dict(sequence=words[0],rows=sorted(rows,key=lambda r:r['sequence']))
+    key='_i9100_user_fault_detail_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+32*29)*4)
+        (out/'user-fault-detail.bin').write_bytes(data)
+        fields=['sequence','pid','thread','task','type','pc','lr','sp','far','fsr','psr','result']+['r'+str(n) for n in range(13)]
+        words=struct.unpack('<929I',data)
+        rows=[]
+        for n in range(32):
+            offset=(1+n*29)*4
+            if not words[1+n*29]:continue
+            row=dict(zip(fields,words[1+n*29:1+n*29+25]))
+            row['name']=data[offset+100:offset+116].split(b'\0')[0].decode('ascii','replace')
+            rows.append(row)
+        result['user_fault_details']=dict(sequence=words[0],rows=sorted(rows,key=lambda r:r['sequence']))
     for key,count,stride,fields in [
         ('_i9100_render_boundary_diag',64,8,['pid','stage','id','size','user_size','bits','options','result']),
         ('_i9100_user_fault_owner_diag',32,12,['sequence','pid','thread','task','type','pc','lr','sp','far','fsr','psr','result'])]:
@@ -122,7 +152,11 @@ def capture_ui_observations(kernel, symbols, out):
         if result['graphics']['version'] not in (0,2):
             raise ValueError('Unknown live graphics counter version')
     (out/'ui-observations.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
-    print('ui-observations',json.dumps(result),flush=True)
+    preview=dict(result)
+    for key in ('render_transport','user_fault_details'):
+        if key in result:
+            preview[key]=dict(sequence=result[key]['sequence'],rows=result[key]['rows'][-8:])
+    print('ui-observations',json.dumps(preview),flush=True)
     return result
 
 

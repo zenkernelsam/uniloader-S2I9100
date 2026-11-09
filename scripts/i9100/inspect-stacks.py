@@ -24,6 +24,8 @@ def capture_process(session,kernel,name,out,m,dyld_info=False):
     (out/(name+'-threads.txt')).write_bytes(data)
     text=data.decode()
     proc=dict(process=name,threads=[])
+    identity=re.search(r'proc\s+(\d+)\s+',text)
+    if identity:proc['pid']=int(identity[1])
     current=None
     for line in text.splitlines():
         if ' thr=' in line:
