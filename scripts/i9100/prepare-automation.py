@@ -20,7 +20,8 @@ label = 'control-' + datetime.now().strftime('%Y%m%d-%H%M%S')
 kernel = xnu / 'out/automation' / label
 package = repo / 'out/automation' / label
 objects = ['pexpert/i9100_usbcdc.o', 'pexpert/i9100_timer.o', 'pexpert/pe_exynos4210_i9100.o',
-           'osfmk/locore.o', 'osfmk/hw_lock.o', 'osfmk/ipc_kobject.o', 'osfmk/mach_msg.o', 'osfmk/trap.o', 'bsd/kern_exec.o',
+           'osfmk/locore.o', 'osfmk/hw_lock.o', 'osfmk/ipc_kobject.o', 'osfmk/mach_msg.o', 'osfmk/mach_port.o',
+           'osfmk/ipc_right.o', 'osfmk/trap.o', 'bsd/kern_exec.o',
            'bsd/unix_syscalls.o', 'bsd/pthread_synch.o', 'bsd/vfs_subr.o', 'bsd/kdebug.o', 'bsd/decmpfs.o', 'iokit/IOKitBSDInit.cpo',
            'iokit/IOPMrootDomain.cpo', 'iokit/IOS7LeoDisplay.cpo', 'iokit/IOUserClient.cpo',
            'iokit/IOS7LeoHIDTouch.cpo',
