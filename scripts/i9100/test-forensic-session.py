@@ -56,6 +56,40 @@ class Tests(unittest.TestCase):
         for verb in ('reboot','reboot-download','write-memory 43e00000 4','read-memory 3fffffff 4','read-memory 7fffffff 2','read-memory 43e00000 8001','threads\nreboot'):
             with self.assertRaises(ValueError):f.validate_command(verb)
 
+    def test_explicit_download_reboot_is_narrow_and_exact(self):
+        self.assertIsNone(f.validate_command('reboot-download', True))
+        for verb in ('reboot', 'reboot-download extra', 'write-memory 43e00000 4', 'reboot-download\nping'):
+            with self.assertRaises(ValueError):f.validate_command(verb, True)
+        r=f.Receiver(TAG, True);r.start(10, 'reboot-download')
+        r.feed(b'I9CTL1 00000009 OK reboot-download\n')
+        self.assertFalse(r.complete)
+        r.feed(b'I9CTL1 0000000a OK reboot-download\n')
+        self.assertTrue(r.complete)
+        r=f.Receiver(TAG, True);r.start(11, 'reboot-download')
+        with self.assertRaises(f.ProtocolError):r.feed(b'I9CTL1 0000000b OK control=1\n')
+        r=f.Receiver(TAG, True);r.start(12, 'reboot-download')
+        with self.assertRaises(f.ProtocolError):r.feed(b'I9CTL1 0000000c OK DATA 00000000 00000000\n')
+
+    def test_ping_then_reboot_shares_transport_and_never_retries(self):
+        class T:
+            def __init__(self):
+                self.writes=[];self.pending=[b'I9CTL1 READY control=1\nI9CTL1 BUILD '+TAG.encode()+b'\n']
+            def ticks(self):return 240000000
+            def write(self,data):
+                self.writes.append(data);seq=data.split()[1]
+                answer=b'OK reboot-download' if b'reboot-download' in data else b'OK control=1'
+                self.pending.append(b'I9CTL1 '+seq+b' '+answer+b'\n')
+            def read(self):return self.pending.pop(0)
+        t=T();s=f.Session(t,TAG,lambda *a,**k:None,io.BytesIO(),sleep=lambda _:None,
+                         allow_reboot_download=True)
+        with self.assertRaises(f.ProtocolError):s.command('reboot-download')
+        self.assertEqual(t.writes,[])
+        s.handshake();s.command('reboot-download')
+        self.assertIs(s.transport,t)
+        self.assertEqual([w.split()[2] for w in t.writes],[b'ping',b'reboot-download'])
+        with self.assertRaises(f.ProtocolError):s.command('ping')
+        self.assertEqual(len(t.writes),2)
+
     def test_error_is_terminal(self):
         for error in ('sequence','busy','disabled'):
             r=f.Receiver(TAG);r.start(1,'threads')

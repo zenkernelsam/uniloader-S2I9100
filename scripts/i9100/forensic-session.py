@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One CDC handle, one attempt per read-only command, exact bounded DATA framing.
+"""One CDC handle, one attempt per command, exact bounded DATA framing.
 
 Uses rawcom's mutex, DTR handshake and GetTickCount64 sequence source. Output
 stays in this repository's out directory. Importing this module opens no device.
@@ -22,7 +22,9 @@ class ProtocolError(RuntimeError):
     pass
 
 
-def validate_command(verb):
+def validate_command(verb, allow_reboot_download=False):
+    if verb == 'reboot-download' and allow_reboot_download:
+        return None
     if verb in ('ping', 'status', 'root-status'):
         return None
     if re.fullmatch(r'(threads|ports)( [A-Za-z0-9_.-]{1,32})?', verb):
@@ -37,10 +39,11 @@ def validate_command(verb):
 
 class Receiver:
     """Framing policy; payload bytes never pass through the text-line parser."""
-    def __init__(self, expected_tag):
+    def __init__(self, expected_tag, allow_reboot_download=False):
         if not re.fullmatch(r'[0-9a-f]{16}', expected_tag):
             raise ValueError('Expected a 16-hex kernel build tag')
         self.expected_tag = expected_tag
+        self.allow_reboot_download = bool(allow_reboot_download)
         self.ready = self.tag_seen = False
         self.line = bytearray()
         self.drop = False
@@ -52,7 +55,7 @@ class Receiver:
         self.complete = False
 
     def start(self, seq, verb):
-        validate_command(verb)
+        validate_command(verb, self.allow_reboot_download)
         if not 0 < seq <= 0xffffffff:
             raise ValueError('Invalid sequence')
         self.seq, self.verb = seq, verb
@@ -88,16 +91,18 @@ class Receiver:
             addr, size = (int(x, 16) for x in data.groups())
             if size > MAX_DATA:
                 raise ProtocolError('DATA length exceeds staging buffer')
-            requested = validate_command(self.verb)
+            requested = validate_command(self.verb, self.allow_reboot_download)
             if requested is not None and (addr, size) != requested:
                 raise ProtocolError('DATA address/length does not match request')
-            if self.verb in ('ping', 'status', 'root-status'):
+            if self.verb in ('ping', 'status', 'root-status', 'reboot-download'):
                 raise ProtocolError('Unexpected DATA for scalar query')
             self.remaining = size
             self.complete = size == 0
         elif self.verb in ('ping', 'status') and answer == 'OK control=1':
             self.complete = True
         elif self.verb == 'root-status' and answer in ('OK root=BOOTING', 'OK root=WAIT_ROOT', 'OK root=NO_ROOT', 'OK root=MEDIA_FOUND'):
+            self.complete = True
+        elif self.verb == 'reboot-download' and answer == 'OK reboot-download':
             self.complete = True
         else:
             raise ProtocolError(f'Unexpected reply: {answer}')
@@ -128,12 +133,14 @@ class Receiver:
 
 
 class Session:
-    def __init__(self, transport, expected_tag, record, capture, timeout=15, clock=time.monotonic, sleep=time.sleep):
+    def __init__(self, transport, expected_tag, record, capture, timeout=15, clock=time.monotonic, sleep=time.sleep,
+                 allow_reboot_download=False):
         self.transport = transport
-        self.receiver = Receiver(expected_tag)
+        self.receiver = Receiver(expected_tag, allow_reboot_download)
         self.record, self.capture, self.timeout = record, capture, timeout
         self.clock, self.sleep = clock, sleep
         self.seq = 0
+        self.reboot_requested = False
 
     def _wait(self, predicate, label):
         deadline = self.clock() + self.timeout
@@ -152,7 +159,11 @@ class Session:
         self.command('ping')
 
     def command(self, verb):
-        validate_command(verb)
+        if self.reboot_requested:
+            raise ProtocolError('Download reboot is terminal for this handle; no further command')
+        if verb == 'reboot-download' and not (self.receiver.ready and self.receiver.tag_seen):
+            raise ProtocolError('Download reboot needs the verified READY/BUILD handshake')
+        validate_command(verb, self.receiver.allow_reboot_download)
         # A host ReadFile completion can precede the kernel's next 10ms poll
         # that clears uctl_flight. Allow that completion before another write.
         self.sleep(0.075)
@@ -160,6 +171,8 @@ class Session:
         if not 0 < self.seq < 0xffffffff:
             raise ProtocolError('Sequence source wrapped; stop this session')
         wire = self.receiver.start(self.seq, verb)
+        if verb == 'reboot-download':
+            self.reboot_requested = True
         self.record('SEND', sequence=self.seq, command=verb, bytes=len(wire))
         self.transport.write(wire)
         self._wait(lambda: self.receiver.complete, verb)
@@ -247,9 +260,13 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--timeout', type=int, choices=range(5, 61), default=20)
     parser.add_argument('--command', action='append', required=True)
+    parser.add_argument('--reboot-download', action='store_true',
+                        help='After the queries, send one download reboot on the same validated handle')
     args = parser.parse_args()
     for verb in args.command:
         validate_command(verb)
+    if args.reboot_download:
+        args.command.append('reboot-download')
     Receiver(args.expect)
     output = args.output.resolve()
     if not output.is_relative_to(REPO / 'out') or output.exists():
@@ -276,7 +293,8 @@ def main():
             record('BEGIN', pid=os.getpid(), device=device, expected_tag=args.expect)
             try:
                 transport = WinTransport(device['port'], record)
-                session = Session(transport, args.expect, record, capture, args.timeout)
+                session = Session(transport, args.expect, record, capture, args.timeout,
+                                  allow_reboot_download=args.reboot_download)
                 session.handshake()
                 for number, verb in enumerate(args.command, 1):
                     answer, payload = session.command(verb)

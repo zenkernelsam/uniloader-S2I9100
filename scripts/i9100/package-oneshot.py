@@ -38,6 +38,8 @@ def main():
     parser.add_argument('--control', action='store_true', help='Enable serial maintenance resets')
     parser.add_argument('--ls-bootstrap', action='store_true', help='Bound the observed iOS6 LS/MI initialization cycle')
     parser.add_argument('--xpc-diag', action='store_true', help='Retain XPC boundary metadata in kernel RAM')
+    parser.add_argument('--reboot-download-fallback', action='store_true',
+                        help='Recover normal iOS reboot requests into Download after filesystem shutdown')
     parser.add_argument('--control-bootargs-only', action='store_true',
                         help='Diagnostic: control loader bootargs with a baseline kernel; no command capability claim')
     args = parser.parse_args()
@@ -45,6 +47,8 @@ def main():
         parser.error('--ls-bootstrap requires --control')
     if args.xpc_diag and not args.control:
         parser.error('--xpc-diag requires --control')
+    if args.reboot_download_fallback and not args.control:
+        parser.error('--reboot-download-fallback requires --control')
     if args.control_bootargs_only and not args.control:
         parser.error('--control-bootargs-only requires --control')
     output = args.output.resolve()
@@ -61,6 +65,8 @@ def main():
     run([sys.executable, helpers/'mkraw.py', kernel, raw], loader, output/'mkraw.log')
     import lz4.block
     raw_data = raw.read_bytes()
+    if args.reboot_download_fallback and b'i9100rebootdownload\0' not in raw_data:
+        raise RuntimeError('Kernel lacks the i9100 PE reboot recovery capability')
     blob = output/'Image.lz4'
     blob.write_bytes(lz4.block.compress(raw_data, store_size=False))
     assert lz4.block.decompress(blob.read_bytes(), uncompressed_size=len(raw_data)) == raw_data
@@ -72,6 +78,7 @@ def main():
         *(['--control', '--control-tag', sha(kernel)[:16]] if args.control else []),
         *(['--ls-bootstrap'] if args.ls_bootstrap else []),
         *(['--xpc-diag'] if args.xpc_diag else []),
+        *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
         '--kernel-blob', blob, 'arch/arm/start.S', 'arch/arm/load-kernel.c',
         'arch/arm/lz4dec.c', 'board/samsung/board-i9100.c',
         'drivers/samsung/dwc2cdc4210.c', 'main/main.c'], loader, output/'loader-build.log')
@@ -90,6 +97,8 @@ def main():
         assert b'i9100lsbootstrap=1' in data
     if args.xpc_diag:
         assert b'i9100xpcdiag=1' in data
+    if args.reboot_download_fallback:
+        assert b'i9100rebootdownload=1' in data
     assert 'S2I9100-OS6'.encode('utf-16le') in data
     symbols = subprocess.check_output(['arm-none-eabi-nm','-n',str(build/'uniLoader.o')],text=True)
     (output/'loader-symbols.txt').write_text(symbols)
@@ -124,6 +133,7 @@ def main():
         'serial_control': args.control and not args.control_bootargs_only,
         'ls_bootstrap': args.ls_bootstrap,
         'xpc_diag': args.xpc_diag,
+        'reboot_download_fallback': args.reboot_download_fallback,
         'root_status_protocol': b'OK root=NO_ROOT' in raw_data,
         'diagnostic_control_bootargs_only': args.control_bootargs_only,
         'control_tag': sha(kernel)[:16] if args.control else None,
