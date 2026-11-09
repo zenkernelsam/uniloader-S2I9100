@@ -51,6 +51,14 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_render_receive_payload'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(6+32)*4)
+        (out/'render-receive-payload.bin').write_bytes(data)
+        sequence,pid,length,msgid,bits,status=struct.unpack_from('<6I',data)
+        if length>128:raise ValueError('Invalid retained render payload')
+        result['render_payload']=dict(sequence=sequence,pid=pid,length=length,id=msgid,
+                                     bits=bits,status=status,hex=data[24:24+length].hex())
     for key,count,stride,fields in [
         ('_i9100_render_boundary_diag',64,8,['pid','stage','id','size','user_size','bits','options','result']),
         ('_i9100_user_fault_owner_diag',32,12,['sequence','pid','thread','task','type','pc','lr','sp','far','fsr','psr','result'])]:
