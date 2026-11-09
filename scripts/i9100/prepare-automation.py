@@ -17,9 +17,12 @@ parser.add_argument('--xpc-diag', action='store_true')
 parser.add_argument('--reboot-download-fallback', action='store_true')
 parser.add_argument('--tcc-development', action='store_true')
 parser.add_argument('--mdns-development', action='store_true')
-parser.add_argument('--panic-recovery', action='store_true')
+parser.add_argument('--panic-recovery', action=argparse.BooleanOptionalAction, default=True,
+                    help='Retain panic logs and return to Download after 180s')
 parser.add_argument('--panic-test', action='store_true')
 args = parser.parse_args()
+if args.panic_test and not args.panic_recovery:
+    parser.error('--panic-test requires --panic-recovery')
 xnu = repo.parent / 'xnu'
 label = 'control-' + datetime.now().strftime('%Y%m%d-%H%M%S')
 kernel = xnu / 'out/automation' / label
