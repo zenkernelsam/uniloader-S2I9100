@@ -374,7 +374,11 @@ _kernel_end:
 .align	4
 .globl _dt_start
 _dt_start:
+#ifdef I9100_DTB_BLOB
+	.incbin I9100_DTB_BLOB
+#else
 	.incbin "blob/dtb"
+#endif
 .globl _dt_end
 _dt_end:
 

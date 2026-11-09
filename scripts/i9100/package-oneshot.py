@@ -77,6 +77,10 @@ def main():
         parser.error('Wait for the kernel link to finish before packaging')
     output.mkdir(parents=True)
     helpers = loader/'scripts/i9100'
+    dt_spec=importlib.util.spec_from_file_location('i9100_dt',helpers/'prepare-payloads.py')
+    dt_module=importlib.util.module_from_spec(dt_spec);dt_spec.loader.exec_module(dt_module)
+    dt_blob=output/'dtb'
+    dt_blob.write_bytes(dt_module.device_tree())
     raw = output/'Image.raw'
     run([sys.executable, helpers/'mkraw.py', kernel, raw], loader, output/'mkraw.log')
     import lz4.block
@@ -105,7 +109,7 @@ def main():
         *(['--mdns-development'] if args.mdns_development else []),
         *(['--panic-recovery'] if args.panic_recovery else []),
         *(['--panic-test'] if args.panic_test else []),
-        '--kernel-blob', blob, 'arch/arm/start.S', 'arch/arm/load-kernel.c',
+        '--kernel-blob', blob, '--dtb-blob', dt_blob, 'arch/arm/start.S', 'arch/arm/load-kernel.c',
         'arch/arm/lz4dec.c', 'board/samsung/board-i9100.c',
         'drivers/samsung/dwc2cdc4210.c', 'main/main.c'], loader, output/'loader-build.log')
     shutil.copyfile(build/'zImage', output/'zImage')
@@ -116,6 +120,7 @@ def main():
     assert struct.unpack_from('<I', data, 0x28)[0] == 0x40008000
     assert struct.unpack_from('<I', data, 0x2c)[0] == 0x40008000 + len(data)
     assert len(data) < 8*1024*1024
+    assert dt_blob.read_bytes() in data
     assert b'ios7lab_vmabi=0' in data
     if args.control:
         assert b'i9100control=1' in data

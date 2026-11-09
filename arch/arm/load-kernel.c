@@ -244,6 +244,9 @@ static unsigned int j1_xnu_entry_offset(unsigned int load_pa,
 	return def;
 }
 
+#ifdef CONFIG_SAMSUNG_I9100
+#include <main/i9100-previous-boot.h>
+#endif
 void arch_load_kernel_xnu(void *kernel, void *dt, void *ramdisk)
 {
 	unsigned int phys_base = CONFIG_XNU_PHYS_BASE;
@@ -826,6 +829,11 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 #endif
 	ba->deviceTreeP = (void *)(dt_pa - phys_base + virt_base);
 	ba->deviceTreeLength = dtsize;
+#ifdef CONFIG_SAMSUNG_I9100
+	printk(KERN_INFO,"i9100: previous boot DT=%u flags=%x reason=%08x pc=%08x\n",
+	    i9100_previous_boot_patch((void *)dt_pa,dtsize,&i9100_previous_boot),
+	    i9100_previous_boot.valid,i9100_previous_boot.inform7,i9100_previous_boot.pc);
+#endif
 
 	/* Keep the proven one-copy bootargs path; compose opt-ins at compile time. */
 	memcpy(ba->CommandLine, I9100_EFFECTIVE_CMDLINE,

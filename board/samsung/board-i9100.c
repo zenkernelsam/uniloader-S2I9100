@@ -81,6 +81,8 @@ static uint32_t parse_atag_fb(void)
 	return 0;
 }
 
+#include <main/i9100-previous-boot.h>
+struct I9100PreviousBoot i9100_previous_boot;
 int i9100_init(void)
 {
 	volatile uint32_t *trace = (volatile uint32_t *)0x10020818;
@@ -90,6 +92,19 @@ int i9100_init(void)
 	uint32_t ddr_stage = ddr_valid ? cell[1] : 0;
 	uint32_t ddr_reason = ddr_valid ? cell[2] : 0;
 	uint32_t pc = ddr_valid ? cell[3] : 0;
+	memset(&i9100_previous_boot,0,sizeof(i9100_previous_boot));
+	i9100_previous_boot.magic=I9100_PREVIOUS_BOOT_MAGIC;
+	i9100_previous_boot.version=1;
+	i9100_previous_boot.bytes=sizeof(i9100_previous_boot);
+	i9100_previous_boot.valid=((previous&0xffff0000U)==0x77660000U ? 1U : 0U) |
+	    (ddr_valid ? 2U : 0U);
+	i9100_previous_boot.inform6=previous;i9100_previous_boot.inform7=reason;
+	i9100_previous_boot.stage=ddr_stage;i9100_previous_boot.reason=ddr_reason;
+	i9100_previous_boot.pc=pc;
+	if (ddr_valid) {
+		i9100_previous_boot.lr=cell[4];i9100_previous_boot.far=cell[5];
+		i9100_previous_boot.fsr=cell[6];
+	}
 	/* Consume the previous record before starting another attempt. */
 	cell[0] = 0;
 	trace[0] = 0x77660001U;

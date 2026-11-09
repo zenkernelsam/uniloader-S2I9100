@@ -32,6 +32,73 @@ TABLES = {
             ['pid', 'operation', 'original_error', 'result', 'providers', 'unconfined', 'stage']),
 }
 
+EXIT_FIELDS = ['sequence', 'pid', 'signal', 'exit_code', 'exception_known',
+               'exception', 'code', 'subcode', 'free_pages']
+GRAPHICS_FIELDS = '''version known loss unknown clients last_client owner_pid
+latest_open_client latest_open_pid selector3_calls selector3_successes selector8_calls selector8_successes
+selector18_calls selector18_successes prereq_last_client prereq_last_pid prereq_last_selector prereq_last_result
+selector4_calls selector4_rejects selector5_calls selector5_rejects selector5_backend_calls selector5_completed
+selector6_calls selector6_rejects selector9_calls selector9_rejects port_calls port_rejects
+port_entries port_preflight_rejects port_gate_entries port_returns port_entry_client port_entry_pid
+port_entry_type port_entry_valid port_last_return send_calls send_success send_failures copy_send_failures
+stale_completions last_selector last_result last_reason last_transaction_lo last_transaction_hi
+last_surface last_mismatch last_wait_lo last_wait_hi requested enabled closed port_present callback_present
+generation_lo generation_hi last_send_status last_timer_status events_published events_taken
+selector4_result selector5_result selector6_result selector9_result
+selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
+
+
+def capture_ui_observations(kernel, symbols, out):
+    """Retained exit/abort evidence and display counters from this exact BUILD."""
+    result = {}
+    for name in ('i9100_process_exit', 'i9100_backboard_exit'):
+        key = '_'+name
+        if key in symbols.values:
+            data = kernel.read(symbols[key], 36)
+            (out/(name+'.bin')).write_bytes(data)
+            result[name] = dict(zip(EXIT_FIELDS, struct.unpack('<9I', data)))
+    key = '_i9100_signal_exit'
+    if key in symbols.values:
+        data = kernel.read(symbols[key], 60)
+        (out/'signal-exit.bin').write_bytes(data)
+        fields = ['sequence','pid','task','signal','context_pid','pc','lr','caller_pc','irq','flavor']
+        result['signal_exit'] = dict(zip(fields, struct.unpack_from('<10I',data)))
+        result['signal_exit']['context_name'] = data[40:57].split(b'\0')[0].decode('ascii','replace')
+    key = '_i9100_abort_observation'
+    if key in symbols.values:
+        data = kernel.read(symbols[key], 336)
+        (out/'abort-observation.bin').write_bytes(data)
+        fields = ['sequence','pid','task','pc','lr','sp','fp','count','error'] + ['frame'+str(n) for n in range(8)] + \
+                 ['slab','slab_object','slab_expected','slab_actual','slab_status','text_kind']
+        result['abort'] = dict(zip(fields,struct.unpack_from('<23I',data)))
+        result['abort']['text'] = data[92:333].split(b'\0')[0].decode('utf-8','replace')
+    for name, size in [('i9100_panel_console_enabled',4), ('i9100_fb_physical',4),
+                       ('i9100_graphics_seq',8), ('i9100_frame_performance',28)]:
+        key = '_'+name
+        if key in symbols.values:
+            data = kernel.read(symbols[key],size)
+            (out/(name+'.bin')).write_bytes(data)
+            result[name] = list(struct.unpack('<'+'I'*(size//4),data))
+    key = '_i9100_previous_boot'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],64)
+        (out/'previous-boot.bin').write_bytes(data)
+        fields=['magic','version','bytes','valid','inform6','inform7','stage','reason','pc','lr','far','fsr'] + \
+               ['reserved'+str(n) for n in range(4)]
+        result['previous_boot']=dict(zip(fields,struct.unpack('<16I',data)))
+    keys = [name for name in symbols.values if name.endswith('leo_graphics_state')]
+    if len(keys) == 1:
+        if len(GRAPHICS_FIELDS) != 73:
+            raise ValueError('Unexpected graphics counter layout')
+        data = kernel.read(symbols[keys[0]],73*4)
+        (out/'graphics-state.bin').write_bytes(data)
+        result['graphics'] = dict(zip(GRAPHICS_FIELDS,struct.unpack('<73I',data)))
+        if result['graphics']['version'] not in (0,2):
+            raise ValueError('Unknown live graphics counter version')
+    (out/'ui-observations.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
+    print('ui-observations',json.dumps(result),flush=True)
+    return result
+
 
 def decode_table(data, cap, stride, fields):
     words = struct.unpack('<'+str(1+cap*stride)+'I', data)
@@ -84,6 +151,7 @@ def main():
                 session.handshake()
                 kernel = m.Kernel(session, symbols)
                 result = dict(tag=symbols.tag, device=device, tables={})
+                result['ui_observations'] = capture_ui_observations(kernel,symbols,out)
                 result['resources'] = {}
                 for name in ('_maxproc', '_maxprocperuid', '_hard_maxproc', '_nprocs', '_vm_page_free_count'):
                     if name in symbols.values:

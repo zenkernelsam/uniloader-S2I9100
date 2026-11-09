@@ -24,6 +24,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--kernel-blob', type=Path)
+    parser.add_argument('--dtb-blob', type=Path)
     parser.add_argument('--control', action='store_true')
     parser.add_argument('--control-tag')
     parser.add_argument('--ls-bootstrap', action='store_true')
@@ -62,6 +63,12 @@ def main():
             parser.error('Kernel blob must be a file inside loader out')
         if 'arch/arm/start.S' not in args.sources:
             parser.error('A new blob requires recompiling arch/arm/start.S')
+    if args.dtb_blob:
+        dt_blob=args.dtb_blob.resolve()
+        if not dt_blob.is_relative_to(repo/'out') or not dt_blob.is_file():
+            parser.error('DT blob must be a file inside loader out')
+        if 'arch/arm/start.S' not in args.sources:
+            parser.error('A new DT requires recompiling arch/arm/start.S')
     replacements = {}
     head = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'], cwd=repo, text=True).strip()
     label = f'({head}) - date ' + datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S')
@@ -95,6 +102,8 @@ def main():
                 command.append('-DI9100_PANIC_TEST_BUILD=1')
         if source_name == 'arch/arm/start.S' and args.kernel_blob:
             command.append('-DI9100_KERNEL_BLOB="' + str(blob) + '"')
+        if source_name == 'arch/arm/start.S' and args.dtb_blob:
+            command.append('-DI9100_DTB_BLOB="' + str(dt_blob) + '"')
         new_object = output / original
         new_object.parent.mkdir(parents=True, exist_ok=True)
         command[command.index('-o') + 1] = str(new_object)

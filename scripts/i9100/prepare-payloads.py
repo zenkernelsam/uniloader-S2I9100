@@ -25,7 +25,8 @@ def device_tree():
     # logs as a miss on the live path probe, so publish an explicit zero.
     chosen = node([('name', b'chosen\0'), ('firmware-version', b'uniLoader-i9100\0'),
                    ('debug-enabled', b'\1'), ('display-scale', struct.pack('<I', 1)),
-                   ('display-rotation', struct.pack('<I', 0))])
+                   ('display-rotation', struct.pack('<I', 0)),
+                   ('i9100-prev-boot', bytes(64))])
     # NOTE: software-behavior intentionally absent — an all-zero blob made
     # SpringBoard SIGABRT after reading it on-device.
     # backboardd reads region-info on the machine node for MobileGestalt.
