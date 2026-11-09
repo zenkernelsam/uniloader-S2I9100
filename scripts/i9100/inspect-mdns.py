@@ -90,6 +90,12 @@ def main():
                     preview = table if table['count'] <= 8 else dict(count=table['count'],
                         first=table['rows'][:3], last=table['rows'][-3:])
                     print(name, json.dumps(preview), flush=True)
+                if '_i9100_mdns_development_diag' in symbols.values:
+                    data = kernel.read(symbols['_i9100_mdns_development_diag'], (1+8*7)*4)
+                    (out/'development.bin').write_bytes(data)
+                    fields = ['pid', 'operation', 'original_error', 'result', 'providers', 'unconfined', 'stage']
+                    result['tables']['development'] = decode_table(data, 8, 7, fields)
+                    print('development', json.dumps(result['tables']['development']), flush=True)
                 data = kernel.read(symbols['_i9100_mdns_stderr_diag'], (6+128)*4)
                 (out/'stderr.bin').write_bytes(data)
                 sequence, pid, task, role, used, error = struct.unpack_from('<6I', data)

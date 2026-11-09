@@ -16,6 +16,7 @@ parser.add_argument('--ls-bootstrap', action='store_true')
 parser.add_argument('--xpc-diag', action='store_true')
 parser.add_argument('--reboot-download-fallback', action='store_true')
 parser.add_argument('--tcc-development', action='store_true')
+parser.add_argument('--mdns-development', action='store_true')
 args = parser.parse_args()
 xnu = repo.parent / 'xnu'
 label = 'control-' + datetime.now().strftime('%Y%m%d-%H%M%S')
@@ -36,5 +37,6 @@ subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--ke
                 *(['--ls-bootstrap'] if args.ls_bootstrap else []),
                 *(['--xpc-diag'] if args.xpc_diag else []),
                 *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
-                *(['--tcc-development'] if args.tcc_development else [])], check=True)
+                *(['--tcc-development'] if args.tcc_development else []),
+                *(['--mdns-development'] if args.mdns_development else [])], check=True)
 print('OFFLINE READY:', package, flush=True)

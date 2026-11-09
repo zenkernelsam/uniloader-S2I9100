@@ -42,6 +42,8 @@ def main():
                         help='Recover normal iOS reboot requests into Download after filesystem shutdown')
     parser.add_argument('--tcc-development', action='store_true',
                         help='Explicit unconfined tccd initialization when no Sandbox policy exists')
+    parser.add_argument('--mdns-development', action='store_true',
+                        help='Explicit unconfined MDNS initialization when no Sandbox policy exists')
     parser.add_argument('--control-bootargs-only', action='store_true',
                         help='Diagnostic: control loader bootargs with a baseline kernel; no command capability claim')
     args = parser.parse_args()
@@ -53,6 +55,8 @@ def main():
         parser.error('--reboot-download-fallback requires --control')
     if args.tcc_development and not args.control:
         parser.error('--tcc-development requires --control')
+    if args.mdns_development and not args.control:
+        parser.error('--mdns-development requires --control')
     if args.control_bootargs_only and not args.control:
         parser.error('--control-bootargs-only requires --control')
     output = args.output.resolve()
@@ -73,6 +77,8 @@ def main():
         raise RuntimeError('Kernel lacks the i9100 PE reboot recovery capability')
     if args.tcc_development and b'i9100tccdev\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit tccd development capability')
+    if args.mdns_development and b'i9100mdnsdev\0' not in raw_data:
+        raise RuntimeError('Kernel lacks the explicit MDNS development capability')
     blob = output/'Image.lz4'
     blob.write_bytes(lz4.block.compress(raw_data, store_size=False))
     assert lz4.block.decompress(blob.read_bytes(), uncompressed_size=len(raw_data)) == raw_data
@@ -86,6 +92,7 @@ def main():
         *(['--xpc-diag'] if args.xpc_diag else []),
         *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
         *(['--tcc-development'] if args.tcc_development else []),
+        *(['--mdns-development'] if args.mdns_development else []),
         '--kernel-blob', blob, 'arch/arm/start.S', 'arch/arm/load-kernel.c',
         'arch/arm/lz4dec.c', 'board/samsung/board-i9100.c',
         'drivers/samsung/dwc2cdc4210.c', 'main/main.c'], loader, output/'loader-build.log')
@@ -108,6 +115,8 @@ def main():
         assert b'i9100rebootdownload=1' in data
     if args.tcc_development:
         assert b'i9100tccdev=1' in data
+    if args.mdns_development:
+        assert b'i9100mdnsdev=1' in data
     assert 'S2I9100-OS6'.encode('utf-16le') in data
     symbols = subprocess.check_output(['arm-none-eabi-nm','-n',str(build/'uniLoader.o')],text=True)
     (output/'loader-symbols.txt').write_text(symbols)
@@ -144,6 +153,7 @@ def main():
         'xpc_diag': args.xpc_diag,
         'reboot_download_fallback': args.reboot_download_fallback,
         'tcc_development_unconfined': args.tcc_development,
+        'mdns_development_unconfined': args.mdns_development,
         'root_status_protocol': b'OK root=NO_ROOT' in raw_data,
         'diagnostic_control_bootargs_only': args.control_bootargs_only,
         'control_tag': sha(kernel)[:16] if args.control else None,
