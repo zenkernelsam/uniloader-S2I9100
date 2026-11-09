@@ -37,6 +37,10 @@ def require(ok, message):
         raise ValueError(message)
 
 
+class UncertainProcess(RuntimeError):
+    """A child may still own USB/COM; do not open another recovery session."""
+
+
 def sha(path):
     with Path(path).open('rb') as f:
         return hashlib.file_digest(f, 'sha256').hexdigest()
@@ -132,7 +136,7 @@ ConvertTo-Json -InputObject $rows -Compress -Depth 4
         try:
             stdout, stderr = proc.communicate(timeout=20)
         except subprocess.TimeoutExpired:
-            raise RuntimeError(f'PnP query blocked, PID {proc.pid}; STOP, no kill/retry')
+            raise UncertainProcess(f'PnP query blocked, PID {proc.pid}; STOP, no kill/retry')
         require(proc.returncode == 0, 'PnP query failed: ' + stderr.decode('utf-8', 'replace'))
         return json.loads(stdout.decode('utf-8-sig'))
 
@@ -143,7 +147,7 @@ ConvertTo-Json -InputObject $rows -Compress -Depth 4
             try:
                 result = proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                raise RuntimeError(f'Process {proc.pid} exceeded deadline; state uncertain, NO kill/retry')
+                raise UncertainProcess(f'Process {proc.pid} exceeded deadline; state uncertain, NO kill/retry')
         require(result == 0, f'Process failed ({result}); see {directory}')
 
     def sleep(self):
@@ -300,14 +304,75 @@ def immutable_snapshots(plan):
         yield
 
 
+def has_panic_recovery(plan):
+    image = plan.parent / 'zImage'
+    return image.is_file() and b'i9100panicrecovery=1' in image.read_bytes()
+
+
+def panic_tools():
+    spec = importlib.util.spec_from_file_location('i9100_boot_panic', Path(__file__).with_name('panic-recovery.py'))
+    result = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(result)
+    return result
+
+
+def check_boot_panic(host, plan, journal):
+    """One independent state check after the previous serial child has exited.
+
+    The outer execute already owns host.lock and the immutable snapshot lease.
+    A timed-out child never reaches here. This never flashes or sends a reset.
+    """
+    if not has_panic_recovery(plan):
+        return False
+    p = panic_tools()
+    profile = plan.data['profile']
+    require(profile is not None, 'Panic state verification needs an approved Download profile')
+    devices = host.inventory()
+    if samsung(devices):
+        journal.event('DOWNLOAD_DURING_BOOT_CHECK', profile=download(devices, profile))
+        raise ValueError('Kernel is already in Download; boot was not verified')
+    device = p.healthy_cdc(devices, profile)
+    require(device is not None, 'No healthy kernel CDC for panic state check; no opener retry')
+    output = plan.parent / 'panic-check'
+    output.mkdir()
+    with p.serial_session(output / 'serial', device, plan.data['control_tag'], journal.event) as session:
+        answer, _ = session.command('panic-status')
+        active, remaining = p.countdown(answer)
+        journal.event('BOOT_PANIC_STATE', active=active, remaining_seconds=remaining)
+        if not active:
+            return False
+        journal.event('BOOT_PANIC_DETECTED', meaning='Preserve evidence and wait for automatic Download; no flash retry')
+        header, observed, digest, advanced = p.collect(session, output, journal.event)
+    actual, duration = p.observe_download(host, profile, output, journal.event,
+                                         observed - header['elapsed_seconds'])
+    result = dict(build=plan.data['control_tag'], panic_log_sha256=digest,
+                  header=header, countdown_advanced=advanced, download=actual,
+                  seconds_since_panic=round(duration, 3), extra_flash_writes=0)
+    save(output / 'result.json', result)
+    journal.event('PANIC_RECOVERED_TO_DOWNLOAD', **result)
+    return True
+
+
 def verify_kernel(host, plan, device, journal, verify_only=False):
     journal.event('VERIFY_KERNEL', control_tag=plan.data['control_tag'])
     if plan.data['validation'] != 'logs':
         query = 'root-status' if plan.data['root_status_protocol'] else 'ping'
-        root_state = serial(host, plan, plan.parent / 'after', device, query, plan.data['control_tag'])
-        if plan.data['root_status_protocol']:
-            expected = 'NO_ROOT' if plan.data['validation'] == 'maintenance' else 'MEDIA_FOUND'
-            require(root_state == expected, f'Expected root state {expected}, observed {root_state}')
+        try:
+            root_state = serial(host, plan, plan.parent / 'after', device, query, plan.data['control_tag'])
+            if plan.data['root_status_protocol']:
+                expected = 'NO_ROOT' if plan.data['validation'] == 'maintenance' else 'MEDIA_FOUND'
+                require(root_state == expected, f'Expected root state {expected}, observed {root_state}')
+        except UncertainProcess:
+            # The old child may still hold a blocked COM opener or PnP query.
+            # Preserve it and stop; a recovery opener would violate ownership.
+            raise
+        except Exception:
+            check_boot_panic(host, plan, journal)
+            raise
+        require(not check_boot_panic(host, plan, journal),
+                'Kernel panicked; evidence saved and automatic Download observed; failed plan stays consumed')
+        analysis = json.loads((plan.parent / 'after/log-analysis.json').read_text())
+        require(not analysis['panic_lines'], 'Kernel panic appears in boot capture; boot was not verified')
         phase = 'DONE_VERIFY_ONLY' if verify_only else 'DONE_MAINTENANCE' if plan.data['validation'] == 'maintenance' else 'DONE'
         journal.event(phase, root_state=root_state,
                       meaning='Build/ping/capture verified; root state is media discovery, not filesystem integrity')

@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 import unittest
 import uuid
+from contextlib import contextmanager
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('odin', Path(__file__).with_name('odin-loop.py'))
@@ -56,6 +58,7 @@ class FakeHost:
             self.state = 'boot'
             return
         if self.fault == 'serial-open': raise RuntimeError('injected blocked opener; no kill')
+        if self.fault == 'serial-uncertain': raise o.UncertainProcess('injected live serial child; no recovery opener')
         if self.state == 'boot' and self.fault == 'boot-identity': raise RuntimeError('wrong build tag')
         reboot = 'reboot-download' in args
         root_query='root-status' in args
@@ -211,6 +214,87 @@ class Tests(unittest.TestCase):
         data['partition']='KERNEL';path.write_text(json.dumps(data))
         with (dest/'zImage').open('r+b') as f: f.write(b'bad')
         with self.assertRaises(ValueError): o.Plan(path,o.sha(path))
+
+    def test_panic_is_not_a_successful_boot_or_an_extra_flash(self):
+        plan, host = FakePlan(), FakeHost(initial='dl')
+        with patch.object(o, 'check_boot_panic', return_value=True) as recovery:
+            with self.assertRaisesRegex(ValueError, 'Kernel panicked'):
+                o.cycle(host, plan, 'bootstrap', o.Journal(plan.parent))
+        self.assertEqual(recovery.call_count, 1)
+        self.assertEqual(sum(c[1] == 'flash' for c in host.calls), 1)
+        self.assertNotIn('"phase": "DONE"', (plan.parent/'timeline.jsonl').read_text())
+
+    def test_uncertain_opener_does_not_start_recovery(self):
+        plan, host = FakePlan(), FakeHost('serial-uncertain', initial='dl')
+        with patch.object(o, 'check_boot_panic') as recovery:
+            with self.assertRaises(o.UncertainProcess):
+                o.cycle(host, plan, 'bootstrap', o.Journal(plan.parent))
+        recovery.assert_not_called()
+        self.assertEqual(sum(c[1] == 'flash' for c in host.calls), 1)
+
+    def test_known_failed_reader_can_save_panic_without_reflashing(self):
+        plan, host = FakePlan(), FakeHost('boot-identity', initial='dl')
+        with patch.object(o, 'check_boot_panic', return_value=True) as recovery:
+            with self.assertRaisesRegex(RuntimeError, 'wrong build tag'):
+                o.cycle(host, plan, 'bootstrap', o.Journal(plan.parent))
+        self.assertEqual(recovery.call_count, 1)
+        self.assertEqual(sum(c[1] == 'flash' for c in host.calls), 1)
+
+    def test_recovery_state_probe_collects_on_one_handle(self):
+        plan, host = FakePlan(), FakeHost()
+        (plan.parent/'zImage').write_bytes(b'fixture i9100panicrecovery=1')
+        p = o.panic_tools()
+        commands = []
+        class Session:
+            def command(self, verb):
+                commands.append(verb)
+                return 'OK panic=1 seconds=000000ab', b''
+        @contextmanager
+        def context(*args, **kwargs):
+            yield Session()
+        with patch.object(o, 'panic_tools', return_value=p), \
+                patch.object(p, 'serial_session', side_effect=context) as opened, \
+                patch.object(p, 'collect', return_value=({'elapsed_seconds':9},42,'fixture-sha',True)) as collected, \
+                patch.object(p, 'observe_download', return_value=(PROFILE,198)) as observed:
+            self.assertTrue(o.check_boot_panic(host, plan, o.Journal(plan.parent)))
+        self.assertEqual(opened.call_count, 1)
+        self.assertEqual(collected.call_count, 1)
+        self.assertEqual(observed.call_count, 1)
+        self.assertEqual(commands, ['panic-status'])
+        self.assertEqual(host.calls, [])
+
+    def test_normal_state_probe_never_triggers_panic_or_reset(self):
+        plan, host = FakePlan(), FakeHost()
+        (plan.parent/'zImage').write_bytes(b'i9100panicrecovery=1')
+        p = o.panic_tools()
+        commands = []
+        class Session:
+            def command(self, verb):
+                commands.append(verb)
+                return 'OK panic=0 seconds=00000000', b''
+        @contextmanager
+        def context(*args, **kwargs):
+            yield Session()
+        with patch.object(o, 'panic_tools', return_value=p), \
+                patch.object(p, 'serial_session', side_effect=context) as opened, \
+                patch.object(p, 'collect') as collected, patch.object(p, 'observe_download') as observed:
+            self.assertFalse(o.check_boot_panic(host, plan, o.Journal(plan.parent)))
+        self.assertEqual(opened.call_count, 1)
+        collected.assert_not_called()
+        observed.assert_not_called()
+        self.assertEqual(host.calls, [])
+        self.assertEqual(commands, ['panic-status'])
+
+    def test_download_state_is_not_a_successful_kernel_boot(self):
+        plan, host = FakePlan(), FakeHost(initial='dl')
+        (plan.parent/'zImage').write_bytes(b'i9100panicrecovery=1')
+        with self.assertRaisesRegex(ValueError, 'already in Download'):
+            o.check_boot_panic(host, plan, o.Journal(plan.parent))
+        self.assertEqual(host.calls, [])
+
+    def test_new_fatal_formatter_is_classified(self):
+        result = o._logs.classify(b'normal\n*** KERNEL FATAL: fixture\nI9100 PANIC_WAIT seconds=180 route=DOWNLOAD\n')
+        self.assertEqual(len(result['panic_lines']), 2)
 
 
 if __name__ == '__main__':

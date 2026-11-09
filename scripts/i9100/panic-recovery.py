@@ -116,19 +116,45 @@ def collect(session, output, record):
                  'Panic formatting has not completed; snapshot is preserved, stop')
     # Sample once more on the same handle, proving the hardware counter moves
     # while the kernel scheduler and interrupts are stopped.
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        chunk = session.transport.read()
-        if chunk:
-            session.capture.write(chunk)
-            session.capture.flush()
-            session.receiver.feed(chunk)
-    second, _ = session.command('panic-status')
-    active2, remaining2 = countdown(second)
-    odin.require(active2 == 1 and 0 < remaining2 < remaining,
-                 'Panic countdown did not advance')
-    record('PANIC_COUNTDOWN_ADVANCED', first_seconds=remaining, second_seconds=remaining2)
-    return header, observed, digest
+    advanced = False
+    if remaining > 25:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            chunk = session.transport.read()
+            if chunk:
+                session.capture.write(chunk)
+                session.capture.flush()
+                session.receiver.feed(chunk)
+        second, _ = session.command('panic-status')
+        active2, remaining2 = countdown(second)
+        odin.require(active2 == 1 and 0 < remaining2 < remaining,
+                     'Panic countdown did not advance')
+        advanced = True
+        record('PANIC_COUNTDOWN_ADVANCED', first_seconds=remaining, second_seconds=remaining2)
+    else:
+        record('PANIC_NEAR_DEADLINE', seconds=remaining,
+               meaning='Snapshot saved; leave time for automatic reset instead of another query')
+    return header, observed, digest, advanced
+
+
+def observe_download(host, profile, output, record, estimated_start):
+    deadline = estimated_start + 240
+    report_at = 0
+    while True:
+        devices = host.inventory()
+        now = time.monotonic()
+        if odin.samsung(devices):
+            actual = odin.download(devices, profile)
+            duration = now - estimated_start
+            odin.save(output / 'observed-download.json', actual)
+            record('DOWNLOAD_OBSERVED', seconds_since_panic=round(duration, 3), profile=actual)
+            odin.require(175 <= duration <= 210, 'Download timing is outside the three-minute window')
+            return actual, duration
+        odin.require(now < deadline, 'Timed panic did not reach Download; no flash or retry')
+        if now >= report_at:
+            record('WAIT_AUTOMATIC_DOWNLOAD', elapsed_seconds=round(now-estimated_start, 1))
+            report_at = now + 30
+        time.sleep(1)
 
 
 def run(plan, output, trigger, record):
@@ -163,7 +189,7 @@ def run(plan, output, trigger, record):
             record('CONTROLLED_PANIC_ACK')
         else:
             odin.require(active == 1, 'Kernel is running normally; no panic was triggered')
-            header, observed, digest = collect(session, output, record)
+            header, observed, digest, advanced = collect(session, output, record)
     if trigger:
         # The panic handler discards the old conversation and resets DWC2.
         # PnP waiting opens nothing; only one new, verified panic opener follows.
@@ -178,36 +204,20 @@ def run(plan, output, trigger, record):
             odin.require(time.monotonic() < deadline, 'Panic CDC enumeration timed out; no opener retry')
             time.sleep(1)
         with serial_session(output / 'panic', device, plan.data['control_tag'], record) as session:
-            header, observed, digest = collect(session, output, record)
+            header, observed, digest, advanced = collect(session, output, record)
         text = (output / 'panic-log.txt').read_text(encoding='utf-8')
-        odin.require('I9100 controlled panic:' in text and header['category'] == 0xf101,
+        odin.require(advanced and 'I9100 controlled panic:' in text and header['category'] == 0xf101,
                      'Saved log does not match the controlled panic')
     estimated_start = origin if trigger else observed - header['elapsed_seconds']
-    deadline = estimated_start + 240
-    report_at = 0
-    while True:
-        devices = host.inventory()
-        now = time.monotonic()
-        if odin.samsung(devices):
-            actual = odin.download(devices, profile)
-            duration = now - estimated_start
-            odin.save(output / 'observed-download.json', actual)
-            record('DOWNLOAD_OBSERVED', seconds_since_panic=round(duration, 3), profile=actual)
-            odin.require(175 <= duration <= 210, 'Download timing is outside the three-minute window')
-            result = dict(controlled_trigger=trigger, build=plan.data['control_tag'],
-                          plan_sha256=odin.sha(plan.path), panic_log_sha256=digest,
-                          panic_header=header, seconds_since_panic=round(duration, 3),
-                          download=actual, flash_writes=0,
-                          meaning='Complete retained history/panic snapshot, advancing countdown, '
-                                  'and automatic Download identity observed on hardware')
-            odin.save(output / 'result.json', result)
-            record('DONE_PANIC_RECOVERY', **result)
-            return
-        odin.require(now < deadline, 'Timed panic did not reach Download; no flash or retry')
-        if now >= report_at:
-            record('WAIT_AUTOMATIC_DOWNLOAD', elapsed_seconds=round(now-estimated_start, 1))
-            report_at = now + 30
-        time.sleep(1)
+    actual, duration = observe_download(host, profile, output, record, estimated_start)
+    result = dict(controlled_trigger=trigger, build=plan.data['control_tag'],
+                  plan_sha256=odin.sha(plan.path), panic_log_sha256=digest,
+                  panic_header=header, countdown_advanced=advanced,
+                  seconds_since_panic=round(duration, 3), download=actual, flash_writes=0,
+                  meaning='Complete retained history/panic snapshot and automatic Download observed; '
+                          'countdown_advanced records whether two independent samples were possible')
+    odin.save(output / 'result.json', result)
+    record('DONE_PANIC_RECOVERY' if advanced else 'DONE_PANIC_LOG_RECOVERY', **result)
 
 
 def main():

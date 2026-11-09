@@ -22,7 +22,9 @@ def classify(data):
                 register_dump_count=len(dumps),dumps=dumps,
                 root_states=re.findall(r'i9100 root: (WAIT_ROOT|NO_ROOT|MEDIA_FOUND)\b',text),
                 crash_groups=[dict(process=p,pc=pc,instruction_set=isa,count=n) for (p,pc,isa),n in groups.items()],
-                panic_lines=[s for s in text.splitlines() if re.search(r'panic\(cpu|Kernel (?:prefetch|data|undefined)',s)],
+                panic_lines=[s for s in text.splitlines() if re.search(
+                    r'panic\(cpu|Kernel (?:prefetch|data|undefined)|\*\*\* KERNEL FATAL:|'
+                    r'I9100 PANIC_WAIT\b|SECONDARY (?:ABORT|PANIC);',s)],
                 interpretation='Exec repetition records process launches; it does not establish transport retransmission. A handshake alone does not establish userspace stability.')
 
 
