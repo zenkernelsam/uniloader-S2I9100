@@ -51,6 +51,25 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_vm_remap_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+128*20)*4)
+        (out/'vm-remap.bin').write_bytes(data)
+        words=struct.unpack('<2561I',data);rows=[]
+        if words[0]>128:raise ValueError('Invalid remap count')
+        fields=['sequence','pid','api','target_map','source_map','before','after','size',
+                'mask','flags','source_address','copy','inheritance','result','cur','max']
+        for n in range(words[0]):
+            row=dict(zip(fields,words[1+n*20:1+n*20+16]))
+            offset=(1+n*20+16)*4
+            row['name']=data[offset:offset+16].split(b'\0')[0].decode('ascii','replace')
+            if row['sequence']:rows.append(row)
+        result['vm_remap']=dict(count=words[0],rows=rows)
+    key='_i9100_mig_error_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+128*6)*4)
+        (out/'mig-errors.bin').write_bytes(data)
+        result['mig_errors']=decode_table(data,128,6,['pid','id','retcode','size','bits','options'])
     key='_i9100_render_receive_payload'
     if key in symbols.values:
         data=kernel.read(symbols[key],(6+32)*4)
@@ -153,9 +172,9 @@ def capture_ui_observations(kernel, symbols, out):
             raise ValueError('Unknown live graphics counter version')
     (out/'ui-observations.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     preview=dict(result)
-    for key in ('render_transport','user_fault_details'):
+    for key in ('render_transport','user_fault_details','vm_remap'):
         if key in result:
-            preview[key]=dict(sequence=result[key]['sequence'],rows=result[key]['rows'][-8:])
+            preview[key]=dict(count=len(result[key]['rows']),rows=result[key]['rows'][-8:])
     print('ui-observations',json.dumps(preview),flush=True)
     return result
 

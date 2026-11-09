@@ -34,7 +34,7 @@ objects = ['pexpert/i9100_usbcdc.o', 'pexpert/i9100_timer.o', 'pexpert/pe_exynos
            'iokit/IOPMrootDomain.cpo', 'iokit/IOS7LeoDisplay.cpo', 'iokit/IOUserClient.cpo',
            'iokit/IOS7LeoHIDTouch.cpo',
            'iokit/i9100_power.o', 'iokit/i9100_power_bus.o', 'iokit/IOS7I9100Power.cpo',
-           'osfmk/vm_map.o', 'bsd/kern_exit.o', 'osfmk/pmap.o']
+           'osfmk/vm_map.o', 'osfmk/vm_user.o', 'bsd/kern_exit.o', 'osfmk/pmap.o']
 subprocess.run([sys.executable, xnu / 'tools/rebuild-i9100.py', '--output', kernel, '--link', *objects], check=True)
 subprocess.run(['bash', repo / 'scripts/i9100/build-rawcom.sh'], check=True)
 subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--kernel', kernel / 'mach_kernel',
