@@ -22,10 +22,12 @@ class ProtocolError(RuntimeError):
     pass
 
 
-def validate_command(verb, allow_reboot_download=False):
+def validate_command(verb, allow_reboot_download=False, allow_panic_test=False):
     if verb == 'reboot-download' and allow_reboot_download:
         return None
-    if verb in ('ping', 'status', 'root-status'):
+    if verb == 'panic-test' and allow_panic_test:
+        return None
+    if verb in ('ping', 'status', 'root-status', 'panic-status', 'panic-log'):
         return None
     if re.fullmatch(r'(threads|ports)( [A-Za-z0-9_.-]{1,32})?', verb):
         return None
@@ -34,16 +36,17 @@ def validate_command(verb, allow_reboot_download=False):
         addr, size = (int(x, 16) for x in match.groups())
         if 0x40000000 <= addr < 0x80000000 and 0 < size <= MAX_DATA and addr + size <= 0x80000000:
             return addr, size
-    raise ValueError('Only ping/status/root-status, threads/ports, or bounded DRAM reads are accepted')
+    raise ValueError('Only status/log queries, threads/ports, or bounded DRAM reads are accepted')
 
 
 class Receiver:
     """Framing policy; payload bytes never pass through the text-line parser."""
-    def __init__(self, expected_tag, allow_reboot_download=False):
+    def __init__(self, expected_tag, allow_reboot_download=False, allow_panic_test=False):
         if not re.fullmatch(r'[0-9a-f]{16}', expected_tag):
             raise ValueError('Expected a 16-hex kernel build tag')
         self.expected_tag = expected_tag
         self.allow_reboot_download = bool(allow_reboot_download)
+        self.allow_panic_test = bool(allow_panic_test)
         self.ready = self.tag_seen = False
         self.line = bytearray()
         self.drop = False
@@ -55,7 +58,7 @@ class Receiver:
         self.complete = False
 
     def start(self, seq, verb):
-        validate_command(verb, self.allow_reboot_download)
+        validate_command(verb, self.allow_reboot_download, self.allow_panic_test)
         if not 0 < seq <= 0xffffffff:
             raise ValueError('Invalid sequence')
         self.seq, self.verb = seq, verb
@@ -91,10 +94,12 @@ class Receiver:
             addr, size = (int(x, 16) for x in data.groups())
             if size > MAX_DATA:
                 raise ProtocolError('DATA length exceeds staging buffer')
-            requested = validate_command(self.verb, self.allow_reboot_download)
+            requested = validate_command(self.verb, self.allow_reboot_download, self.allow_panic_test)
             if requested is not None and (addr, size) != requested:
                 raise ProtocolError('DATA address/length does not match request')
-            if self.verb in ('ping', 'status', 'root-status', 'reboot-download'):
+            if self.verb == 'panic-log' and (addr != 0 or not 64 <= size <= 64+28672):
+                raise ProtocolError('Invalid panic-log DATA envelope')
+            if self.verb in ('ping', 'status', 'root-status', 'reboot-download', 'panic-status', 'panic-test'):
                 raise ProtocolError('Unexpected DATA for scalar query')
             self.remaining = size
             self.complete = size == 0
@@ -103,6 +108,13 @@ class Receiver:
         elif self.verb == 'root-status' and answer in ('OK root=BOOTING', 'OK root=WAIT_ROOT', 'OK root=NO_ROOT', 'OK root=MEDIA_FOUND'):
             self.complete = True
         elif self.verb == 'reboot-download' and answer == 'OK reboot-download':
+            self.complete = True
+        elif self.verb == 'panic-test' and answer == 'OK panic-test':
+            self.complete = True
+        elif self.verb == 'panic-status' and re.fullmatch(r'OK panic=[01] seconds=[0-9a-f]{8}', answer):
+            mode, seconds = int(answer[9]), int(answer[19:], 16)
+            if seconds > 180 or (mode == 0 and seconds != 0):
+                raise ProtocolError('Invalid panic countdown')
             self.complete = True
         else:
             raise ProtocolError(f'Unexpected reply: {answer}')
@@ -134,9 +146,9 @@ class Receiver:
 
 class Session:
     def __init__(self, transport, expected_tag, record, capture, timeout=15, clock=time.monotonic, sleep=time.sleep,
-                 allow_reboot_download=False):
+                 allow_reboot_download=False, allow_panic_test=False):
         self.transport = transport
-        self.receiver = Receiver(expected_tag, allow_reboot_download)
+        self.receiver = Receiver(expected_tag, allow_reboot_download, allow_panic_test)
         self.record, self.capture, self.timeout = record, capture, timeout
         self.clock, self.sleep = clock, sleep
         self.seq = 0
@@ -160,10 +172,10 @@ class Session:
 
     def command(self, verb):
         if self.reboot_requested:
-            raise ProtocolError('Download reboot is terminal for this handle; no further command')
-        if verb == 'reboot-download' and not (self.receiver.ready and self.receiver.tag_seen):
-            raise ProtocolError('Download reboot needs the verified READY/BUILD handshake')
-        validate_command(verb, self.receiver.allow_reboot_download)
+            raise ProtocolError('Terminal action already requested on this handle; no further command')
+        if verb in ('reboot-download', 'panic-test') and not (self.receiver.ready and self.receiver.tag_seen):
+            raise ProtocolError('Terminal command needs the verified READY/BUILD handshake')
+        validate_command(verb, self.receiver.allow_reboot_download, self.receiver.allow_panic_test)
         # A host ReadFile completion can precede the kernel's next 10ms poll
         # that clears uctl_flight. Allow that completion before another write.
         self.sleep(0.075)
@@ -171,7 +183,7 @@ class Session:
         if not 0 < self.seq < 0xffffffff:
             raise ProtocolError('Sequence source wrapped; stop this session')
         wire = self.receiver.start(self.seq, verb)
-        if verb == 'reboot-download':
+        if verb in ('reboot-download', 'panic-test'):
             self.reboot_requested = True
         self.record('SEND', sequence=self.seq, command=verb, bytes=len(wire))
         self.transport.write(wire)

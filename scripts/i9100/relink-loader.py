@@ -31,6 +31,8 @@ def main():
     parser.add_argument('--reboot-download-fallback', action='store_true')
     parser.add_argument('--tcc-development', action='store_true')
     parser.add_argument('--mdns-development', action='store_true')
+    parser.add_argument('--panic-recovery', action='store_true')
+    parser.add_argument('--panic-test', action='store_true')
     parser.add_argument('sources', nargs='*')
     args = parser.parse_args()
     if args.control and (not args.control_tag or len(args.control_tag) != 16 or
@@ -46,6 +48,10 @@ def main():
         parser.error('--tcc-development requires --control')
     if args.mdns_development and not args.control:
         parser.error('--mdns-development requires --control')
+    if args.panic_recovery and not args.control:
+        parser.error('--panic-recovery requires --control')
+    if args.panic_test and not args.panic_recovery:
+        parser.error('--panic-test requires --panic-recovery')
     output = args.output.resolve()
     if not output.is_relative_to(repo / 'out'):
         parser.error('Output must be inside the loader out directory')
@@ -83,6 +89,10 @@ def main():
                 command.append('-DI9100_TCC_DEVELOPMENT_BUILD=1')
             if args.mdns_development:
                 command.append('-DI9100_MDNS_DEVELOPMENT_BUILD=1')
+            if args.panic_recovery:
+                command.append('-DI9100_PANIC_RECOVERY_BUILD=1')
+            if args.panic_test:
+                command.append('-DI9100_PANIC_TEST_BUILD=1')
         if source_name == 'arch/arm/start.S' and args.kernel_blob:
             command.append('-DI9100_KERNEL_BLOB="' + str(blob) + '"')
         new_object = output / original
