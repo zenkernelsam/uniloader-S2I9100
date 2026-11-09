@@ -28,6 +28,8 @@ def main():
     p.add_argument('--kernel',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--process',action='append',required=True)
+    p.add_argument('--dyld-info',action='store_true',
+                   help='Retain the live ARM dyld header and current shared-cache slide')
     a=p.parse_args();symbols=m.Symbols(a.kernel)
     for name in a.process:f.validate_command('threads '+name)
     out=a.output.resolve()
@@ -77,6 +79,24 @@ def main():
                                 (out/f'{name}-user-{page:08x}.bin').write_bytes(pages[page])
                             result.extend(pages[page][offset:offset+take]);va+=take;n-=take
                         return bytes(result)
+                    if a.dyld_info:
+                        try:
+                            # ARM task offsets are from the matching trap.o DWARF.
+                            # mach_vm_address_t/size_t are 32-bit in this build.
+                            address,size=struct.unpack('<2I',kernel.read(task+0x210,8))
+                            if not 0<address<0x40000000 or not 12<=size<=4096:
+                                raise m.MappingError('Invalid live dyld header range')
+                            raw=user_read(address,min(size,84))
+                            (out/(name+'-dyld-info.bin')).write_bytes(raw)
+                            words=struct.unpack('<'+str(len(raw)//4)+'I',raw)
+                            proc['dyld_info']=dict(address=hex(address),size=size,
+                                version=words[0],image_count=words[1],image_array=hex(words[2]),
+                                words=[hex(value) for value in words])
+                            if words[0]>=12 and len(words)>=21:
+                                proc['dyld_info']['cache_slide']=hex(words[20])
+                                print(name,'CACHE_SLIDE',hex(words[20]),flush=True)
+                        except (m.MappingError,struct.error) as exc:
+                            proc['dyld_info_error']=str(exc)
                     for thread in proc['threads']:
                         try:
                             uss=kernel.u32(thread['thread']+0x22c)
