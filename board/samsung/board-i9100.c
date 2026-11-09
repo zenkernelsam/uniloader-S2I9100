@@ -104,6 +104,10 @@ int i9100_init(void)
 	if (ddr_valid) {
 		i9100_previous_boot.lr=cell[4];i9100_previous_boot.far=cell[5];
 		i9100_previous_boot.fsr=cell[6];
+		if (cell[11]==0x43505931U) {
+			i9100_previous_boot.valid|=4U;
+			for (unsigned n=0;n<4;n++)i9100_previous_boot.reserved[n]=cell[7+n];
+		}
 	}
 	/* Consume the previous record before starting another attempt. */
 	cell[0] = 0;

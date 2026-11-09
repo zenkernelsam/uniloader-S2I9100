@@ -79,6 +79,12 @@ def capture_ui_observations(kernel, symbols, out):
             data = kernel.read(symbols[key],size)
             (out/(name+'.bin')).write_bytes(data)
             result[name] = list(struct.unpack('<'+'I'*(size//4),data))
+    key='_i9100_copypv_last'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],32)
+        (out/'copypv-last.bin').write_bytes(data)
+        result['copypv_last']=dict(zip(['sequence','source_low','source_high','sink_low','sink_high',
+                                      'bytes','flags','caller'],struct.unpack('<8I',data)))
     key = '_i9100_previous_boot'
     if key in symbols.values:
         data=kernel.read(symbols[key],64)
