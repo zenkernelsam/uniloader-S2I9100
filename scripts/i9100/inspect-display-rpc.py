@@ -81,6 +81,13 @@ def main():
                     registers=[hex(v) for v in regs],message=message,queues={})
                 targets=[('reply',regs[4])]
                 if valid:targets.insert(0,('remote',h[2]))
+                elif regs[7]>=0x1004:
+                    # mach_msg preserves caller r6 at FP-4. The QuartzCore
+                    # send/receive wrapper keeps its remote port there; treat
+                    # it as a candidate and resolve only an extant send right.
+                    candidate=struct.unpack('<I',user.read(regs[7]-4,4))[0]
+                    result['saved_callee_r6_candidate']=hex(candidate)
+                    if candidate in names:targets.insert(0,('candidate-remote',candidate))
                 for label,name in targets:
                     if name in names:result['queues'][label]=queue(kernel,names[name],out,label)
                 _,bb=s.command('ports backboardd');(out/'backboard-ports.txt').write_bytes(bb)

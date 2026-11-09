@@ -51,6 +51,18 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    for key,count,stride,fields in [
+        ('_i9100_render_boundary_diag',64,8,['pid','stage','id','size','user_size','bits','options','result']),
+        ('_i9100_user_fault_owner_diag',32,12,['sequence','pid','thread','task','type','pc','lr','sp','far','fsr','psr','result'])]:
+        if key in symbols.values:
+            data=kernel.read(symbols[key],(1+count*stride)*4)
+            (out/(key.lstrip('_')+'.bin')).write_bytes(data)
+            words=struct.unpack('<'+'I'*(1+count*stride),data)
+            records=[]
+            for n in range(count):
+                row=words[1+n*stride:1+(n+1)*stride]
+                if row[1] if 'boundary' in key else row[0]:records.append(dict(zip(fields,row)))
+            result[key.lstrip('_')]=dict(count=words[0],rows=records)
     for name in ('i9100_process_exit', 'i9100_backboard_exit'):
         key = '_'+name
         if key in symbols.values:
