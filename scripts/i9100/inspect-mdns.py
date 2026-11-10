@@ -51,6 +51,11 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_input_test'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],64);(out/'input-test.bin').write_bytes(data)
+        fields='enabled phase sequence x0 y0 x1 y1 ms enqueued reason last_x last_y touch_ready kind home_ready reserved'.split()
+        result['input_test']=dict(zip(fields,struct.unpack('<16I',data)))
     key='_i9100_hid_copy_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+16*30)*4);(out/'hid-copy.bin').write_bytes(data)

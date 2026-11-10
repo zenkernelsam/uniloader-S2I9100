@@ -36,6 +36,7 @@ def main():
     parser.add_argument('--panic-test', action='store_true')
     parser.add_argument('--home-test', action='store_true')
     parser.add_argument('--ios6-hid', action='store_true')
+    parser.add_argument('--input-test', action='store_true')
     parser.add_argument('sources', nargs='*')
     args = parser.parse_args()
     if args.control and (not args.control_tag or len(args.control_tag) != 16 or
@@ -59,6 +60,10 @@ def main():
         parser.error('--home-test requires --control and --xpc-diag')
     if args.ios6_hid and not args.control:
         parser.error('--ios6-hid requires --control')
+    if args.input_test and (not args.control or not args.xpc_diag or not args.ios6_hid):
+        parser.error('--input-test requires --control, --xpc-diag and --ios6-hid')
+    if args.input_test and args.home_test:
+        parser.error('Use requested input tests or the automatic Home test, not both')
     output = args.output.resolve()
     if not output.is_relative_to(repo / 'out'):
         parser.error('Output must be inside the loader out directory')
@@ -90,6 +95,8 @@ def main():
         if source.suffix == '.c':
             command.append('-DVER_TAG="' + label + '"')
         if args.control and source_name == 'arch/arm/load-kernel.c':
+            if args.input_test:
+                command.append('-DI9100_INPUT_TEST_BUILD=1')
             if args.ios6_hid:
                 command.append('-DI9100_IOS6_HID_BUILD=1')
             if args.home_test:
