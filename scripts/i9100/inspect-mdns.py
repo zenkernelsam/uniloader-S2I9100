@@ -51,6 +51,13 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    for label,key,fields in [
+        ('home','_i9100_home_observation','enabled down opened edges enqueued head tail'.split()),
+        ('home_test','_i9100_home_test_diag','enabled phase physical_down effective_down done client_pid'.split()),
+        ('touch','_i9100_touch_observation','ready init_result stage opened polls reports enqueued head tail errors'.split())]:
+        if key in symbols.values:
+            data=kernel.read(symbols[key],len(fields)*4);(out/(label+'.bin')).write_bytes(data)
+            result[label]=dict(zip(fields,struct.unpack('<'+'I'*len(fields),data)))
     fields = ['sequence','pid','selector','result','si','sti','so','sto',
               'input_descriptor','output_descriptor','flags','output_capacity']
     for label in ('framebuffer_io','surface_io'):

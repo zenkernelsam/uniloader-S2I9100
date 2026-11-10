@@ -34,6 +34,7 @@ def main():
     parser.add_argument('--mdns-development', action='store_true')
     parser.add_argument('--panic-recovery', action='store_true')
     parser.add_argument('--panic-test', action='store_true')
+    parser.add_argument('--home-test', action='store_true')
     parser.add_argument('sources', nargs='*')
     args = parser.parse_args()
     if args.control and (not args.control_tag or len(args.control_tag) != 16 or
@@ -53,6 +54,8 @@ def main():
         parser.error('--panic-recovery requires --control')
     if args.panic_test and not args.panic_recovery:
         parser.error('--panic-test requires --panic-recovery')
+    if args.home_test and (not args.control or not args.xpc_diag):
+        parser.error('--home-test requires --control and --xpc-diag')
     output = args.output.resolve()
     if not output.is_relative_to(repo / 'out'):
         parser.error('Output must be inside the loader out directory')
@@ -84,6 +87,8 @@ def main():
         if source.suffix == '.c':
             command.append('-DVER_TAG="' + label + '"')
         if args.control and source_name == 'arch/arm/load-kernel.c':
+            if args.home_test:
+                command.append('-DI9100_HOME_TEST_BUILD=1')
             command.append('-DI9100_CONTROL_BUILD=1')
             command.append('-DI9100_CONTROL_TAG="' + args.control_tag + '"')
             if args.ls_bootstrap:
