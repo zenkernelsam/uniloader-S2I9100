@@ -51,6 +51,19 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_hid_copy_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+16*30)*4);(out/'hid-copy.bin').write_bytes(data)
+        w=struct.unpack('<481I',data);rows=[]
+        if w[0]>16:raise ValueError('Invalid HID copy count')
+        for n in range(w[0]):
+            at=1+n*30;offset=at*4
+            row=dict(zip(['pid','result','si','sti','so','sto'],w[at:at+6]))
+            row['scalars']=list(struct.unpack_from('<2Q',data,offset+24))
+            row['selector']=w[at+10];row['stage']=w[at+11]
+            row['input_hex']=data[offset+48:offset+104].hex();row['output_hex']=data[offset+104:offset+120].hex()
+            rows.append(row)
+        result['hid_copy']=dict(count=w[0],rows=rows)
     for label,key,fields in [
         ('home','_i9100_home_observation','enabled down opened edges enqueued head tail'.split()),
         ('home_test','_i9100_home_test_diag','enabled phase physical_down effective_down done client_pid'.split()),
