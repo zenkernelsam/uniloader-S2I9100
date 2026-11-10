@@ -36,7 +36,7 @@ label = 'control-' + datetime.now().strftime('%Y%m%d-%H%M%S')
 kernel = xnu / 'out/automation' / label
 package = repo / 'out/automation' / label
 objects = ['pexpert/i9100_usbcdc.o', 'pexpert/i9100_timer.o', 'pexpert/pe_exynos4210_i9100.o',
-           'osfmk/locore.o', 'osfmk/loose_ends.o', 'osfmk/hw_lock.o', 'osfmk/debug.o', 'osfmk/ipc_kobject.o', 'osfmk/mach_msg.o', 'osfmk/mach_port.o', 'security/mac_base.o',
+           'osfmk/locore.o', 'osfmk/loose_ends.o', 'osfmk/hw_lock.o', 'osfmk/debug.o', 'osfmk/ipc_kobject.o', 'osfmk/ipc_mig.o', 'osfmk/mach_msg.o', 'osfmk/mach_port.o', 'security/mac_base.o',
            'osfmk/ipc_right.o', 'osfmk/ipc_kmsg.o', 'osfmk/ipc_pset.o', 'osfmk/trap.o', 'bsd/kern_exec.o',
            'bsd/unix_syscalls.o', 'bsd/pthread_synch.o', 'bsd/kern_sig.o', 'bsd/sys_generic.o', 'bsd/param.o', 'bsd/vfs_subr.o', 'bsd/kdebug.o', 'bsd/decmpfs.o', 'iokit/IOKitBSDInit.cpo',
            'iokit/IOPMrootDomain.cpo', 'iokit/IOS7LeoDisplay.cpo', 'iokit/IOUserClient.cpo',

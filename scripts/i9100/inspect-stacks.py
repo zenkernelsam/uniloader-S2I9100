@@ -19,7 +19,7 @@ def module(name, path):
     return result
 
 
-def capture_process(session,kernel,name,out,m,dyld_info=False):
+def capture_process(session,kernel,name,out,m,dyld_info=False,thread_limit=None):
     _,data=session.command('threads '+name)
     (out/(name+'-threads.txt')).write_bytes(data)
     text=data.decode()
@@ -36,6 +36,10 @@ def capture_process(session,kernel,name,out,m,dyld_info=False):
             current['wait']=line.strip()
     if not proc['threads']:
         return proc
+    if thread_limit is not None:
+        proc['observed_thread_count'] = len(proc['threads'])
+        proc['thread_limit'] = thread_limit
+        proc['threads'] = proc['threads'][:thread_limit]
     task=kernel.u32(proc['threads'][0]['thread']+0x3a0)
     mapva=kernel.u32(task+0x18);pmapva=kernel.u32(mapva+0x2c)
     proc.update(task=hex(task),map=hex(mapva),pmap=hex(pmapva))
@@ -107,6 +111,8 @@ def main():
     p.add_argument('--process',action='append',required=True)
     p.add_argument('--dyld-info',action='store_true',
                    help='Retain the live ARM dyld header and current shared-cache slide')
+    p.add_argument('--thread-limit',type=int,choices=range(1,65),
+                   help='Read only the first N raw snapshot threads; retain the observed total')
     a=p.parse_args();symbols=m.Symbols(a.kernel)
     for name in a.process:f.validate_command('threads '+name)
     out=a.output.resolve()
@@ -128,7 +134,7 @@ def main():
                 session.handshake();kernel=m.Kernel(session,symbols)
                 results=[]
                 for name in a.process:
-                    proc=capture_process(session,kernel,name,out,m,a.dyld_info)
+                    proc=capture_process(session,kernel,name,out,m,a.dyld_info,a.thread_limit)
                     results.append(proc)
                     (out/'stacks.json').write_text(json.dumps(dict(tag=symbols.tag,processes=results),indent=2)+'\n')
                 record('DONE',processes=len(results))
