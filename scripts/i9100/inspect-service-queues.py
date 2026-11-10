@@ -31,7 +31,13 @@ def main():
     parser.add_argument('--kernel', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--process', action='append', required=True)
+    parser.add_argument('--port', action='append', default=[],
+                        help='Only these observed receive names in hex; requires one process')
     a = parser.parse_args()
+    if a.port and (len(a.process) != 1 or len(a.port) > 16 or
+                   any(not re.fullmatch(r'[0-9a-fA-F]{1,8}', pn) for pn in a.port)):
+        parser.error('Use at most 16 hex receive names with exactly one process')
+    selected = {format(int(pn, 16), 'x') for pn in a.port}
     for name in a.process:
         f.validate_command('ports ' + name)
     out = o.confined(a.output, f.REPO / 'out')
@@ -67,7 +73,12 @@ def main():
                     process = dict(name=name, queues=[])
                     if identity:
                         process.update(pid=int(identity[1]), task=identity[2])
-                    for pn, obj in re.findall(r'pn=([0-9a-f]+) rt=recv obj=(0x[0-9a-f]+)', text)[:256]:
+                    receive = re.findall(r'pn=([0-9a-f]+) rt=recv obj=(0x[0-9a-f]+)', text)
+                    if selected:
+                        o.require(selected <= {pn for pn, _ in receive}, 'Selected receive port absent; no memory walk')
+                        receive = [(pn, obj) for pn, obj in receive if pn in selected]
+                        process['port_filter'] = sorted(selected)
+                    for pn, obj in receive[:256]:
                         address = int(obj, 16)
                         raw = kernel.read(address, 0x8c)
                         (out / f'{name}-port-{pn}.bin').write_bytes(raw)
@@ -77,7 +88,10 @@ def main():
                                  receiver_name=hex(w[20]), receiver_space=hex(w[22]),
                                  send_rights=w[25], send_once_rights=w[26], pset_count=w[31],
                                  context=[hex(w[33]), hex(w[34])], messages=[])
-                        if w[17] > 65535 or w[18] > 65535:
+                        # MACH_PORT_QLIMIT_KERNEL is 65536 in this XNU, and
+                        # sendAsyncResult64 uses MACH_SEND_ALWAYS. Preserve
+                        # bounded prefixes at the actual saturated limit too.
+                        if w[17] > 65536 or w[18] > 65536:
                             q['error'] = 'Queue geometry changed or is unavailable'
                         else:
                             node = w[16]

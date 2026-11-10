@@ -51,6 +51,26 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key = '_i9100_surface_create_diag'
+    if key in symbols.values:
+        data = kernel.read(symbols[key], (1+8*268)*4)
+        (out/'surface-create.bin').write_bytes(data)
+        words = struct.unpack('<2145I', data)
+        fields = 'sequence pid input_size result copied output_size output_capacity si so descriptors reserved stage'.split()
+        rows = []
+        for n in range(8):
+            at = 1+n*268
+            if not words[at] or words[at+11] != 1:
+                continue
+            row = dict(zip(fields, words[at:at+12]))
+            if row['copied'] > 1024 or row['copied'] > row['input_size']:
+                raise ValueError('Invalid surface create capture length')
+            request = data[(at+12)*4:(at+12)*4+row['copied']]
+            row['truncated'] = row['copied'] != row['input_size']
+            row['request_hex'] = request.hex()
+            row['xml'] = request.split(b'\0')[0].decode('utf-8', 'replace')
+            rows.append(row)
+        result['surface_create'] = dict(sequence=words[0], rows=sorted(rows,key=lambda r:r['sequence']))
     key='_i9100_aks_development_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+32*12)*4);(out/'aks-development.bin').write_bytes(data)
