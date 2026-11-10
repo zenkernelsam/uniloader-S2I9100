@@ -51,6 +51,17 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_tcc_bootstrap_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+32*72)*4);(out/'tcc-bootstrap.bin').write_bytes(data)
+        w=struct.unpack('<2305I',data);rows=[]
+        fields=['sequence','pid','thread','stage','id','length','bits','status']
+        for n in range(32):
+            if not w[1+n*72]:continue
+            row=dict(zip(fields,w[1+n*72:9+n*72]));at=(1+n*72+8)*4
+            if row['length']>256:raise ValueError('Invalid bootstrap prefix')
+            row['hex']=data[at:at+row['length']].hex();rows.append(row)
+        result['tcc_bootstrap']=dict(sequence=w[0],rows=sorted(rows,key=lambda r:r['sequence']))
     key='_i9100_shared_directory_added'
     if key in symbols.values:
         data=kernel.read(symbols[key],8);(out/'shared-directory-added.bin').write_bytes(data)
