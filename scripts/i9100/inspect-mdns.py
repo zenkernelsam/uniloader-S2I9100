@@ -51,6 +51,22 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    fields = ['sequence','pid','selector','result','si','sti','so','sto',
+              'input_descriptor','output_descriptor','flags','output_capacity']
+    for label in ('framebuffer_io','surface_io'):
+        key = '_i9100_' + label + '_diag'
+        if key not in symbols.values: continue
+        data = kernel.read(symbols[key],(1+64*40)*4); (out/(label+'.bin')).write_bytes(data)
+        words = struct.unpack('<2561I',data); rows = []
+        for n in range(64):
+            at = 1+n*40
+            if not words[at]: continue
+            row = dict(zip(fields,words[at:at+12])); offset = at*4
+            row['class'] = data[offset+48:offset+80].split(b'\0')[0].decode('ascii','replace')
+            row['scalars'] = list(struct.unpack_from('<3Q',data,offset+80))
+            row['input_hex'] = data[offset+104:offset+136].hex()
+            row['output_hex'] = data[offset+136:offset+160].hex(); rows.append(row)
+        result[label] = dict(sequence=words[0],rows=sorted(rows,key=lambda r:r['sequence']))
     key = '_i9100_tcc_extension_diag'
     if key in symbols.values:
         data = kernel.read(symbols[key], (1+32*72)*4)
@@ -286,7 +302,7 @@ def capture_ui_observations(kernel, symbols, out):
             raise ValueError('Unknown live graphics counter version')
     (out/'ui-observations.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     preview=dict(result)
-    for key in ('render_transport','user_fault_details','vm_remap','tcc_wire','ls_wire'):
+    for key in ('render_transport','user_fault_details','vm_remap','tcc_wire','ls_wire','framebuffer_io','surface_io'):
         if key in result:
             preview[key]=dict(count=len(result[key]['rows']),rows=result[key]['rows'][-8:])
     print('ui-observations',json.dumps(preview),flush=True)
