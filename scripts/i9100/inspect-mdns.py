@@ -70,6 +70,11 @@ def capture_ui_observations(kernel, symbols, out):
         data=kernel.read(symbols[key],(1+128*6)*4)
         (out/'mig-errors.bin').write_bytes(data)
         result['mig_errors']=decode_table(data,128,6,['pid','id','retcode','size','bits','options'])
+    key='_i9100_vm_error_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+64*6)*4)
+        (out/'vm-errors.bin').write_bytes(data)
+        result['vm_errors']=decode_table(data,64,6,['pid','id','retcode','size','bits','options'])
     key='_i9100_render_receive_payload'
     if key in symbols.values:
         data=kernel.read(symbols[key],(6+32)*4)
