@@ -197,6 +197,15 @@ def capture_ui_observations(kernel, symbols, out):
             row['hex'] = data[offset:offset + row['length']].hex()
             rows.append(row)
         result[label.replace('-', '_')] = dict(sequence=w[0], rows=sorted(rows, key=lambda r: r['sequence']))
+    key='_i9100_ls_fault_payload'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(16+2048)*4);(out/'ls-fault-payload.bin').write_bytes(data)
+        w=struct.unpack_from('<16I',data)
+        fields='sequence pid task pc lr sp fp address size copied error truncated slide reserved0 reserved1 reserved2'.split()
+        row=dict(zip(fields,w))
+        if row['copied']>8192 or row['copied']>row['size']:raise ValueError('Invalid LS fault payload bound')
+        payload=data[64:64+row['copied']];(out/'ls-plist-parser-input.bin').write_bytes(payload)
+        row['prefix_hex']=payload[:128].hex();result['ls_fault_payload']=row
     key='_i9100_tcc_bootstrap_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+32*72)*4);(out/'tcc-bootstrap.bin').write_bytes(data)
@@ -213,7 +222,8 @@ def capture_ui_observations(kernel, symbols, out):
         data=kernel.read(symbols[key],8);(out/'shared-directory-added.bin').write_bytes(data)
         result['shared_directory_added']=dict(zip(['SpringBoard','kbd'],struct.unpack('<2I',data)))
     for label,key in [('springboard_fault_stack','_i9100_springboard_fault_stack'),
-                      ('keyboard_fault_stack','_i9100_keyboard_fault_stack')]:
+                      ('keyboard_fault_stack','_i9100_keyboard_fault_stack'),
+                      ('ls_fault_stack','_i9100_ls_fault_stack')]:
         if key in symbols.values:
             data=kernel.read(symbols[key],52*4);(out/(label+'.bin')).write_bytes(data)
             w=struct.unpack('<52I',data)
