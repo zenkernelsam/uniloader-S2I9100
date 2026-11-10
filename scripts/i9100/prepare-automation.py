@@ -23,6 +23,7 @@ parser.add_argument('--panic-test', action='store_true')
 parser.add_argument('--home-test', action='store_true')
 parser.add_argument('--ios6-hid', action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument('--input-test', action='store_true')
+parser.add_argument('--aks-development', action='store_true')
 args = parser.parse_args()
 if args.input_test and not args.ios6_hid:
     parser.error('--input-test requires --ios6-hid')
@@ -55,5 +56,6 @@ subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--ke
                 *(['--panic-test'] if args.panic_test else []),
                 *(['--home-test'] if args.home_test else []),
                 *(['--ios6-hid'] if args.ios6_hid else []),
-                *(['--input-test'] if args.input_test else [])], check=True)
+                *(['--input-test'] if args.input_test else []),
+                *(['--aks-development'] if args.aks_development else [])], check=True)
 print('OFFLINE READY:', package, flush=True)

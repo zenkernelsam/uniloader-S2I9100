@@ -51,6 +51,12 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_aks_development_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+32*12)*4);(out/'aks-development.bin').write_bytes(data)
+        w=struct.unpack('<385I',data);fields='pid selector si so sti sto result value bag_id unconfined reserved stage'.split()
+        if w[0]>32:raise ValueError('Invalid AKS development count')
+        result['aks_development']=dict(count=w[0],rows=[dict(zip(fields,w[1+n*12:1+(n+1)*12])) for n in range(w[0])])
     key='_i9100_input_test'
     if key in symbols.values:
         data=kernel.read(symbols[key],64);(out/'input-test.bin').write_bytes(data)
