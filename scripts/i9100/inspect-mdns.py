@@ -51,6 +51,33 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    for label,key in [('springboard_fault_stack','_i9100_springboard_fault_stack'),
+                      ('keyboard_fault_stack','_i9100_keyboard_fault_stack')]:
+        if key in symbols.values:
+            data=kernel.read(symbols[key],52*4);(out/(label+'.bin')).write_bytes(data)
+            w=struct.unpack('<52I',data)
+            if w[8]>14:raise ValueError('Invalid UI frame count')
+            result[label]=dict(zip(['sequence','pid','task','type','pc','lr','sp','fp','count','error'],w[:10]))
+            result[label]['frames']=[dict(zip(['fp','previous','lr'],w[10+n*3:13+n*3])) for n in range(w[8])]
+    key='_i9100_addressbook_file_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+64*44)*4);(out/'addressbook-files.bin').write_bytes(data)
+        w=struct.unpack('<2817I',data);rows=[]
+        for n in range(64):
+            if not w[1+n*44]:continue
+            row=dict(zip(['sequence','pid','syscall','error','result','flags','mode','copy_error'],w[1+n*44:9+n*44]))
+            at=(1+n*44)*4;row['name']=data[at+32:at+48].split(b'\0')[0].decode('ascii','replace')
+            row['path']=data[at+48:at+176].split(b'\0')[0].decode('utf8','replace');rows.append(row)
+        result['addressbook_files']=dict(sequence=w[0],rows=sorted(rows,key=lambda r:r['sequence']))
+    key='_i9100_ui_sandbox_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+64*10)*4);(out/'ui-sandbox.bin').write_bytes(data)
+        w=struct.unpack('<641I',data);rows=[]
+        for n in range(64):
+            if not w[1+n*10]:continue
+            row=dict(zip(['sequence','pid','operation','error','providers'],w[1+n*10:6+n*10]))
+            at=(1+n*10+5)*4;row['name']=data[at:at+16].split(b'\0')[0].decode('ascii','replace');rows.append(row)
+        result['ui_sandbox']=dict(sequence=w[0],rows=sorted(rows,key=lambda r:r['sequence']))
     key='_i9100_vm_remap_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+128*20)*4)
