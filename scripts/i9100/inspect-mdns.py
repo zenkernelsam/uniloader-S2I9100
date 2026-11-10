@@ -51,6 +51,22 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key = '_i9100_tcc_extension_diag'
+    if key in symbols.values:
+        data = kernel.read(symbols[key], (1+32*72)*4)
+        (out/'tcc-extension.bin').write_bytes(data)
+        words = struct.unpack('<2305I',data); rows = []
+        fields = ['sequence','pid','original','result','type','flags','class_address',
+                  'path_address','token_address','copy_error','enabled','providers',
+                  'eligible','token_bytes','reserved','stage']
+        for n in range(32):
+            at = 1+n*72
+            if not words[at]: continue
+            row = dict(zip(fields,words[at:at+16])); offset = at*4
+            row['class'] = data[offset+64:offset+160].split(b'\0')[0].decode('utf8','replace')
+            row['path'] = data[offset+160:offset+288].split(b'\0')[0].decode('utf8','replace')
+            rows.append(row)
+        result['tcc_extensions'] = dict(sequence=words[0],rows=sorted(rows,key=lambda r:r['sequence']))
     key = '_i9100_amfi_output_diag'
     if key in symbols.values:
         data = kernel.read(symbols[key], (1 + 64 * 16) * 4)
