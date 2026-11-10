@@ -109,7 +109,7 @@ class Receiver:
                 raise ProtocolError('DATA address/length does not match request')
             if self.verb == 'panic-log' and (addr != 0 or not 64 <= size <= 64+28672):
                 raise ProtocolError('Invalid panic-log DATA envelope')
-            if self.verb in ('ping', 'status', 'root-status', 'reboot-download', 'panic-status', 'panic-test'):
+            if self.verb in ('ping', 'status', 'root-status', 'reboot-download', 'panic-status', 'panic-test') or self.verb.startswith(('hid-home ','hid-swipe ')):
                 raise ProtocolError('Unexpected DATA for scalar query')
             self.remaining = size
             self.complete = size == 0
@@ -120,6 +120,8 @@ class Receiver:
         elif self.verb == 'reboot-download' and answer == 'OK reboot-download':
             self.complete = True
         elif self.verb == 'panic-test' and answer == 'OK panic-test':
+            self.complete = True
+        elif self.allow_input_test and self.verb.startswith(('hid-home ','hid-swipe ')) and answer == 'OK input-queued':
             self.complete = True
         elif self.verb == 'panic-status' and re.fullmatch(r'OK panic=[01] seconds=[0-9a-f]{8}', answer):
             mode, seconds = int(answer[9]), int(answer[19:], 16)

@@ -11,6 +11,31 @@ TAG='a6b766259c1f31fa'
 
 
 class Tests(unittest.TestCase):
+    def test_input_ack_scope_sequence_and_data_rejection(self):
+        for verb in ('hid-home c8','hid-swipe 82 2ee 17c 2ee 190'):
+            with self.assertRaises(ValueError):f.validate_command(verb)
+            r=f.Receiver(TAG,allow_input_test=True);r.start(17,verb)
+            r.feed(b'I9CTL1 00000010 OK input-queued\n');self.assertFalse(r.complete)
+            r.feed(b'I9CTL1 00000011 OK input-queued\n');self.assertTrue(r.complete)
+            for wrong in (b'OK control=1',b'OK DATA 00000000 00000000'):
+                r=f.Receiver(TAG,allow_input_test=True);r.start(17,verb)
+                with self.assertRaises(f.ProtocolError):r.feed(b'I9CTL1 00000011 '+wrong+b'\n')
+
+    def test_input_needs_identity_and_is_not_resent(self):
+        class T:
+            def __init__(self):
+                self.writes=[];self.pending=[b'I9CTL1 READY control=1\nI9CTL1 BUILD '+TAG.encode()+b'\n']
+            def ticks(self):return 240000000
+            def write(self,data):
+                self.writes.append(data);seq=data.split()[1]
+                answer=b'OK control=1' if b' ping\n' in data else b'OK input-queued'
+                self.pending.append(b'I9CTL1 '+seq+b' '+answer+b'\n')
+            def read(self):return self.pending.pop(0)
+        t=T();s=f.Session(t,TAG,lambda *a,**k:None,io.BytesIO(),sleep=lambda _:None,allow_input_test=True)
+        with self.assertRaises(f.ProtocolError):s.command('hid-home c8')
+        self.assertEqual(t.writes,[]);s.handshake();s.command('hid-home c8')
+        self.assertEqual([w.split()[2] for w in t.writes],[b'ping',b'hid-home'])
+
     def test_identity_fragmentation(self):
         data=b'log\r\n\nI9CTL1 READY control=1\nI9CTL1 BUILD '+TAG.encode()+b'\n'
         for n in (1,2,7,13,4096):
