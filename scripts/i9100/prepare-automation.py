@@ -21,6 +21,7 @@ parser.add_argument('--panic-recovery', action=argparse.BooleanOptionalAction, d
                     help='Retain panic logs and return to Download after 180s')
 parser.add_argument('--panic-test', action='store_true')
 parser.add_argument('--home-test', action='store_true')
+parser.add_argument('--ios6-hid', action=argparse.BooleanOptionalAction, default=True)
 args = parser.parse_args()
 if args.panic_test and not args.panic_recovery:
     parser.error('--panic-test requires --panic-recovery')
@@ -47,5 +48,6 @@ subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--ke
                 *(['--mdns-development'] if args.mdns_development else []),
                 *(['--panic-recovery'] if args.panic_recovery else []),
                 *(['--panic-test'] if args.panic_test else []),
-                *(['--home-test'] if args.home_test else [])], check=True)
+                *(['--home-test'] if args.home_test else []),
+                *(['--ios6-hid'] if args.ios6_hid else [])], check=True)
 print('OFFLINE READY:', package, flush=True)

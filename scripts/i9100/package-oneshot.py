@@ -49,6 +49,7 @@ def main():
     parser.add_argument('--panic-test', action='store_true',
                         help='Explicit qualification-only controlled panic command')
     parser.add_argument('--home-test', action='store_true',help='One diagnostic Menu press/release after HID open')
+    parser.add_argument('--ios6-hid', action='store_true',help='Use the verified iOS6 serialized input ABI')
     parser.add_argument('--control-bootargs-only', action='store_true',
                         help='Diagnostic: control loader bootargs with a baseline kernel; no command capability claim')
     args = parser.parse_args()
@@ -68,6 +69,8 @@ def main():
         parser.error('--panic-test requires --panic-recovery')
     if args.home_test and (not args.control or not args.xpc_diag):
         parser.error('--home-test requires --control and --xpc-diag')
+    if args.ios6_hid and not args.control:
+        parser.error('--ios6-hid requires --control')
     if args.control_bootargs_only and not args.control:
         parser.error('--control-bootargs-only requires --control')
     output = args.output.resolve()
@@ -98,6 +101,8 @@ def main():
         raise RuntimeError('Kernel lacks the panic-to-Download capability')
     if args.home_test and b'i9100hometest\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit Home test capability')
+    if args.ios6_hid and b'i9100hidabi\0' not in raw_data:
+        raise RuntimeError('Kernel lacks the explicit iOS6 HID wire capability')
     blob = output/'Image.lz4'
     blob.write_bytes(lz4.block.compress(raw_data, store_size=False))
     assert lz4.block.decompress(blob.read_bytes(), uncompressed_size=len(raw_data)) == raw_data
@@ -115,6 +120,7 @@ def main():
         *(['--panic-recovery'] if args.panic_recovery else []),
         *(['--panic-test'] if args.panic_test else []),
         *(['--home-test'] if args.home_test else []),
+        *(['--ios6-hid'] if args.ios6_hid else []),
         '--kernel-blob', blob, '--dtb-blob', dt_blob, 'arch/arm/start.S', 'arch/arm/load-kernel.c',
         'arch/arm/lz4dec.c', 'board/samsung/board-i9100.c',
         'drivers/samsung/dwc2cdc4210.c', 'main/main.c'], loader, output/'loader-build.log')
@@ -146,6 +152,7 @@ def main():
         assert b'i9100panictest=1' in data
     if args.home_test:
         assert b'i9100hometest=1' in data
+    assert (b'i9100hidabi=6' in data) == args.ios6_hid
     assert 'S2I9100-OS6'.encode('utf-16le') in data
     symbols = subprocess.check_output(['arm-none-eabi-nm','-n',str(build/'uniLoader.o')],text=True)
     (output/'loader-symbols.txt').write_text(symbols)
@@ -186,6 +193,7 @@ def main():
         'panic_recovery_seconds': 180 if args.panic_recovery else None,
         'panic_test_command': args.panic_test,
         'home_test_command': args.home_test,
+        'hid_wire_abi': 6 if args.ios6_hid else 7,
         'root_status_protocol': b'OK root=NO_ROOT' in raw_data,
         'diagnostic_control_bootargs_only': args.control_bootargs_only,
         'control_tag': sha(kernel)[:16] if args.control else None,
