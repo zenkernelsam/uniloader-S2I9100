@@ -51,6 +51,19 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key = '_i9100_ls_bootstrap_diag'
+    if key in symbols.values:
+        data = kernel.read(symbols[key], 32)
+        (out / 'ls-bootstrap.bin').write_bytes(data)
+        result['ls_bootstrap'] = dict(zip(['budgets', 'timeouts', 'replies', 'ready',
+                                          'last_id', 'send_size', 'receive_size', 'options'],
+                                         struct.unpack('<8I', data)))
+    key = '_i9100_ls_store_reply_diag'
+    if key in symbols.values:
+        data = kernel.read(symbols[key], (1 + 16 * 8) * 4)
+        (out / 'ls-store-reply.bin').write_bytes(data)
+        result['ls_store_replies'] = decode_table(data, 16, 8,
+            ['pid', 'native_size', 'user_size', 'type', 'bytes', 'initial_result', 'result', 'stage'])
     fields = ['sequence', 'pid', 'thread', 'stage', 'id', 'wire_size', 'length',
               'bits', 'options', 'status', 'sender_pid', 'sender_euid']
     for label, stride, cap in [('tcc-wire', 140, 512), ('ls-wire', 48, 144)]:
