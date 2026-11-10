@@ -51,6 +51,18 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_small_ool_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+32*80)*4);(out/'small-ool.bin').write_bytes(data)
+        w=struct.unpack('<2561I',data);rows=[]
+        fields='sequence pid stage copy type size address map current_map thread_map result copied error map_matches reserved0 reserved1'.split()
+        for n in range(32):
+            at=1+n*80
+            if not w[at]:continue
+            row=dict(zip(fields,w[at:at+16]))
+            if row['copied']>256:raise ValueError('Invalid small OOL capture bound')
+            row['hex']=data[(at+16)*4:(at+16)*4+row['copied']].hex();rows.append(row)
+        result['small_ool']=dict(sequence=w[0],rows=sorted(rows,key=lambda r:r['sequence']))
     key = '_i9100_ls_publish_wire_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+16*352)*4);(out/'ls-publish-wire.bin').write_bytes(data)
