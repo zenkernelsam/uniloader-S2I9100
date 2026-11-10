@@ -60,7 +60,7 @@ def capture_ui_observations(kernel, symbols, out):
             result[label]=dict(zip(fields,struct.unpack('<'+'I'*len(fields),data)))
     fields = ['sequence','pid','selector','result','si','sti','so','sto',
               'input_descriptor','output_descriptor','flags','output_capacity']
-    for label in ('framebuffer_io','surface_io'):
+    for label in ('framebuffer_io','surface_io','other_io_error'):
         key = '_i9100_' + label + '_diag'
         if key not in symbols.values: continue
         data = kernel.read(symbols[key],(1+64*40)*4); (out/(label+'.bin')).write_bytes(data)
@@ -309,7 +309,7 @@ def capture_ui_observations(kernel, symbols, out):
             raise ValueError('Unknown live graphics counter version')
     (out/'ui-observations.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     preview=dict(result)
-    for key in ('render_transport','user_fault_details','vm_remap','tcc_wire','ls_wire','framebuffer_io','surface_io'):
+    for key in ('render_transport','user_fault_details','vm_remap','tcc_wire','ls_wire','framebuffer_io','surface_io','other_io_error'):
         if key in result:
             preview[key]=dict(count=len(result[key]['rows']),rows=result[key]['rows'][-8:])
     print('ui-observations',json.dumps(preview),flush=True)
