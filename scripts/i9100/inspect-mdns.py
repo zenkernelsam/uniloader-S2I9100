@@ -51,6 +51,29 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    fields = ['sequence', 'pid', 'thread', 'stage', 'id', 'wire_size', 'length',
+              'bits', 'options', 'status', 'sender_pid', 'sender_euid']
+    for label, stride, cap in [('tcc-wire', 140, 512), ('ls-wire', 48, 144)]:
+        key = '_i9100_' + label.replace('-', '_') + '_diag'
+        if key not in symbols.values:
+            continue
+        size = (1 + 64 * stride) * 4
+        data = b''.join(kernel.read(symbols[key] + start, min(32768, size - start))
+                        for start in range(0, size, 32768))
+        (out / (label + '.bin')).write_bytes(data)
+        w = struct.unpack('<' + str(1 + 64 * stride) + 'I', data)
+        rows = []
+        for n in range(64):
+            at = 1 + n * stride
+            if not w[at]:
+                continue
+            row = dict(zip(fields, w[at:at + 12]))
+            if row['length'] > cap:
+                raise ValueError('Invalid service envelope prefix')
+            offset = (at + 12) * 4
+            row['hex'] = data[offset:offset + row['length']].hex()
+            rows.append(row)
+        result[label.replace('-', '_')] = dict(sequence=w[0], rows=sorted(rows, key=lambda r: r['sequence']))
     key='_i9100_tcc_bootstrap_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+32*72)*4);(out/'tcc-bootstrap.bin').write_bytes(data)
@@ -219,7 +242,7 @@ def capture_ui_observations(kernel, symbols, out):
             raise ValueError('Unknown live graphics counter version')
     (out/'ui-observations.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     preview=dict(result)
-    for key in ('render_transport','user_fault_details','vm_remap'):
+    for key in ('render_transport','user_fault_details','vm_remap','tcc_wire','ls_wire'):
         if key in result:
             preview[key]=dict(count=len(result[key]['rows']),rows=result[key]['rows'][-8:])
     print('ui-observations',json.dumps(preview),flush=True)
