@@ -51,6 +51,10 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_shared_directory_added'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],8);(out/'shared-directory-added.bin').write_bytes(data)
+        result['shared_directory_added']=dict(zip(['SpringBoard','kbd'],struct.unpack('<2I',data)))
     for label,key in [('springboard_fault_stack','_i9100_springboard_fault_stack'),
                       ('keyboard_fault_stack','_i9100_keyboard_fault_stack')]:
         if key in symbols.values:
