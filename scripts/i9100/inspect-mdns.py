@@ -51,6 +51,13 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key = '_i9100_tcc_identity_diag'
+    if key in symbols.values:
+        data = kernel.read(symbols[key], (1 + 64 * 20) * 4)
+        (out / 'tcc-identity.bin').write_bytes(data)
+        result['tcc_identity'] = decode_table(data, 64, 20,
+            ['pid', 'syscall', 'nargs'] + ['arg'+str(n) for n in range(7)] +
+            ['error', 'result', 'pc', 'lr', 'fp', 'stage'] + ['entry_r'+str(n) for n in range(4)])
     key = '_i9100_ls_bootstrap_diag'
     if key in symbols.values:
         data = kernel.read(symbols[key], 32)
