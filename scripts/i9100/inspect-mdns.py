@@ -51,6 +51,14 @@ selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key = '_i9100_amfi_output_diag'
+    if key in symbols.values:
+        data = kernel.read(symbols[key], (1 + 64 * 16) * 4)
+        (out / 'amfi-output.bin').write_bytes(data)
+        result['amfi_output'] = decode_table(data, 64, 16,
+            ['pid', 'selector', 'si', 'so', 'sti', 'sto_before', 'descriptor_before',
+             'flags', 'copied', 'result', 'sto_after', 'descriptor_after', 'token_pid',
+             'blob_bytes', 'reserved', 'stage'])
     key = '_i9100_tcc_identity_diag'
     if key in symbols.values:
         data = kernel.read(symbols[key], (1 + 64 * 20) * 4)
