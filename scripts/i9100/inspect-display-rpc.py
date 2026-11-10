@@ -16,6 +16,12 @@ f=module('display_forensic','forensic-session.py')
 m=module('display_memory','live-memory.py')
 o=module('display_odin','odin-loop.py')
 
+def valid_send(regs,header,names):
+    # mach_msg's send_size argument is authoritative. Generated MIG stubs
+    # need not initialize the user msgh_size word; ipc_kmsg_get assigns it.
+    return bool(regs[1]&1) and 24<=regs[2]<=32768 and \
+        (header[0]&0xff) in (16,17,18,19,20,21) and header[2] in names
+
 def queue(kernel,address,out,label):
     data=kernel.read(address,0x8c)
     (out/(label+'-port.bin')).write_bytes(data)
@@ -74,9 +80,25 @@ def main():
                 o.require(current_pid and int(current_pid[1])==pid,'SpringBoard respawned during snapshot')
                 names={int(n,16):int(v,16) for n,v in re.findall(r'pn=([0-9a-f]+).*?obj=(0x[0-9a-f]+)',ports.decode())}
                 sending=bool(regs[1]&1) and regs[2]>=24
-                valid=sending and 24<=h[1]<=regs[2]
+                valid=valid_send(regs,h,names)
                 message=dict(direction='send-and-receive' if sending else 'receive-only',valid_send_header=valid)
-                if valid:message.update(bits=hex(h[0]),size=h[1],remote_name=hex(h[2]),local_name=hex(h[3]),id=h[5])
+                if valid:
+                    message.update(bits=hex(h[0]),size=regs[2],raw_header_size=hex(h[1]),
+                        remote_name=hex(h[2]),local_name=hex(h[3]),id=h[5])
+                    raw=user.read(regs[0],regs[2]);(out/'user-message.bin').write_bytes(raw)
+                    # User OOL32 is 12 bytes. Only retain a single actual OOL
+                    # memory descriptor, with a bounded prefix of its bytes.
+                    if h[0]&0x80000000 and len(raw)>=40 and struct.unpack_from('<I',raw,24)[0]==1 and raw[39]==1:
+                        address,length=struct.unpack_from('<2I',raw,28)
+                        message['ool']=dict(address=hex(address),bytes=length,
+                            deallocate=raw[36],copy=raw[37],type=raw[39])
+                        if 0x1000<=address<0x40000000 and 0<length<=0x40000000-address:
+                            try:
+                                payload=user.read(address,min(length,4096))
+                                (out/'user-ool-prefix.bin').write_bytes(payload)
+                                message['ool']['prefix_bytes']=len(payload)
+                            except m.MappingError as exc:
+                                message['ool']['read_error']=str(exc)
                 result=dict(tag=symbols.tag,pid=pid,task=hex(task),thread=hex(thread),
                     registers=[hex(v) for v in regs],message=message,queues={})
                 targets=[('reply',regs[4])]
