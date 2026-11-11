@@ -62,7 +62,8 @@ ABORT_SYMBOLS = {'_i9100_abort_frames', '_i9100_abort_observation',
                  '_i9100_backboard_abort_observation', '_i9100_process_exit',
                  '_i9100_backboard_exit', '_i9100_panel_console_enabled',
                  '_i9100_graphics_seq', '_i9100_backboard_vm_diag',
-                 '_i9100_ios6_slab_payload', '_i9100_ios6_slab_vm_diag'} | {
+                 '_i9100_ios6_slab_payload', '_i9100_ios6_slab_vm_diag',
+                 '_i9100_quartz_fault_payload'} | {
                      '_i9100_power_'+name for name in
                      ('valid', 'percent', 'mv', 'connected', 'charging', 'temp', 'reason', 'revision_value')}
 
@@ -101,6 +102,22 @@ def capture_ui_observations(kernel, symbols, out):
             rows.append(dict(zip(fields,words)))
         result[label] = dict(owner_pid=owner,count=count,dropped=dropped,sealed=sealed,
                              unpublished=unpublished,rows=rows)
+    key = '_i9100_quartz_fault_payload'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(16+1024)*4)
+        (out/'quartz-fault-payload.bin').write_bytes(data)
+        fields='sequence pid task pc lr far object page bytes error version slide magic vtable object_offset type'.split()
+        row=dict(zip(fields,struct.unpack_from('<16I',data)))
+        if row['sequence']:
+            if row['version']!=1 or row['bytes'] not in (0,4096) or row['object_offset']>4092:
+                raise ValueError('Unknown QuartzCore fault payload layout')
+            payload=data[64:64+row['bytes']]
+            (out/'quartz-object-page.bin').write_bytes(payload)
+            offset=row['object_offset']
+            row.update(sha256=hashlib.sha256(payload).hexdigest(),
+                       nonzero_bytes=sum(value!=0 for value in payload),
+                       object_prefix_hex=payload[offset:offset+64].hex())
+        result['quartz_fault']=row
     key = '_i9100_ios6_slab_payload'
     if key in symbols.values:
         data = kernel.read(symbols[key],2*(12+1024)*4)
