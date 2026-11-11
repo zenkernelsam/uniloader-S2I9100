@@ -62,7 +62,7 @@ ABORT_SYMBOLS = {'_i9100_abort_frames', '_i9100_abort_observation',
                  '_i9100_backboard_abort_observation', '_i9100_process_exit',
                  '_i9100_backboard_exit', '_i9100_panel_console_enabled',
                  '_i9100_graphics_seq', '_i9100_backboard_vm_diag',
-                 '_i9100_ios6_slab_payload'} | {
+                 '_i9100_ios6_slab_payload', '_i9100_ios6_slab_vm_diag'} | {
                      '_i9100_power_'+name for name in
                      ('valid', 'percent', 'mv', 'connected', 'charging', 'temp', 'reason', 'revision_value')}
 
@@ -80,12 +80,14 @@ def capture_ui_observations(kernel, symbols, out):
             power[name] = value
     if power:
         result['power'] = dict(snapshot='non-atomic workloop fields', **power)
-    key = '_i9100_backboard_vm_diag'
-    if key in symbols.values:
-        data = kernel.read(symbols[key], (4+256*28)*4)
-        (out/'backboard-vm.bin').write_bytes(data)
+    for key, capacity, label in (('_i9100_backboard_vm_diag',256,'backboard_vm'),
+                                 ('_i9100_ios6_slab_vm_diag',64,'slab_vm')):
+        if key not in symbols.values:
+            continue
+        data = kernel.read(symbols[key], (4+capacity*28)*4)
+        (out/(label.replace('_','-')+'.bin')).write_bytes(data)
         count, owner, dropped, sealed = struct.unpack_from('<4I',data)
-        if count > 256 or sealed not in (0,1):
+        if count > capacity or sealed not in (0,1):
             raise ValueError('Unknown backboard VM observation bounds')
         fields = 'sequence pid thread code pc lr address_low address_high length_low length_high protection flags fd position_low position_high argument_error error result_low result_high stage'.split()+['raw'+str(n) for n in range(7)]+['nargs']
         rows, unpublished = [], []
@@ -97,8 +99,8 @@ def capture_ui_observations(kernel, symbols, out):
             if words[0] != n+1 or words[1] != owner or words[19] != 1:
                 raise ValueError('Backboard VM observation ownership changed')
             rows.append(dict(zip(fields,words)))
-        result['backboard_vm'] = dict(owner_pid=owner,count=count,dropped=dropped,sealed=sealed,
-                                     unpublished=unpublished,rows=rows)
+        result[label] = dict(owner_pid=owner,count=count,dropped=dropped,sealed=sealed,
+                             unpublished=unpublished,rows=rows)
     key = '_i9100_ios6_slab_payload'
     if key in symbols.values:
         data = kernel.read(symbols[key],2*(12+1024)*4)
@@ -463,6 +465,9 @@ def capture_ui_observations(kernel, symbols, out):
             raise ValueError('Unknown live graphics counter version')
     (out/'ui-observations.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     preview=dict(result)
+    for key in ('backboard_vm','slab_vm'):
+        if key in result:
+            preview[key]=dict(result[key],rows=result[key]['rows'][-6:])
     for key in ('render_transport','user_fault_details','vm_remap','tcc_wire','ls_wire','framebuffer_io','surface_io','other_io_error'):
         if key in result:
             preview[key]=dict(count=len(result[key]['rows']),rows=result[key]['rows'][-8:])
