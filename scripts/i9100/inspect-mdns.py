@@ -67,6 +67,9 @@ ABORT_SYMBOLS = {'_i9100_abort_frames', '_i9100_abort_observation',
                  '_i9100_touch_observation'} | {
                      '_i9100_power_'+name for name in
                      ('valid', 'percent', 'mv', 'connected', 'charging', 'temp', 'reason', 'revision_value')}
+LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
+              '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
+              '_i9100_process_exit','_i9100_backboard_exit'}
 
 
 def capture_ui_observations(kernel, symbols, out):
@@ -486,7 +489,7 @@ def capture_ui_observations(kernel, symbols, out):
     for key in ('backboard_vm','slab_vm'):
         if key in result:
             preview[key]=dict(result[key],rows=result[key]['rows'][-6:])
-    for key in ('render_transport','user_fault_details','vm_remap','tcc_wire','ls_wire','framebuffer_io','surface_io','other_io_error'):
+    for key in ('render_transport','user_fault_details','vm_remap','tcc_wire','ls_wire','ls_publish_wire','framebuffer_io','surface_io','other_io_error'):
         if key in result:
             preview[key]=dict(count=len(result[key]['rows']),rows=result[key]['rows'][-8:])
     print('ui-observations',json.dumps(preview),flush=True)
@@ -517,8 +520,11 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--stacks', action='store_true',
                         help='Capture SB/configd/backboardd/MDNS stacks before closing this handle')
-    parser.add_argument('--abort-only', action='store_true',
+    scope=parser.add_mutually_exclusive_group()
+    scope.add_argument('--abort-only', action='store_true',
                         help='Read retained UI aborts, power and display state without unrelated service tables')
+    scope.add_argument('--ls-only',action='store_true',
+                        help='Read current LS query/reply and fault records without unrelated service tables')
     a = parser.parse_args()
     symbols = m.Symbols(a.kernel)
     for symbol, _, _, _ in TABLES.values():
@@ -546,8 +552,8 @@ def main():
                 session.handshake()
                 kernel = m.Kernel(session, symbols)
                 result = dict(tag=symbols.tag, device=device, tables={})
-                selected = ABORT_SYMBOLS | {key for key in symbols.values if key.endswith('leo_graphics_state')}
-                observed_symbols = ObservationSymbols(symbols, selected) if a.abort_only else symbols
+                selected = LS_SYMBOLS if a.ls_only else ABORT_SYMBOLS | {key for key in symbols.values if key.endswith('leo_graphics_state')}
+                observed_symbols = ObservationSymbols(symbols, selected) if a.abort_only or a.ls_only else symbols
                 result['ui_observations'] = capture_ui_observations(kernel,observed_symbols,out)
                 result['resources'] = {}
                 for name in ('_maxproc', '_maxprocperuid', '_hard_maxproc', '_nprocs', '_vm_page_free_count'):
@@ -556,13 +562,14 @@ def main():
                         (out/(name.lstrip('_')+'.bin')).write_bytes(data)
                         result['resources'][name] = struct.unpack('<I', data)[0]
                 print('resources', json.dumps(result['resources']), flush=True)
-                if a.abort_only:
+                if a.abort_only or a.ls_only:
                     if a.stacks:
-                        for name in ('SpringBoard', 'backboardd'):
+                        names=('SpringBoard','lsd','installd') if a.ls_only else ('SpringBoard','backboardd')
+                        for name in names:
                             _, data = session.command('threads '+name)
                             (out/(name+'-threads.txt')).write_bytes(data)
                     (out/'results.json').write_text(json.dumps(result, indent=2)+'\n')
-                    record('DONE', observation='retained UI aborts and power')
+                    record('DONE', observation='LS query/reply' if a.ls_only else 'retained UI aborts and power')
                     return
                 for name, (symbol, cap, stride, fields) in TABLES.items():
                     data = kernel.read(symbols[symbol], (1+cap*stride)*4)
