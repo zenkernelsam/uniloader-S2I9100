@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read bounded MDNS startup evidence with one verified serial handle."""
 import argparse
+import hashlib
 from datetime import datetime, timezone
 import importlib.util
 import json
@@ -60,7 +61,8 @@ class ObservationSymbols:
 ABORT_SYMBOLS = {'_i9100_abort_frames', '_i9100_abort_observation',
                  '_i9100_backboard_abort_observation', '_i9100_process_exit',
                  '_i9100_backboard_exit', '_i9100_panel_console_enabled',
-                 '_i9100_graphics_seq', '_i9100_display_graphics_state'} | {
+                 '_i9100_graphics_seq', '_i9100_backboard_vm_diag',
+                 '_i9100_ios6_slab_payload'} | {
                      '_i9100_power_'+name for name in
                      ('valid', 'percent', 'mv', 'connected', 'charging', 'temp', 'reason', 'revision_value')}
 
@@ -78,6 +80,45 @@ def capture_ui_observations(kernel, symbols, out):
             power[name] = value
     if power:
         result['power'] = dict(snapshot='non-atomic workloop fields', **power)
+    key = '_i9100_backboard_vm_diag'
+    if key in symbols.values:
+        data = kernel.read(symbols[key], (4+256*28)*4)
+        (out/'backboard-vm.bin').write_bytes(data)
+        count, owner, dropped, sealed = struct.unpack_from('<4I',data)
+        if count > 256 or sealed not in (0,1):
+            raise ValueError('Unknown backboard VM observation bounds')
+        fields = 'sequence pid thread code pc lr address_low address_high length_low length_high protection flags fd position_low position_high argument_error error result_low result_high stage'.split()+['raw'+str(n) for n in range(7)]+['nargs']
+        rows, unpublished = [], []
+        for n in range(count):
+            words = struct.unpack_from('<28I',data,(4+n*28)*4)
+            if not words[0]:
+                unpublished.append(n)
+                continue
+            if words[0] != n+1 or words[1] != owner or words[19] != 1:
+                raise ValueError('Backboard VM observation ownership changed')
+            rows.append(dict(zip(fields,words)))
+        result['backboard_vm'] = dict(owner_pid=owner,count=count,dropped=dropped,sealed=sealed,
+                                     unpublished=unpublished,rows=rows)
+    key = '_i9100_ios6_slab_payload'
+    if key in symbols.values:
+        data = kernel.read(symbols[key],2*(12+1024)*4)
+        (out/'ios6-slab-payload.bin').write_bytes(data)
+        fields = 'sequence pid task candidate link expected actual bytes error version slide role'.split()
+        rows = []
+        for n in range(2):
+            at=n*(12+1024)*4
+            row=dict(zip(fields,struct.unpack_from('<12I',data,at)))
+            if not row['sequence']:continue
+            if row['version']!=1 or row['role']!=n or row['bytes']>4096:
+                raise ValueError('Unknown retained iOS6 slab payload layout')
+            payload=data[at+48:at+48+row['bytes']]
+            (out/f'slab-role-{n}-pid-{row["pid"]}.bin').write_bytes(payload)
+            row.update(sha256=hashlib.sha256(payload).hexdigest(),
+                       nonzero_bytes=sum(value!=0 for value in payload),prefix_hex=payload[:64].hex())
+            if len(payload)>=20:
+                row['magic_in_payload']=struct.unpack_from('<I',payload,16)[0]
+            rows.append(row)
+        result['slab_payload'] = dict(rows=rows)
     key='_i9100_small_ool_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+32*80)*4);(out/'small-ool.bin').write_bytes(data)
@@ -482,7 +523,8 @@ def main():
                 session.handshake()
                 kernel = m.Kernel(session, symbols)
                 result = dict(tag=symbols.tag, device=device, tables={})
-                observed_symbols = ObservationSymbols(symbols, ABORT_SYMBOLS) if a.abort_only else symbols
+                selected = ABORT_SYMBOLS | {key for key in symbols.values if key.endswith('leo_graphics_state')}
+                observed_symbols = ObservationSymbols(symbols, selected) if a.abort_only else symbols
                 result['ui_observations'] = capture_ui_observations(kernel,observed_symbols,out)
                 result['resources'] = {}
                 for name in ('_maxproc', '_maxprocperuid', '_hard_maxproc', '_nprocs', '_vm_page_free_count'):
