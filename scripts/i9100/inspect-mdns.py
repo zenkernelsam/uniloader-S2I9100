@@ -63,7 +63,8 @@ ABORT_SYMBOLS = {'_i9100_abort_frames', '_i9100_abort_observation',
                  '_i9100_backboard_exit', '_i9100_panel_console_enabled',
                  '_i9100_graphics_seq', '_i9100_backboard_vm_diag',
                  '_i9100_ios6_slab_payload', '_i9100_ios6_slab_vm_diag',
-                 '_i9100_quartz_fault_payload'} | {
+                 '_i9100_quartz_fault_payload', '_i9100_input_test',
+                 '_i9100_touch_observation'} | {
                      '_i9100_power_'+name for name in
                      ('valid', 'percent', 'mv', 'connected', 'charging', 'temp', 'reason', 'revision_value')}
 
