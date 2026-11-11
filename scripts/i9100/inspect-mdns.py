@@ -352,12 +352,18 @@ def capture_ui_observations(kernel, symbols, out):
                        ('backboard_abort', '_i9100_backboard_abort_observation')]:
         if key not in symbols.values:
             continue
-        data = kernel.read(symbols[key], 336)
+        frames = kernel.u32(symbols['_i9100_abort_frames']) if '_i9100_abort_frames' in symbols.values else 8
+        if frames not in (8, 16):
+            raise ValueError('Unknown retained abort frame layout')
+        words = 15+frames
+        data = kernel.read(symbols[key], words*4+244)
         (out/(label+'-observation.bin')).write_bytes(data)
-        fields = ['sequence','pid','task','pc','lr','sp','fp','count','error'] + ['frame'+str(n) for n in range(8)] + \
+        fields = ['sequence','pid','task','pc','lr','sp','fp','count','error'] + ['frame'+str(n) for n in range(frames)] + \
                  ['slab','slab_object','slab_expected','slab_actual','slab_status','text_kind']
-        result[label] = dict(zip(fields,struct.unpack_from('<23I',data)))
-        result[label]['text'] = data[92:333].split(b'\0')[0].decode('utf-8','replace')
+        result[label] = dict(zip(fields,struct.unpack_from('<'+str(words)+'I',data)))
+        if result[label]['count'] > frames:
+            raise ValueError('Retained abort count exceeds its schema')
+        result[label]['text'] = data[words*4:words*4+241].split(b'\0')[0].decode('utf-8','replace')
     for name, size in [('i9100_panel_console_enabled',4), ('i9100_fb_physical',4),
                        ('i9100_graphics_seq',8), ('i9100_frame_performance',28)]:
         key = '_'+name
