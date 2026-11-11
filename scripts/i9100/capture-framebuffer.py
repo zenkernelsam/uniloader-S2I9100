@@ -40,6 +40,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--kernel', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--chunk-bytes', type=int, choices=(4096,8192,16384,32768), default=32768,
+                   help='Maximum bytes per DATA command; smaller blocks limit each transfer burst')
     a = p.parse_args()
     symbols = m.Symbols(a.kernel)
     out = o.confined(a.output, f.REPO / 'out')
@@ -50,6 +52,7 @@ def main():
         o.require(device and o.normalize_location(device['location']) == profile['location'], 'No approved live CDC')
         out.mkdir(parents=True)
         transport = None
+        captured = 0
         with (out / 'events.jsonl').open('x') as events, (out / 'received.bin').open('xb') as capture:
             def record(phase, **fields):
                 row = dict(time=datetime.now(timezone.utc).isoformat(), phase=phase, **fields)
@@ -72,8 +75,12 @@ def main():
                 before = kernel.read(symbols['_i9100_graphics_seq'], 8)
                 console = kernel.u32(symbols['_i9100_panel_console_enabled'])
                 raw = bytearray()
-                for offset in range(0, total, 32768):
-                    raw.extend(kernel.read_phys(physical + offset, min(32768, total - offset)))
+                with (out/'framebuffer.partial.bin').open('xb') as partial:
+                    for offset in range(0, total, a.chunk_bytes):
+                        block=kernel.read_phys(physical + offset,min(a.chunk_bytes,total-offset))
+                        raw.extend(block)
+                        partial.write(block);partial.flush()
+                        captured+=len(block)
                 after = kernel.read(symbols['_i9100_graphics_seq'], 8)
                 png = png_bgrx(raw, width, height, stride)
                 (out / 'framebuffer.bin').write_bytes(raw)
@@ -82,13 +89,14 @@ def main():
                               width=width, height=height, stride=stride, depth=depth, format='BGRX32',
                               console=console, sequence_before=struct.unpack('<Q', before)[0],
                               sequence_after=struct.unpack('<Q', after)[0], coherent=before == after,
-                              bytes=len(raw), raw_sha256=hashlib.sha256(raw).hexdigest(),
+                              bytes=len(raw), chunk_bytes=a.chunk_bytes, raw_sha256=hashlib.sha256(raw).hexdigest(),
                               png_sha256=hashlib.sha256(png).hexdigest())
                 (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
                 print(json.dumps(result, indent=2), flush=True)
                 record('DONE', coherent=result['coherent'])
             except BaseException as exc:
-                record('STOP', error=str(exc), retry=False)
+                record('STOP', error=str(exc), retry=False, partial_bytes=captured,
+                       chunk_bytes=a.chunk_bytes)
                 raise
             finally:
                 if transport is not None:
