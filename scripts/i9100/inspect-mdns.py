@@ -70,12 +70,27 @@ ABORT_SYMBOLS = {'_i9100_abort_frames', '_i9100_abort_observation',
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
-              '_i9100_ls_reply_alloc_diag'}
+              '_i9100_ls_reply_alloc_diag','_i9100_ls_delivery_stride'}
+LS_SYMBOLS.add('_i9100_ls_file_diag')
 
 
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_ls_file_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+64*112)*4);(out/'ls-files.bin').write_bytes(data)
+        sequence=struct.unpack_from('<I',data)[0];rows=[]
+        fields='sequence pid thread code error result fd flags mode count path_error path2_error pc lr stage version'.split()
+        for n in range(64):
+            at=(1+n*112)*4;values=struct.unpack_from('<16I',data,at)
+            if not values[0] or values[0]>sequence or sequence-values[0]>=64:continue
+            r=dict(zip(fields,values))
+            if r['version']!=1 or r['stage']!=1:raise ValueError('Unknown LS file observer')
+            r['path']=data[at+64:at+256].split(b'\0')[0].decode('utf-8','replace')
+            r['path2']=data[at+256:at+448].split(b'\0')[0].decode('utf-8','replace')
+            rows.append(r)
+        result['ls_files']=dict(sequence=sequence,rows=sorted(rows,key=lambda x:x['sequence']))
     key='_i9100_ls_reply_alloc_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+32*12)*4);(out/'ls-reply-alloc.bin').write_bytes(data)
@@ -89,18 +104,21 @@ def capture_ui_observations(kernel, symbols, out):
         result['ls_reply_alloc']=dict(count=count,rows=rows)
     key='_i9100_ls_delivery_diag'
     if key in symbols.values:
-        data=kernel.read(symbols[key],(1+8*716)*4);(out/'ls-delivery.bin').write_bytes(data)
+        stride=kernel.u32(symbols['_i9100_ls_delivery_stride']) if '_i9100_ls_delivery_stride' in symbols.values else 716
+        if stride not in (716,848):raise ValueError('Unknown LS delivery stride')
+        capacity=(stride-16)*2;version=1 if stride==716 else 2
+        data=kernel.read(symbols[key],(1+8*stride)*4);(out/'ls-delivery.bin').write_bytes(data)
         count=struct.unpack_from('<I',data)[0]
         if count>8:raise ValueError('Invalid delivery reservation count')
         rows=[];fields='sequence pid thread task id address bytes result read_error read_ok version mismatch sender_pid'.split()
         for n in range(count):
-            offset=(1+n*716)*4;values=struct.unpack_from('<13I',data,offset)
+            offset=(1+n*stride)*4;values=struct.unpack_from('<13I',data,offset)
             if not values[0]:continue
             r=dict(zip(fields,values))
-            if r['version']!=1 or r['bytes']>1400 or r['sequence']!=n+1:
+            if r['version']!=version or r['bytes']>capacity or r['sequence']!=n+1:
                 raise ValueError('Unknown LS delivery layout')
             source=data[offset+64:offset+64+r['bytes']]
-            actual=data[offset+64+1400:offset+64+1400+r['bytes']] if r['read_ok'] else b''
+            actual=data[offset+64+capacity:offset+64+capacity+r['bytes']] if r['read_ok'] else b''
             (out/f'delivery-{n+1}-source.bin').write_bytes(source)
             (out/f'delivery-{n+1}-user.bin').write_bytes(actual)
             r.update(source_sha=hashlib.sha256(source).hexdigest(),user_sha=hashlib.sha256(actual).hexdigest(),
