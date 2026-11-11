@@ -49,8 +49,11 @@ def decode(label, raw, frames):
     destination = out / label
     destination.mkdir()
     memory = Memory(raw, frames)
+    symbols = Symbols(frames)
+    selected = parser.ObservationSymbols(symbols, parser.ABORT_SYMBOLS)
+    assert selected.values == symbols.values
     with contextlib.redirect_stdout(io.StringIO()):
-        result = parser.capture_ui_observations(memory, Symbols(frames), destination)
+        result = parser.capture_ui_observations(memory, selected, destination)
     return result['backboard_abort'], memory
 
 

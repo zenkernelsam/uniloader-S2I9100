@@ -48,9 +48,36 @@ selector4_result selector5_result selector6_result selector9_result
 selector4_reason selector5_reason selector6_reason selector9_reason'''.split()
 
 
+class ObservationSymbols:
+    """A read selection; never replace the live mapper's full symbol table."""
+    def __init__(self, source, names):
+        self.values = {key: value for key, value in source.values.items() if key in names}
+
+    def __getitem__(self, key):
+        return self.values[key]
+
+
+ABORT_SYMBOLS = {'_i9100_abort_frames', '_i9100_abort_observation',
+                 '_i9100_backboard_abort_observation', '_i9100_process_exit',
+                 '_i9100_backboard_exit', '_i9100_panel_console_enabled',
+                 '_i9100_graphics_seq', '_i9100_display_graphics_state'} | {
+                     '_i9100_power_'+name for name in
+                     ('valid', 'percent', 'mv', 'connected', 'charging', 'temp', 'reason', 'revision_value')}
+
+
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    power = {}
+    for name in ('valid', 'percent', 'mv', 'connected', 'charging', 'temp', 'reason', 'revision_value'):
+        key = '_i9100_power_'+name
+        if key in symbols.values:
+            value = kernel.u32(symbols[key])
+            if name in ('temp', 'reason') and value & 0x80000000:
+                value -= 0x100000000
+            power[name] = value
+    if power:
+        result['power'] = dict(snapshot='non-atomic workloop fields', **power)
     key='_i9100_small_ool_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+32*80)*4);(out/'small-ool.bin').write_bytes(data)
@@ -426,6 +453,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--stacks', action='store_true',
                         help='Capture SB/configd/backboardd/MDNS stacks before closing this handle')
+    parser.add_argument('--abort-only', action='store_true',
+                        help='Read retained UI aborts, power and display state without unrelated service tables')
     a = parser.parse_args()
     symbols = m.Symbols(a.kernel)
     for symbol, _, _, _ in TABLES.values():
@@ -453,7 +482,8 @@ def main():
                 session.handshake()
                 kernel = m.Kernel(session, symbols)
                 result = dict(tag=symbols.tag, device=device, tables={})
-                result['ui_observations'] = capture_ui_observations(kernel,symbols,out)
+                observed_symbols = ObservationSymbols(symbols, ABORT_SYMBOLS) if a.abort_only else symbols
+                result['ui_observations'] = capture_ui_observations(kernel,observed_symbols,out)
                 result['resources'] = {}
                 for name in ('_maxproc', '_maxprocperuid', '_hard_maxproc', '_nprocs', '_vm_page_free_count'):
                     if name in symbols.values:
@@ -461,6 +491,14 @@ def main():
                         (out/(name.lstrip('_')+'.bin')).write_bytes(data)
                         result['resources'][name] = struct.unpack('<I', data)[0]
                 print('resources', json.dumps(result['resources']), flush=True)
+                if a.abort_only:
+                    if a.stacks:
+                        for name in ('SpringBoard', 'backboardd'):
+                            _, data = session.command('threads '+name)
+                            (out/(name+'-threads.txt')).write_bytes(data)
+                    (out/'results.json').write_text(json.dumps(result, indent=2)+'\n')
+                    record('DONE', observation='retained UI aborts and power')
+                    return
                 for name, (symbol, cap, stride, fields) in TABLES.items():
                     data = kernel.read(symbols[symbol], (1+cap*stride)*4)
                     (out/(name+'.bin')).write_bytes(data)
