@@ -69,12 +69,44 @@ ABORT_SYMBOLS = {'_i9100_abort_frames', '_i9100_abort_observation',
                      ('valid', 'percent', 'mv', 'connected', 'charging', 'temp', 'reason', 'revision_value')}
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
-              '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag'}
+              '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
+              '_i9100_ls_reply_alloc_diag'}
 
 
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_ls_reply_alloc_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+32*12)*4);(out/'ls-reply-alloc.bin').write_bytes(data)
+        count=struct.unpack_from('<I',data)[0]
+        if count>32:raise ValueError('Invalid lsd reply allocation count')
+        fields='sequence pid thread target address size_low size_high flags result backend before after'.split()
+        rows=[]
+        for n in range(count):
+            values=struct.unpack_from('<12I',data,(1+n*12)*4)
+            if values[0]:rows.append(dict(zip(fields,values)))
+        result['ls_reply_alloc']=dict(count=count,rows=rows)
+    key='_i9100_ls_delivery_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+8*716)*4);(out/'ls-delivery.bin').write_bytes(data)
+        count=struct.unpack_from('<I',data)[0]
+        if count>8:raise ValueError('Invalid delivery reservation count')
+        rows=[];fields='sequence pid thread task id address bytes result read_error read_ok version mismatch sender_pid'.split()
+        for n in range(count):
+            offset=(1+n*716)*4;values=struct.unpack_from('<13I',data,offset)
+            if not values[0]:continue
+            r=dict(zip(fields,values))
+            if r['version']!=1 or r['bytes']>1400 or r['sequence']!=n+1:
+                raise ValueError('Unknown LS delivery layout')
+            source=data[offset+64:offset+64+r['bytes']]
+            actual=data[offset+64+1400:offset+64+1400+r['bytes']] if r['read_ok'] else b''
+            (out/f'delivery-{n+1}-source.bin').write_bytes(source)
+            (out/f'delivery-{n+1}-user.bin').write_bytes(actual)
+            r.update(source_sha=hashlib.sha256(source).hexdigest(),user_sha=hashlib.sha256(actual).hexdigest(),
+                source_prefix=source[:40].hex(),user_prefix=actual[:40].hex())
+            rows.append(r)
+        result['ls_delivery']=dict(count=count,rows=rows)
     power = {}
     for name in ('valid', 'percent', 'mv', 'connected', 'charging', 'temp', 'reason', 'revision_value'):
         key = '_i9100_power_'+name
