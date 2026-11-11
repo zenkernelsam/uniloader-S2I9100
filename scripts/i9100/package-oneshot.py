@@ -37,6 +37,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--control', action='store_true', help='Enable serial maintenance resets')
     parser.add_argument('--ls-bootstrap', action='store_true', help='Bound the observed iOS6 LS/MI initialization cycle')
+    parser.add_argument('--ls-ui-timeout',action='store_true',help='Development 5s receive timeout for the witnessed AppStore query')
     parser.add_argument('--xpc-diag', action='store_true', help='Retain XPC boundary metadata in kernel RAM')
     parser.add_argument('--reboot-download-fallback', action='store_true',
                         help='Recover normal iOS reboot requests into Download after filesystem shutdown')
@@ -55,6 +56,8 @@ def main():
     parser.add_argument('--control-bootargs-only', action='store_true',
                         help='Diagnostic: control loader bootargs with a baseline kernel; no command capability claim')
     args = parser.parse_args()
+    if args.ls_ui_timeout and (not args.control or not args.xpc_diag):
+        parser.error('--ls-ui-timeout requires --control and --xpc-diag')
     if args.ls_bootstrap and not args.control:
         parser.error('--ls-bootstrap requires --control')
     if args.xpc_diag and not args.control:
@@ -113,6 +116,8 @@ def main():
         raise RuntimeError('Kernel lacks the explicit iOS6 HID wire capability')
     if args.input_test and b'i9100inputtest\0' not in raw_data:
         raise RuntimeError('Kernel lacks the bounded input test mailbox')
+    if args.ls_ui_timeout and b'i9100lsuitimeout\0' not in raw_data:
+        raise RuntimeError('Kernel lacks the explicit UI receive deadline')
     if args.aks_development and b'i9100aksdev\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit AKS development state')
     blob = output/'Image.lz4'
@@ -125,6 +130,7 @@ def main():
     run([sys.executable, helpers/'relink-loader.py', '--output', build,
         *(['--control', '--control-tag', sha(kernel)[:16]] if args.control else []),
         *(['--ls-bootstrap'] if args.ls_bootstrap else []),
+        *(['--ls-ui-timeout'] if args.ls_ui_timeout else []),
         *(['--xpc-diag'] if args.xpc_diag else []),
         *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
         *(['--tcc-development'] if args.tcc_development else []),
@@ -169,6 +175,7 @@ def main():
     assert (b'i9100hidabi=6' in data) == args.ios6_hid
     assert (b'i9100inputtest=1' in data) == args.input_test
     assert (b'i9100aksdev=1' in data) == args.aks_development
+    assert (b'i9100lsuitimeout=1' in data) == args.ls_ui_timeout
     assert 'S2I9100-OS6'.encode('utf-16le') in data
     symbols = subprocess.check_output(['arm-none-eabi-nm','-n',str(build/'uniLoader.o')],text=True)
     (output/'loader-symbols.txt').write_text(symbols)
@@ -202,6 +209,7 @@ def main():
         'usb_serial': 'S2I9100-OS6',
         'serial_control': args.control and not args.control_bootargs_only,
         'ls_bootstrap': args.ls_bootstrap,
+        'ls_ui_timeout_ms': 5000 if args.ls_ui_timeout else 0,
         'xpc_diag': args.xpc_diag,
         'reboot_download_fallback': args.reboot_download_fallback,
         'tcc_development_unconfined': args.tcc_development,

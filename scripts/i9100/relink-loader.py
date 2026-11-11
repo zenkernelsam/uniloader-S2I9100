@@ -28,6 +28,7 @@ def main():
     parser.add_argument('--control', action='store_true')
     parser.add_argument('--control-tag')
     parser.add_argument('--ls-bootstrap', action='store_true')
+    parser.add_argument('--ls-ui-timeout',action='store_true')
     parser.add_argument('--xpc-diag', action='store_true')
     parser.add_argument('--reboot-download-fallback', action='store_true')
     parser.add_argument('--tcc-development', action='store_true')
@@ -40,6 +41,8 @@ def main():
     parser.add_argument('--aks-development', action='store_true')
     parser.add_argument('sources', nargs='*')
     args = parser.parse_args()
+    if args.ls_ui_timeout and (not args.control or not args.xpc_diag):
+        parser.error('--ls-ui-timeout requires --control and --xpc-diag')
     if args.control and (not args.control_tag or len(args.control_tag) != 16 or
             any(c not in '0123456789abcdef' for c in args.control_tag)):
         parser.error('--control needs a 16 lowercase hex --control-tag')
@@ -110,6 +113,8 @@ def main():
             command.append('-DI9100_CONTROL_TAG="' + args.control_tag + '"')
             if args.ls_bootstrap:
                 command.append('-DI9100_LS_BOOTSTRAP_BUILD=1')
+            if args.ls_ui_timeout:
+                command.append('-DI9100_LS_UI_TIMEOUT_BUILD=1')
             if args.xpc_diag:
                 command.append('-DI9100_XPC_DIAG_BUILD=1')
             if args.reboot_download_fallback:

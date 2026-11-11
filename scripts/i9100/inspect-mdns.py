@@ -64,12 +64,12 @@ ABORT_SYMBOLS = {'_i9100_abort_frames', '_i9100_abort_observation',
                  '_i9100_graphics_seq', '_i9100_backboard_vm_diag',
                  '_i9100_ios6_slab_payload', '_i9100_ios6_slab_vm_diag',
                  '_i9100_quartz_fault_payload', '_i9100_input_test',
-                 '_i9100_touch_observation'} | {
+                 '_i9100_touch_observation','_i9100_ls_ui_diag'} | {
                      '_i9100_power_'+name for name in
                      ('valid', 'percent', 'mv', 'connected', 'charging', 'temp', 'reason', 'revision_value')}
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
-              '_i9100_process_exit','_i9100_backboard_exit'}
+              '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag'}
 
 
 def capture_ui_observations(kernel, symbols, out):
@@ -85,6 +85,21 @@ def capture_ui_observations(kernel, symbols, out):
             power[name] = value
     if power:
         result['power'] = dict(snapshot='non-atomic workloop fields', **power)
+    key='_i9100_ls_ui_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+32*8)*4)
+        (out/'ls-ui-budget.bin').write_bytes(data)
+        count=struct.unpack_from('<I',data)[0]
+        fields='sequence pid thread phase result option budget id'.split()
+        rows=[]
+        for n in range(32):
+            values=struct.unpack_from('<8I',data,(1+n*8)*4)
+            if values[0] and values[0]<=count and count-values[0]<32:
+                if values[3] not in (1,2,3) or values[6]!=5000 or values[7]!=14012:
+                    raise ValueError('Unknown UI receive budget record')
+                rows.append(dict(zip(fields,values)))
+        rows.sort(key=lambda row:row['sequence'])
+        result['ls_ui_budget']=dict(sequence=count,rows=rows)
     for key, capacity, label in (('_i9100_backboard_vm_diag',256,'backboard_vm'),
                                  ('_i9100_ios6_slab_vm_diag',64,'slab_vm')):
         if key not in symbols.values:
