@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Retain a live SpringBoard Mach request and both associated port queues."""
+"""Retain a selected process's live Mach request and associated port queues."""
 import argparse
 from datetime import datetime,timezone
 import importlib.util
@@ -49,7 +49,8 @@ def queue(kernel,address,out,label):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--kernel',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    a=p.parse_args();symbols=m.Symbols(a.kernel);out=o.confined(a.output,f.REPO/'out')
+    p.add_argument('--process',default='SpringBoard',help='Read the first thread of this process; default SpringBoard')
+    a=p.parse_args();f.validate_command('threads '+a.process);symbols=m.Symbols(a.kernel);out=o.confined(a.output,f.REPO/'out')
     o.require(not out.exists(),'Fresh output directory required')
     profile=json.loads((f.REPO/'out/automation/inventory-20261109-panic-download.json').read_text())
     with o.host_lock():
@@ -65,9 +66,9 @@ def main():
                 transport=f.WinTransport(device['port'],record)
                 s=f.Session(transport,symbols.tag,record,capture,timeout=20);s.handshake()
                 kernel=m.Kernel(s,symbols)
-                _,data=s.command('threads SpringBoard');(out/'threads.txt').write_bytes(data)
-                text=data.decode();match=re.search(r'proc\s+(\d+)\s+SpringBoard.*?thr=(0x[0-9a-f]+)',text,re.S)
-                o.require(match is not None,'No live SpringBoard thread')
+                _,data=s.command('threads '+a.process);(out/'threads.txt').write_bytes(data)
+                text=data.decode();match=re.search(r'proc\s+(\d+)\s+'+re.escape(a.process)+r'\s.*?thr=(0x[0-9a-f]+)',text,re.S)
+                o.require(match is not None,'No live '+a.process+' thread')
                 pid=int(match[1]);thread=int(match[2],16)
                 task=kernel.u32(thread+0x3a0);uss=kernel.u32(thread+0x22c)
                 regs=struct.unpack('<17I',kernel.read(uss,68))
@@ -75,9 +76,9 @@ def main():
                 user=kernel.user_pmap(kernel.u32(kernel.u32(task+0x18)+0x2c))
                 raw=user.read(regs[0],48);(out/'user-message.bin').write_bytes(raw)
                 h=struct.unpack_from('<5Ii',raw)
-                _,ports=s.command('ports SpringBoard');(out/'ports.txt').write_bytes(ports)
-                current_pid=re.search(r'proc\s+(\d+)\s+SpringBoard',ports.decode())
-                o.require(current_pid and int(current_pid[1])==pid,'SpringBoard respawned during snapshot')
+                _,ports=s.command('ports '+a.process);(out/'ports.txt').write_bytes(ports)
+                current_pid=re.search(r'proc\s+(\d+)\s+'+re.escape(a.process)+r'\s',ports.decode())
+                o.require(current_pid and int(current_pid[1])==pid,a.process+' respawned during snapshot')
                 names={int(n,16):int(v,16) for n,v in re.findall(r'pn=([0-9a-f]+).*?obj=(0x[0-9a-f]+)',ports.decode())}
                 sending=bool(regs[1]&1) and regs[2]>=24
                 valid=valid_send(regs,h,names)
@@ -99,7 +100,7 @@ def main():
                                 message['ool']['prefix_bytes']=len(payload)
                             except m.MappingError as exc:
                                 message['ool']['read_error']=str(exc)
-                result=dict(tag=symbols.tag,pid=pid,task=hex(task),thread=hex(thread),
+                result=dict(tag=symbols.tag,process=a.process,pid=pid,task=hex(task),thread=hex(thread),
                     registers=[hex(v) for v in regs],message=message,queues={})
                 targets=[('reply',regs[4])]
                 if valid:targets.insert(0,('remote',h[2]))

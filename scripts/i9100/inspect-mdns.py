@@ -72,6 +72,7 @@ LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
               '_i9100_ls_reply_alloc_diag','_i9100_ls_delivery_stride'}
 LS_SYMBOLS.add('_i9100_ls_file_diag')
+LS_SYMBOLS.add('_i9100_ls_wire_diag')
 
 
 def capture_ui_observations(kernel, symbols, out):
