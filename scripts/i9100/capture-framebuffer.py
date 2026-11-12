@@ -33,6 +33,36 @@ def png_bgrx(raw, width, height, stride):
             chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
 
 
+def capture_frame(kernel, symbols, out, device, chunk_bytes=8192, record=lambda *a, **k: None):
+    """Use an existing validated kernel/session; never open another handle."""
+    if chunk_bytes not in (4096,8192,16384,32768):
+        raise ValueError('Unsupported frame chunk size')
+    base,stride,width,height,depth=struct.unpack('<5I',kernel.read(symbols['_PE_state']+4,20))
+    if (width,height,depth,stride)!=(480,800,32,1920):
+        raise ValueError('Unexpected S2 scanout geometry')
+    physical=kernel.u32(symbols['_i9100_fb_physical']);total=height*stride
+    if not 0x40000000<=physical<physical+total<=0x80000000:
+        raise ValueError('Scanout outside DRAM')
+    before=kernel.read(symbols['_i9100_graphics_seq'],8)
+    console=kernel.u32(symbols['_i9100_panel_console_enabled']);raw=bytearray()
+    with (out/'framebuffer.partial.bin').open('xb') as partial:
+        for offset in range(0,total,chunk_bytes):
+            count=min(chunk_bytes,total-offset)
+            block=kernel.read_phys(physical+offset,count)
+            if len(block)!=count:raise ValueError('Incomplete framebuffer block')
+            raw.extend(block);partial.write(block);partial.flush()
+            if offset//chunk_bytes%32==0:record('FRAME_PROGRESS',bytes=len(raw),total=total)
+    after=kernel.read(symbols['_i9100_graphics_seq'],8);png=png_bgrx(raw,width,height,stride)
+    (out/'framebuffer.bin').write_bytes(raw);(out/'framebuffer.png').write_bytes(png)
+    result=dict(tag=symbols.tag,device=device,physical=hex(physical),mapped_base=hex(base),
+                width=width,height=height,stride=stride,depth=depth,format='BGRX32',console=console,
+                sequence_before=struct.unpack('<Q',before)[0],sequence_after=struct.unpack('<Q',after)[0],
+                coherent=before==after,bytes=len(raw),chunk_bytes=chunk_bytes,
+                raw_sha256=hashlib.sha256(raw).hexdigest(),png_sha256=hashlib.sha256(png).hexdigest())
+    (out/'result.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
+    return result
+
+
 def main():
     f = module('frame_forensic', 'forensic-session.py')
     m = module('frame_memory', 'live-memory.py')
@@ -65,36 +95,13 @@ def main():
                 session = f.Session(transport, symbols.tag, record, capture, timeout=20)
                 session.handshake()
                 kernel = m.Kernel(session, symbols)
-                # PE_state.initialized is a 32-bit boolean; PE_Video follows
-                # with five unsigned long fields in this ARM32 kernel.
-                base, stride, width, height, depth = struct.unpack('<5I', kernel.read(symbols['_PE_state'] + 4, 20))
-                o.require((width, height, depth, stride) == (480, 800, 32, 1920), 'Unexpected S2 scanout geometry')
-                physical = kernel.u32(symbols['_i9100_fb_physical'])
-                total = height * stride
-                o.require(0x40000000 <= physical < physical + total <= 0x80000000, 'Scanout outside DRAM')
-                before = kernel.read(symbols['_i9100_graphics_seq'], 8)
-                console = kernel.u32(symbols['_i9100_panel_console_enabled'])
-                raw = bytearray()
-                with (out/'framebuffer.partial.bin').open('xb') as partial:
-                    for offset in range(0, total, a.chunk_bytes):
-                        block=kernel.read_phys(physical + offset,min(a.chunk_bytes,total-offset))
-                        raw.extend(block)
-                        partial.write(block);partial.flush()
-                        captured+=len(block)
-                after = kernel.read(symbols['_i9100_graphics_seq'], 8)
-                png = png_bgrx(raw, width, height, stride)
-                (out / 'framebuffer.bin').write_bytes(raw)
-                (out / 'framebuffer.png').write_bytes(png)
-                result = dict(tag=symbols.tag, device=device, physical=hex(physical), mapped_base=hex(base),
-                              width=width, height=height, stride=stride, depth=depth, format='BGRX32',
-                              console=console, sequence_before=struct.unpack('<Q', before)[0],
-                              sequence_after=struct.unpack('<Q', after)[0], coherent=before == after,
-                              bytes=len(raw), chunk_bytes=a.chunk_bytes, raw_sha256=hashlib.sha256(raw).hexdigest(),
-                              png_sha256=hashlib.sha256(png).hexdigest())
-                (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
+                result = capture_frame(kernel, symbols, out, device, a.chunk_bytes, record)
+                captured = result['bytes']
                 print(json.dumps(result, indent=2), flush=True)
                 record('DONE', coherent=result['coherent'])
             except BaseException as exc:
+                partial=out/'framebuffer.partial.bin'
+                if partial.exists():captured=partial.stat().st_size
                 record('STOP', error=str(exc), retry=False, partial_bytes=captured,
                        chunk_bytes=a.chunk_bytes)
                 raise
