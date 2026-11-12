@@ -47,16 +47,22 @@ def analyze(observations):
                 fact(phase+'_error',f'观察到原{phase}失败：{error_name(r["completion_result"])}。',result=r['completion_result'],**identity)
             if stage in (3,4) and r['result']:
                 fact('receive_conversion_error',f'接收阶段{stage}原结果为{error_name(r["result"])}。',result=r['result'],**identity)
-            key=(r['pid'],r['thread'],r['address'],r['id'],r['captured'])
+            owner=(r['pid'],r['thread'])
+            key=(r['address'],r['id'],r['captured'])
+            # A kernel thread cannot have two simultaneous final put/readback
+            # operations. Any new observed operation on that owner invalidates
+            # its old unpaired source; a reused address is not a transaction ID.
+            if stage in (1,2,3,4):pending.pop(owner,None)
             if stage==5:
-                pending[key]=r
+                pending[owner]=(key,r)
                 if r['completion_seen'] and r['completion_result']:
                     fact('final_copyout_error',f'最终copyoutmsg原结果失败：{error_name(r["completion_result"])}。',result=r['completion_result'],**identity)
             if stage!=6:continue
             if r['result']:
                 fact('self_read_error',f'最终用户缓冲读回失败：{error_name(r["result"])}；本条bytes是原source，不当作用户数据。',result=r['result'],**identity)
-                pending.pop(key,None);continue
-            source=pending.pop(key,None)
+                pending.pop(owner,None);continue
+            candidate=pending.pop(owner,None)
+            source=candidate[1] if candidate is not None and candidate[0]==key else None
             if source is None or not source['completion_seen'] or source['completion_result']:
                 cautions.append(f'query#{r["sequence"]}有实际读回bytes，但没有完整匹配的stage5；不做源/目的相等断言。')
                 continue
@@ -76,7 +82,10 @@ def analyze(observations):
                 # This simple MIG reply has no OOL descriptors. Require the
                 # exact native little-endian NDR and authoritative wire size.
                 bits,size=struct.unpack_from('<II',raw)
-                if not bits&0x80000000 and size in (36,40) and size<=len(raw) and raw[24:32]==bytes([0,0,0,0,1,0,0,0]):
+                remote,local=struct.unpack_from('<II',raw,8)
+                if (not bits&0x80000000 and bits&0xffff==0x1200 and remote==0 and
+                    local not in (0,0xffffffff) and size in (36,40) and size<=len(raw) and
+                    raw[24:32]==bytes([0,0,0,0,1,0,0,0])):
                     retcode=struct.unpack_from('<I',raw,32)[0]
                     fact('native_reply_retcode',f'真实14112用户回复RetCode=0x{retcode:08x}；RPC结果不等于UI验收。',retcode=retcode,**identity)
         failures=observations.get('ls_query_alloc_failure',{}).get('rows',[])
@@ -154,6 +163,15 @@ def main():
     elif observations.get('ls_query'):
         raise ValueError('Decoded query JSON has no supporting raw table')
     report=analyze(observations)
+    if saved.get('panic',{}).get('active')==1:
+        # Previously collected LS bytes still describe their own moments.
+        # Do not treat them as current normal-state evidence after a panic.
+        report['facts'].insert(0,dict(code='retained_panic',detail='此快照终态观察到panic；LS记录仅描述panic前的采集时刻。',
+                                    remaining_seconds=saved['panic'].get('remaining_seconds'),
+                                    started_during_snapshot=bool(saved.get('panic_started_during_snapshot'))))
+        report['recommendations']=['先审核已保存的panic-log.bin/panic-log.txt及现场，按恢复流程处理；不根据旧LS记录追加刷写。']
+        report['cautions'].append('panic状态为快照结束时查询结果，不保证记录DONE之后的设备状态。')
+        report['panic']=saved['panic']
     report.update(tag=tag,capture=str(capture),created=datetime.now(timezone.utc).isoformat(),
                   phone_operations=0,scope='Saved evidence only; no inferred UI success')
     (out/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')

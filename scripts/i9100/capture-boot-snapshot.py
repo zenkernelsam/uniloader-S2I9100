@@ -85,13 +85,16 @@ def collect_snapshot(session,symbols,out,device,record,with_frame=False):
                 springboard_interaction_verified=False)
     def save():
         (out/'results.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
-    answer,_=session.command('panic-status');active,remaining=panic.countdown(answer)
-    result['panic']=dict(active=active,remaining_seconds=remaining);save()
-    if active:
+    def retain_panic():
         _,raw=session.command('panic-log');(out/'panic-log.bin').write_bytes(raw)
         header,text=panic.decode_snapshot(raw)
         (out/'panic-log.txt').write_text(text.decode('utf-8','replace'),encoding='utf-8')
-        result.update(mode='panic-retained',panic_snapshot=header);save()
+        result.update(mode='panic-retained',panic_snapshot=header,commands=session.command_count);save()
+    answer,_=session.command('panic-status');active,remaining=panic.countdown(answer)
+    result['panic_initial']=dict(active=active,remaining_seconds=remaining)
+    result['panic']=dict(result['panic_initial']);save()
+    if active:
+        retain_panic()
         return result
     answer,_=session.command('root-status');result['root_reply']=answer;save()
     kernel=m.Kernel(session,symbols)
@@ -118,6 +121,14 @@ def collect_snapshot(session,symbols,out,device,record,with_frame=False):
         target=out/'frame';target.mkdir()
         result['frame']=frame.capture_frame(kernel,symbols,target,device,8192,record)
         save()
+    # The initial query only describes the start of collection. Check again
+    # after the last requested data, on this same handle, before normal DONE.
+    answer,_=session.command('panic-status');active,remaining=panic.countdown(answer)
+    result['panic']=dict(active=active,remaining_seconds=remaining);save()
+    if active:
+        result['panic_started_during_snapshot']=True;save()
+        retain_panic()
+        return result
     result['mode']='normal-evidence';result['commands']=session.command_count;save()
     return result
 

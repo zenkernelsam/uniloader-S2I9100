@@ -41,6 +41,13 @@ missing=analysis.analyze({'ls_query':dict(sequence=7,rows=[observations['ls_quer
 assert not missing['delivery_pairs'] and any('没有完整匹配' in text for text in missing['cautions'])
 read_error=analysis.analyze({'ls_query':dict(sequence=7,rows=[observations['ls_query']['rows'][5],observations['ls_query']['rows'][6]])})
 assert not read_error['delivery_pairs'] and read_error['facts'][0]['code']=='self_read_error'
+# A newer transfer on the same thread invalidates an older unpaired
+# stage5, even when it changed the address/ID. Never pair stale buffer use.
+original=observations['ls_query']['rows'][1]
+actual=observations['ls_query']['rows'][2]
+replacement=dict(original,sequence=3,address=original['address']+4096)
+stale=analysis.analyze({'ls_query':dict(sequence=4,rows=[dict(original,sequence=1),replacement,dict(actual,sequence=4)])})
+assert not stale['delivery_pairs'], 'same-thread buffer reuse paired a stale source'
 def reply(retcode):
     raw=struct.pack('<6I',0x1200,36,0,0x707,0,14112)+bytes([0,0,0,0,1,0,0,0])+struct.pack('<I',retcode)
     common=dict(pid=38,thread=0x1234,address=0x12000,id=14112,captured=36,hex=raw.hex(),result=0)
@@ -50,6 +57,11 @@ for retcode in (0,5,0xfffffecf):
     test=analysis.analyze({'ls_query':reply(retcode)})
     assert next(f['retcode'] for f in test['facts'] if f['code']=='native_reply_retcode')==retcode
     assert not test['springboard_interaction_verified']
+invalid_rights=reply(5)
+for row in invalid_rights['rows']:
+    raw=bytearray.fromhex(row['hex']);struct.pack_into('<I',raw,0,0);row['hex']=raw.hex()
+test=analysis.analyze({'ls_query':invalid_rights})
+assert not any(f['code']=='native_reply_retcode' for f in test['facts']), 'invalid reply rights treated as native MIG'
 tag=module('analysis_test_memory','live-memory.py').Symbols(a.kernel).tag
 capture=out/'modeled-capture';capture.mkdir()
 for source,target in [('query.bin','ls-query.bin'),('alloc.bin','ls_query_alloc.bin'),('failures.bin','ls_query_alloc_failure.bin')]:

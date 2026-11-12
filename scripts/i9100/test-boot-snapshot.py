@@ -111,7 +111,9 @@ class Transport:
         self.model.writes.append(wire);fields=wire.decode().strip().split(' ',2);seq,verb=fields[1:]
         self.model.commands.append(verb);data=None
         if verb=='ping':reply='OK control=1'
-        elif verb=='panic-status':reply='OK panic=1 seconds=000000aa' if self.model.case in ('panic','bad-panic') else 'OK panic=0 seconds=00000000'
+        elif verb=='panic-status':
+            late=self.model.case=='late-panic' and self.model.commands.count('panic-status')>1
+            reply='OK panic=1 seconds=000000aa' if self.model.case in ('panic','bad-panic') or late else 'OK panic=0 seconds=00000000'
         elif verb=='root-status':reply='OK root=MEDIA_FOUND'
         elif verb=='panic-log':
             text=b'modeled retained panic\n';h=[0x39504c47,1,len(text),0,0,1,0,0,0,0,0,0,180,10,1,0]
@@ -195,6 +197,27 @@ class Tests(unittest.TestCase):
         model,target,_=self.run_main('bad-panic',error=ValueError)
         self.assertTrue((target/'panic-log.bin').exists());self.assertFalse((target/'panic-log.txt').exists())
         self.assertEqual(model.commands,['ping','panic-status','panic-log'])
+    def test_panic_during_collection_is_retained(self):
+        model,target,_=self.run_main('late-panic')
+        saved=json.loads((target/'results.json').read_text())
+        self.assertEqual(saved['mode'],'panic-retained')
+        self.assertTrue(saved['panic_started_during_snapshot'])
+        self.assertEqual(saved['panic_initial']['active'],0)
+        self.assertEqual(saved['panic']['active'],1)
+        self.assertEqual(model.commands[-2:],['panic-status','panic-log'])
+        self.assertTrue((target/'panic-log.bin').exists())
+        self.assertEqual(len(saved['processes']),4)
+        report=target.parent/'panic-report'
+        completed=subprocess.run([sys.executable,'-B',str(HERE/'analyze-ls-query.py'),
+            '--capture',str(target),'--kernel',str(args.kernel),'--output',str(report)],capture_output=True,text=True)
+        (target.parent/'panic-report-command.log').write_text(completed.stdout+completed.stderr)
+        self.assertEqual(completed.returncode,0,completed.stderr)
+        summary=json.loads((report/'report.json').read_text(encoding='utf-8'))
+        self.assertEqual(summary['facts'][0]['code'],'retained_panic')
+        self.assertTrue(summary['facts'][0]['started_during_snapshot'])
+        self.assertEqual(summary['panic']['active'],1)
+        self.assertFalse(summary['springboard_interaction_verified'])
+        self.assertEqual(len(summary['recommendations']),1)
     def test_budget_and_command_scope(self):
         model=Model();received=io.BytesIO();transport=Transport(model,lambda *a,**k:None)
         session=boot.SnapshotSession(transport,TAG,lambda *a,**k:None,received,
