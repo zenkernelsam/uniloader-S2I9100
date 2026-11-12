@@ -74,11 +74,46 @@ LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
 LS_SYMBOLS.add('_i9100_ls_file_diag')
 LS_SYMBOLS.add('_i9100_ls_wire_diag')
 LS_SYMBOLS.update({'_i9100_mach_failure_diag', '_i9100_mig_error_diag', '_i9100_vm_error_diag'})
+LS_SYMBOLS.update({'_i9100_ls_query_diag','_i9100_ls_query_alloc_diag','_i9100_ls_query_alloc_failure_diag'})
 
 
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_ls_query_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+32*104)*4);(out/'ls-query.bin').write_bytes(data)
+        sequence=struct.unpack_from('<I',data)[0];rows=[]
+        fields='sequence pid thread stage id message_size captured bits options result sender_pid sender_euid completion_seen completion_result address version'.split()
+        for n in range(32):
+            at=(1+n*104)*4;values=struct.unpack_from('<16I',data,at)
+            if not values[0]:continue
+            if ((sequence-values[0])&0xffffffff)>=32:continue
+            r=dict(zip(fields,values))
+            if r['version']!=1 or r['stage'] not in range(1,7) or r['id'] not in (14012,14112) or not 24<=r['captured']<=352 or r['captured']!=r['message_size']:
+                raise ValueError('Unknown LS query observer layout')
+            raw=data[at+64:at+64+r['captured']]
+            (out/f'query-{r["sequence"]}-stage{r["stage"]}.bin').write_bytes(raw)
+            r['sha256']=hashlib.sha256(raw).hexdigest();r['hex']=raw.hex()
+            r['header_id']=struct.unpack_from('<I',raw,20)[0]
+            r['user_bytes_observed']=r['stage']==6 and r['result']==0
+            rows.append(r)
+        result['ls_query']=dict(sequence=sequence,rows=sorted(rows,key=lambda x:((sequence-x['sequence'])&0xffffffff),reverse=True))
+    for key,label,capacity,ring in (('_i9100_ls_query_alloc_diag','ls_query_alloc',32,True),
+                                    ('_i9100_ls_query_alloc_failure_diag','ls_query_alloc_failure',8,False)):
+        if key not in symbols.values:continue
+        data=kernel.read(symbols[key],(1+capacity*12)*4);(out/(label+'.bin')).write_bytes(data)
+        count=struct.unpack_from('<I',data)[0]
+        if not ring and count>capacity:raise ValueError('Invalid LS allocation failure capacity')
+        rows=[];fields='sequence pid thread target address size_low size_high flags result backend before after'.split()
+        for n in range(capacity if ring else count):
+            values=struct.unpack_from('<12I',data,(1+n*12)*4)
+            if not values[0] or (ring and ((count-values[0])&0xffffffff)>=capacity):continue
+            r=dict(zip(fields,values))
+            if r['size_low']!=4160 or r['backend'] not in (0,1) or (not ring and not r['result']):
+                raise ValueError('Unknown LS allocation observer layout')
+            rows.append(r)
+        result[label]=dict(sequence=count if ring else None,count=len(rows),rows=sorted(rows,key=lambda x:x['sequence']))
     key='_i9100_ls_file_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+64*112)*4);(out/'ls-files.bin').write_bytes(data)
@@ -566,7 +601,7 @@ def capture_ui_observations(kernel, symbols, out):
     for key in ('backboard_vm','slab_vm'):
         if key in result:
             preview[key]=dict(result[key],rows=result[key]['rows'][-6:])
-    for key in ('render_transport','user_fault_details','vm_remap','tcc_wire','ls_wire','ls_publish_wire','framebuffer_io','surface_io','other_io_error'):
+    for key in ('render_transport','user_fault_details','vm_remap','tcc_wire','ls_wire','ls_publish_wire','ls_query','ls_query_alloc','ls_query_alloc_failure','framebuffer_io','surface_io','other_io_error'):
         if key in result:
             preview[key]=dict(count=len(result[key]['rows']),rows=result[key]['rows'][-8:])
     print('ui-observations',json.dumps(preview),flush=True)
