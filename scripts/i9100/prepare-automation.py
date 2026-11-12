@@ -42,7 +42,7 @@ objects = ['pexpert/i9100_usbcdc.o', 'pexpert/i9100_timer.o', 'pexpert/pe_exynos
            'osfmk/locore.o', 'osfmk/loose_ends.o', 'osfmk/hw_lock.o', 'osfmk/debug.o', 'osfmk/ipc_kobject.o', 'osfmk/ipc_mig.o', 'osfmk/mach_msg.o', 'osfmk/mach_port.o', 'security/mac_base.o',
            'osfmk/ipc_right.o', 'osfmk/ipc_kmsg.o', 'osfmk/ipc_pset.o', 'osfmk/trap.o', 'bsd/kern_exec.o',
            'bsd/unix_syscalls.o', 'bsd/pthread_synch.o', 'bsd/kern_sig.o', 'bsd/sys_generic.o', 'bsd/param.o', 'bsd/vfs_subr.o', 'bsd/kdebug.o', 'bsd/decmpfs.o', 'iokit/IOKitBSDInit.cpo',
-           'iokit/IOPMrootDomain.cpo', 'iokit/IOS7LeoDisplay.cpo', 'iokit/IOUserClient.cpo',
+           'iokit/IOPMrootDomain.cpo', 'iokit/IOS7LeoDisplay.cpo', 'iokit/IOUserClient.cpo', 'iokit/AppleARMPE.cpo',
            'iokit/IOS7LeoHIDTouch.cpo',
            'iokit/i9100_power.o', 'iokit/i9100_power_bus.o', 'iokit/IOS7I9100Power.cpo',
            'osfmk/vm_map.o', 'osfmk/vm_user.o', 'osfmk/mach_kernelrpc.o', 'bsd/kern_exit.o', 'osfmk/pmap.o']
