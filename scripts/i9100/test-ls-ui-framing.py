@@ -19,9 +19,13 @@ def decode(label,data):
     with contextlib.redirect_stdout(io.StringIO()):
         return m.capture_ui_observations(Memory(data),Symbols(),directory)['ls_ui_budget']
 data=(a.fixture/'ui.bin').read_bytes();r=decode('actual-production',data)
-assert r['sequence']==5 and len(r['rows'])==5
+assert r['sequence'] in (5,7) and len(r['rows'])==r['sequence']
 assert r['rows'][2]['phase']==3 and r['rows'][2]['result']==0x10004003
-assert r['rows'][4]['phase']==2 and r['rows'][4]['result']==0x10000003
+if r['sequence']==7:
+    assert r['rows'][3]['pid']==38 and r['rows'][3]['phase']==1
+    assert r['rows'][4]['pid']==38 and r['rows'][4]['phase']==3
+    assert r['rows'][4]['result']==0x10004003
+assert r['rows'][-1]['phase']==2 and r['rows'][-1]['result']==0x10000003
 for word,value in ((3,4),(6,4999),(7,14112)):
     bad=bytearray(data);struct.pack_into('<I',bad,(1+word)*4,value)
     try:decode('bad-'+str(word),bad);raise AssertionError('unknown record accepted')
