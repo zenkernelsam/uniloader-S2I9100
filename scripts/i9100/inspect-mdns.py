@@ -73,6 +73,7 @@ LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_reply_alloc_diag','_i9100_ls_delivery_stride'}
 LS_SYMBOLS.add('_i9100_ls_file_diag')
 LS_SYMBOLS.add('_i9100_ls_wire_diag')
+LS_SYMBOLS.update({'_i9100_mach_failure_diag', '_i9100_mig_error_diag', '_i9100_vm_error_diag'})
 
 
 def capture_ui_observations(kernel, symbols, out):
@@ -432,6 +433,16 @@ def capture_ui_observations(kernel, symbols, out):
             row['name']=data[offset:offset+16].split(b'\0')[0].decode('ascii','replace')
             if row['sequence']:rows.append(row)
         result['vm_remap']=dict(count=words[0],rows=rows)
+    key='_i9100_mach_failure_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+64*6)*4)
+        (out/'mach-failures.bin').write_bytes(data)
+        table=decode_table(data,64,6,['pid','stage','address','size','options','result'])
+        if any(row['stage'] not in (0,1,2) for row in table['rows']):
+            raise ValueError('Unknown Mach failure stage')
+        table['unpublished']=sum(row['stage']==0 for row in table['rows'])
+        table['rows']=[row for row in table['rows'] if row['stage']]
+        result['mach_failures']=table
     key='_i9100_mig_error_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+128*6)*4)
