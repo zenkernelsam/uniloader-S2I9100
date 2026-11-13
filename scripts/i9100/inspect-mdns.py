@@ -69,6 +69,7 @@ ABORT_SYMBOLS = {'_i9100_abort_frames', '_i9100_abort_observation',
                      ('valid', 'percent', 'mv', 'connected', 'charging', 'temp', 'reason', 'revision_value')}
 ABORT_SYMBOLS.add('_i9100_audio_property_lock_diag')
 ABORT_SYMBOLS.update({'_i9100_audio_property_lock_history','_i9100_media_lifecycle_diag'})
+ABORT_SYMBOLS.add('_i9100_media_signal_diag')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -82,6 +83,17 @@ LS_SYMBOLS.update({'_i9100_ls_query_diag','_i9100_ls_query_alloc_diag','_i9100_l
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_media_signal_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+8*13)*4);(out/'media-signals.bin').write_bytes(data)
+        values=struct.unpack('<105I',data)
+        if values[0]>8:raise ValueError('Invalid media signal history count')
+        rows=[]
+        fields='target signal source pc lr caller irq flavor'.split()
+        for n in range(values[0]):
+            at=1+n*13;row=dict(zip(fields,values[at:at+8]));row['stage']=values[at+12]
+            row['name']=data[(at+8)*4:(at+12)*4].split(b'\0')[0].decode('ascii','replace');rows.append(row)
+        result['media_signals']=dict(count=values[0],rows=rows)
     key='_i9100_audio_property_lock_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],48);(out/'audio-property-lock.bin').write_bytes(data)
