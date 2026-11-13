@@ -67,6 +67,7 @@ ABORT_SYMBOLS = {'_i9100_abort_frames', '_i9100_abort_observation',
                  '_i9100_touch_observation','_i9100_ls_ui_diag'} | {
                      '_i9100_power_'+name for name in
                      ('valid', 'percent', 'mv', 'connected', 'charging', 'temp', 'reason', 'revision_value')}
+ABORT_SYMBOLS.add('_i9100_audio_property_lock_diag')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -80,6 +81,14 @@ LS_SYMBOLS.update({'_i9100_ls_query_diag','_i9100_ls_query_alloc_diag','_i9100_l
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_audio_property_lock_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],48);(out/'audio-property-lock.bin').write_bytes(data)
+        values=struct.unpack('<12I',data)
+        if values[0] not in (0,1,2,3) or values[8] not in (0,1):
+            raise ValueError('Unknown audio property lock repair state')
+        fields='state pid task slide site trampoline vm_result copy_error installed restore_result reserved0 reserved1'.split()
+        result['audio_property_lock']=dict(zip(fields,values))
     key='_i9100_ls_query_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+32*104)*4);(out/'ls-query.bin').write_bytes(data)
