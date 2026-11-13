@@ -37,7 +37,7 @@ if args.input_test and args.home_test:
     parser.error('Use requested input tests or the automatic Home test, not both')
 if args.panic_test and not args.panic_recovery:
     parser.error('--panic-test requires --panic-recovery')
-xnu = repo.parent / 'xnu'
+xnu = repo.parent / 'xnu-S2I9100'
 label = 'control-' + datetime.now().strftime('%Y%m%d-%H%M%S')
 kernel = xnu / 'out/automation' / label
 package = repo / 'out/automation' / label

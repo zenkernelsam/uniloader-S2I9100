@@ -50,7 +50,7 @@ def kernel_identity(kernel):
 def main():
     loader = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--xnu', type=Path, default=loader.parent/'xnu')
+    parser.add_argument('--xnu', type=Path, default=loader.parent/'xnu-S2I9100')
     parser.add_argument('--jobs', type=int, default=4)
     parser.add_argument('--skip-kernel', action='store_true')
     parser.add_argument('--extra-cmdline', default='')

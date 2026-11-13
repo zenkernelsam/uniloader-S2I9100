@@ -14,8 +14,8 @@ from pathlib import Path
 import re
 import struct
 
-ROOT=Path(__file__).resolve().parents[4]
-REPO=ROOT/'neighbor/uniloader'
+REPO=Path(__file__).resolve().parents[2]
+ROOT=REPO.parent
 ERRORS={0:'SUCCESS',3:'KERN_NO_SPACE',14:'EFAULT',
         0x10000002:'MACH_SEND_INVALID_DATA',0x10000003:'MACH_SEND_INVALID_DEST',
         0x10000009:'MACH_SEND_INVALID_REPLY',0x1000000c:'MACH_SEND_INVALID_MEMORY',

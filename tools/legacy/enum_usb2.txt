@@ -1,0 +1,23 @@
+﻿
+Status Name                            InstanceId                                                          
+------ ----                            ----------                                                          
+Error  未知 USB 设备(设备描述符请求失败)            USB\VID_0000&PID_0002\5&C454196&0&2                                 
+OK     USB 根集线器(USB 3.0)               USB\ROOT_HUB30\4&189B8544&0&0                                       
+OK     USB Composite Device            USB\VID_046D&PID_C548\5&C454196&0&4                                 
+OK     通用 USB 集线器                      USB\VID_05E3&PID_0610\5&C454196&0&6                                 
+OK     Generic Mass-Storage USB Device USBSTOR\DISK&VEN_GENERIC&PROD_MASS-STORAGE&REV_2.00\20240418000000&0
+OK     通用 USB 集线器                      USB\VID_214B&PID_7250\6&2903AA87&0&4                                
+OK     USB 输入设备                        USB\VID_046D&PID_C548&MI_03\6&FFA0275&0&0003                        
+OK     USB 输入设备                        USB\VID_046D&PID_C548&MI_02\6&FFA0275&0&0002                        
+OK     USB 输入设备                        USB\VID_046D&PID_C548&MI_01\6&FFA0275&0&0001                        
+OK     Logitech USB Input Device       USB\VID_046D&PID_C548&MI_00\6&FFA0275&0&0000                        
+OK     USB 大容量存储设备                     USB\VID_349C&PID_0418\20240418000000                                
+OK     拯救者平板 Y700                      USB\VID_17EF&PID_7F3D\HA2A1PT2                                      
+OK     USB Composite Device            USB\VID_0853&PID_0311\5&C454196&0&10                                
+Error  未知 USB 设备(设备描述符请求失败)            USB\VID_0000&PID_0002\7&6586DD2&0&3                                 
+OK     通用 SuperSpeed USB 集线器           USB\VID_05E3&PID_0626\5&C454196&0&20                                
+OK     USB 输入设备                        USB\VID_0853&PID_0311&MI_02\6&6549B6D&0&0002                        
+OK     USB 输入设备                        USB\VID_0853&PID_0311&MI_01\6&6549B6D&0&0001                        
+OK     USB 输入设备                        USB\VID_0853&PID_0311&MI_00\6&6549B6D&0&0000                        
+
+

@@ -19,7 +19,8 @@ import mmap
 from pathlib import Path
 import struct
 
-ROOT = Path(__file__).resolve().parents[4]
+REPO = Path(__file__).resolve().parents[2]
+ROOT = REPO.parent
 
 
 class Cache:
@@ -110,7 +111,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     source, output = args.stacks.resolve(), args.output.resolve()
-    if not source.is_relative_to(ROOT / 'neighbor/uniloader/out') or not output.is_relative_to(ROOT / 'research'):
+    if not source.is_relative_to(REPO / 'out') or not output.is_relative_to(ROOT / 'research'):
         parser.error('Read loader out stacks and write research only')
     evidence = json.loads(source.read_text())
     lines = [f'Source: {source}', f'BUILD: {evidence["tag"]}',

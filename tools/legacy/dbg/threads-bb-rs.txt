@@ -1,0 +1,5 @@
+REPLY OK DATA 00000000 0000023a
+ offset: 0
+I9100 POWER valid=1 soc=55 mv=3824 temp=339 adc=787 cable=1 en=1 charging=1 reason=0 errors=0
+I9100 POWER valid=1 soc=55 mv=3827 temp=338 adc=789 cable=1 en=1 charging=1 reason=0 errors=0
+

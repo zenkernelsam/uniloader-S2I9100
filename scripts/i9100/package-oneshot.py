@@ -91,8 +91,8 @@ def main():
     kernel = args.kernel.resolve()
     if not output.is_relative_to(loader/'out') or output.exists():
         parser.error('Use a new output directory inside loader out')
-    if not kernel.is_relative_to(loader.parent/'xnu'):
-        parser.error('Kernel must come from the matching XNU worktree')
+    if not kernel.is_relative_to(loader.parent/'xnu-S2I9100'):
+        parser.error('Kernel must come from the matching XNU repository')
     if not kernel.is_file() or not kernel.with_name('mach_kernel.sys').is_file():
         parser.error('Wait for the kernel link to finish before packaging')
     output.mkdir(parents=True)
@@ -211,7 +211,7 @@ def main():
         'created': datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(),
         'purpose': 'GT-I9100 KERNEL partition; iOS6 offline candidate, hardware unverified',
         'loader': identity_module.git_head(loader),
-        'xnu': identity_module.git_head(loader.parent/'xnu'),
+        'xnu': identity_module.git_head(loader.parent/'xnu-S2I9100'),
         'kernel': identity,
         'usb_serial': 'S2I9100-OS6',
         'serial_control': args.control and not args.control_bootargs_only,

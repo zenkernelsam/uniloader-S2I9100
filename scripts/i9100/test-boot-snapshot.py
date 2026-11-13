@@ -31,7 +31,7 @@ parser.add_argument('--fixture',type=Path,required=True)
 parser.add_argument('--kernel',type=Path,required=True)
 parser.add_argument('--frame',type=Path,required=True)
 args=parser.parse_args()
-ROOT=HERE.parents[3];REPO=HERE.parents[1]
+REPO=HERE.parents[1];ROOT=REPO.parent
 out=REPO/'out'/('boot-snapshot-check-'+datetime.now().strftime('%Y%m%d-%H%M%S'));out.mkdir()
 raw_frame=args.frame.read_bytes()
 assert len(raw_frame)==1536000 and args.frame.resolve().is_relative_to(REPO/'out')

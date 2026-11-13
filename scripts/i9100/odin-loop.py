@@ -22,7 +22,7 @@ import uuid
 
 sys.dont_write_bytecode = True
 REPO = Path(__file__).resolve().parents[2]
-ROOT = REPO.parents[1]
+ROOT = REPO.parent
 OUT = REPO / 'out/automation'
 CDC = r'USB\VID_0525&PID_A4A7\S2I9100-OS6'
 HEIMDALL_SHA = '4ddae318a50509a1c5ed8f23dc2fadda2a7a4ef913b0cac47fef1b27843db708'

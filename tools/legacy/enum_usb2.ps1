@@ -1,0 +1,1 @@
+Get-PnpDevice | Where-Object {$_.InstanceId -like "USB*" -and $_.Present -eq $true} | Select-Object Status,Name,InstanceId | Format-Table -AutoSize | Out-File -Encoding UTF8 "D:\Desktop\Git\ios-samsung-i9100\tools\enum_usb2.txt"

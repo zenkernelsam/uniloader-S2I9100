@@ -1,0 +1,1 @@
+Get-PnpDevice | Where-Object { $_.InstanceId -like 'USB*' -and ($_.InstanceId -match 'VID_0525|VID_0000|VID_04E8' -or $_.FriendlyName -match 'CDC|Gadget|Serial|COM') } | Select-Object Status, Class, FriendlyName, InstanceId | Format-Table -AutoSize | Out-String -Width 200

@@ -1,0 +1,1 @@
+Get-PnpDevice | Where-Object { $_.FriendlyName -match 'SAMSUNG|Gadget|CDC|Serial|COM|ADB|Android|USB|Modem|libusb' -or $_.InstanceId -match '04E8|18D1' } | Select-Object Status, FriendlyName, InstanceId | Format-Table -AutoSize | Out-String -Width 220

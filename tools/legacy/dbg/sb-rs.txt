@@ -1,0 +1,7 @@
+proc  57 SpringBoard      p=0xc20e0ca8
+  uth=0xc22a6174 thr=0xc22bea38 wchan=0 wmesg=- rs=3 slp=0
+  uth=0xc23afa2c thr=0xc23bf51c wchan=0 wmesg=- rs=3 slp=0
+  uth=0xc23af000 thr=0xc23d7000 wchan=0 wmesg=- rs=3 slp=0
+  uth=0xc23e1000 thr=0xc244451c wchan=0 wmesg=- rs=3 slp=0
+  uth=0xc22a6e88 thr=0xc22a5a38 wchan=0 wmesg=- rs=3 slp=0
+  uth=0xc212fd14 thr=0xc212c000 wchan=0 wmesg=- rs=3 slp=0
