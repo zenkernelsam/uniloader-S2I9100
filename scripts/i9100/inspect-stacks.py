@@ -19,7 +19,7 @@ def module(name, path):
     return result
 
 
-def capture_process(session,kernel,name,out,m,dyld_info=False,thread_limit=None):
+def capture_process(session,kernel,name,out,m,dyld_info=False,thread_limit=None,kernel_context=False):
     _,data=session.command('threads '+name)
     (out/(name+'-threads.txt')).write_bytes(data)
     text=data.decode()
@@ -74,6 +74,23 @@ def capture_process(session,kernel,name,out,m,dyld_info=False,thread_limit=None)
             proc['dyld_info_error']=str(exc)
     for thread in proc['threads']:
         try:
+            if kernel_context:
+                kss=kernel.u32(thread['thread']+0x228)
+                kregs=struct.unpack('<17I',kernel.read(kss,68))
+                base=kernel.u32(thread['thread']+0x44)
+                evidence=dict(address=hex(kss),stack_base=hex(base),words=[hex(v) for v in kregs],frames=[])
+                thread['kernel_context']=evidence
+                kfp=kregs[7];seen_kernel=set()
+                while base<=kfp<=base+0x3ff8 and kfp not in seen_kernel and not kfp&3 and len(seen_kernel)<20:
+                    seen_kernel.add(kfp)
+                    previous,return_address=struct.unpack('<2I',kernel.read(kfp,8))
+                    evidence['frames'].append(dict(fp=hex(kfp),previous=hex(previous),lr=hex(return_address)))
+                    if previous<=kfp:break
+                    kfp=previous
+                if base<=kregs[13]<=base+0x3f00:
+                    raw=kernel.read(kregs[13],256)
+                    (out/f'{name}-kernel-stack-{thread["thread"]:08x}.bin').write_bytes(raw)
+                    evidence['stack_words']=[hex(v) for v in struct.unpack('<64I',raw)]
             uss=kernel.u32(thread['thread']+0x22c)
             regs=struct.unpack('<17I',kernel.read(uss,68))
             thread.update(uss=hex(uss),registers={**{f'r{i}':hex(regs[i]) for i in range(13)},
@@ -111,6 +128,7 @@ def main():
     p.add_argument('--process',action='append',required=True)
     p.add_argument('--dyld-info',action='store_true',
                    help='Retain the live ARM dyld header and current shared-cache slide')
+    p.add_argument('--kernel-context',action='store_true',help='Retain saved kernel registers and bounded own kernel frame links')
     p.add_argument('--thread-limit',type=int,choices=range(1,65),
                    help='Read only the first N raw snapshot threads; retain the observed total')
     a=p.parse_args();symbols=m.Symbols(a.kernel)
@@ -134,7 +152,7 @@ def main():
                 session.handshake();kernel=m.Kernel(session,symbols)
                 results=[]
                 for name in a.process:
-                    proc=capture_process(session,kernel,name,out,m,a.dyld_info,a.thread_limit)
+                    proc=capture_process(session,kernel,name,out,m,a.dyld_info,a.thread_limit,a.kernel_context)
                     results.append(proc)
                     (out/'stacks.json').write_text(json.dumps(dict(tag=symbols.tag,processes=results),indent=2)+'\n')
                 record('DONE',processes=len(results))

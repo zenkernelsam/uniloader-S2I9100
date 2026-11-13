@@ -87,7 +87,7 @@ def capture_ui_observations(kernel, symbols, out):
         values=struct.unpack('<12I',data)
         if values[0] not in (0,1,2,3) or values[8] not in (0,1):
             raise ValueError('Unknown audio property lock repair state')
-        fields='state pid task slide site trampoline vm_result copy_error installed restore_result reserved0 reserved1'.split()
+        fields='state pid task slide site trampoline vm_result copy_error installed restore_result install_stage reserved1'.split()
         result['audio_property_lock']=dict(zip(fields,values))
     key='_i9100_ls_query_diag'
     if key in symbols.values:
