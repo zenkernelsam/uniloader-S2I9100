@@ -29,6 +29,7 @@ def main():
     parser.add_argument('--control-tag')
     parser.add_argument('--ls-bootstrap', action='store_true')
     parser.add_argument('--ls-ui-timeout',action='store_true')
+    parser.add_argument('--audio-property-lock',action='store_true')
     parser.add_argument('--xpc-diag', action='store_true')
     parser.add_argument('--reboot-download-fallback', action='store_true')
     parser.add_argument('--tcc-development', action='store_true')
@@ -41,6 +42,8 @@ def main():
     parser.add_argument('--aks-development', action='store_true')
     parser.add_argument('sources', nargs='*')
     args = parser.parse_args()
+    if args.audio_property_lock and (not args.control or not args.xpc_diag or not args.ios6_hid):
+        parser.error('--audio-property-lock requires --control, --xpc-diag and --ios6-hid')
     if args.ls_ui_timeout and (not args.control or not args.xpc_diag):
         parser.error('--ls-ui-timeout requires --control and --xpc-diag')
     if args.control and (not args.control_tag or len(args.control_tag) != 16 or
@@ -115,6 +118,8 @@ def main():
                 command.append('-DI9100_LS_BOOTSTRAP_BUILD=1')
             if args.ls_ui_timeout:
                 command.append('-DI9100_LS_UI_TIMEOUT_BUILD=1')
+            if args.audio_property_lock:
+                command.append('-DI9100_AUDIO_PROPERTY_LOCK_BUILD=1')
             if args.xpc_diag:
                 command.append('-DI9100_XPC_DIAG_BUILD=1')
             if args.reboot_download_fallback:

@@ -14,6 +14,7 @@ repo = Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--ls-bootstrap', action='store_true')
 parser.add_argument('--ls-ui-timeout',action='store_true')
+parser.add_argument('--audio-property-lock',action='store_true')
 parser.add_argument('--xpc-diag', action='store_true')
 parser.add_argument('--reboot-download-fallback', action='store_true')
 parser.add_argument('--tcc-development', action='store_true')
@@ -28,6 +29,8 @@ parser.add_argument('--aks-development', action='store_true')
 args = parser.parse_args()
 if args.ls_ui_timeout and not args.xpc_diag:
     parser.error('--ls-ui-timeout requires --xpc-diag')
+if args.audio_property_lock and (not args.xpc_diag or not args.ios6_hid):
+    parser.error('--audio-property-lock requires --xpc-diag and --ios6-hid')
 if args.input_test and not args.ios6_hid:
     parser.error('--input-test requires --ios6-hid')
 if args.input_test and args.home_test:
@@ -52,6 +55,7 @@ subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--ke
                 '--output', package, '--control',
                 *(['--ls-bootstrap'] if args.ls_bootstrap else []),
                 *(['--ls-ui-timeout'] if args.ls_ui_timeout else []),
+                *(['--audio-property-lock'] if args.audio_property_lock else []),
                 *(['--xpc-diag'] if args.xpc_diag else []),
                 *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
                 *(['--tcc-development'] if args.tcc_development else []),
