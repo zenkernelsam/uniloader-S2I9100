@@ -79,11 +79,34 @@ LS_SYMBOLS.add('_i9100_ls_file_diag')
 LS_SYMBOLS.add('_i9100_ls_wire_diag')
 LS_SYMBOLS.update({'_i9100_mach_failure_diag', '_i9100_mig_error_diag', '_i9100_vm_error_diag'})
 LS_SYMBOLS.update({'_i9100_ls_query_diag','_i9100_ls_query_alloc_diag','_i9100_ls_query_alloc_failure_diag'})
+LS_SYMBOLS.add('_i9100_ls_callback_diag')
 
 
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_ls_callback_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+64*96)*4);(out/'ls-callback.bin').write_bytes(data)
+        sequence=struct.unpack_from('<I',data)[0];rows=[]
+        fields='sequence version stage pid thread token request_address reply_address vm_result request_error reply_error request_size reply_name kind pc lr sp fp callback_fp stack_error'.split()
+        for n in range(64):
+            at=(1+n*96)*4;w=struct.unpack_from('<20I',data,at)
+            if not w[0] or ((sequence-w[0])&0xffffffff)>=64:continue
+            r=dict(zip(fields,w))
+            if r['version']!=1 or r['stage'] not in (1,2,3,4) or r['kind'] not in (1,2,3) or r['request_size']!=352:
+                raise ValueError('Unknown LS callback observer layout')
+            request=data[at+80:at+272];reply=data[at+272:at+320]
+            r.update(request_hex=request.hex(),reply_hex=reply.hex(),
+                request_header=[hex(v) for v in struct.unpack_from('<6I',request)],
+                reply_header=[hex(v) for v in struct.unpack_from('<6I',reply)],
+                request_bundle=request[32:].split(b'\0')[0].decode('ascii','replace'),
+                reply_retcode=struct.unpack_from('<I',reply,32)[0],
+                reply_value=struct.unpack_from('<I',reply,36)[0])
+            frames=struct.unpack_from('<16I',data,at+320)
+            r['frames']=[dict(fp=hex(frames[i]),lr=hex(frames[i+1])) for i in range(0,16,2) if frames[i]]
+            rows.append(r)
+        result['ls_callback']=dict(sequence=sequence,rows=sorted(rows,key=lambda r:((sequence-r['sequence'])&0xffffffff),reverse=True))
     key='_i9100_media_kill_payload'
     if key in symbols.values:
         data=kernel.read(symbols[key],768);(out/'media-kill-payload.bin').write_bytes(data)
