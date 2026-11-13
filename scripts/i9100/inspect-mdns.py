@@ -68,6 +68,7 @@ ABORT_SYMBOLS = {'_i9100_abort_frames', '_i9100_abort_observation',
                      '_i9100_power_'+name for name in
                      ('valid', 'percent', 'mv', 'connected', 'charging', 'temp', 'reason', 'revision_value')}
 ABORT_SYMBOLS.add('_i9100_audio_property_lock_diag')
+ABORT_SYMBOLS.update({'_i9100_audio_property_lock_history','_i9100_media_lifecycle_diag'})
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -87,8 +88,18 @@ def capture_ui_observations(kernel, symbols, out):
         values=struct.unpack('<12I',data)
         if values[0] not in (0,1,2,3) or values[8] not in (0,1):
             raise ValueError('Unknown audio property lock repair state')
-        fields='state pid task slide site trampoline vm_result copy_error installed restore_result install_stage reserved1'.split()
+        fields='state pid task slide site trampoline vm_result copy_error installed restore_result install_stage attempt'.split()
         result['audio_property_lock']=dict(zip(fields,values))
+    for label,key,words,fields in [
+        ('audio_property_history','_i9100_audio_property_lock_history',12,
+         'state pid task slide site trampoline vm_result copy_error installed restore_result install_stage attempt'.split()),
+        ('media_lifecycle','_i9100_media_lifecycle_diag',10,
+         'pid wait_status task own_context exception code subcode csflags reserved stage'.split())]:
+        if key in symbols.values:
+            data=kernel.read(symbols[key],(1+8*words)*4);(out/(label+'.bin')).write_bytes(data)
+            values=struct.unpack('<'+'I'*(1+8*words),data)
+            if values[0]>8:raise ValueError('Invalid bounded media history count')
+            result[label]=dict(count=values[0],rows=[dict(zip(fields,values[1+n*words:1+(n+1)*words])) for n in range(values[0])])
     key='_i9100_ls_query_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+32*104)*4);(out/'ls-query.bin').write_bytes(data)

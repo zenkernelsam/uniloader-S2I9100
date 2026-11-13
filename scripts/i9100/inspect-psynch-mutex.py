@@ -60,9 +60,17 @@ def main():
                                        bytes.fromhex('d1f8cc14') in accessor,
                                        'Unexpected thread_id accessor; no guessed member reads')
                         tls_accessor = kernel.read(symbols['_thread_get_cthread_self'] & ~1, 14)
-                        boot.o.require(bytes.fromhex('d0e99801') in tls_accessor,
+                        boot.o.require(bytes.fromhex('d0e9e601') in tls_accessor,
                                        'Unexpected cthread accessor; no guessed TLS member reads')
                         user = kernel.user_pmap(int(proc['pmap'], 16))
+                        if '_i9100_audio_property_lock_diag' in symbols.values:
+                            repair=struct.unpack('<12I',kernel.read(symbols['_i9100_audio_property_lock_diag'],48))
+                            result['audio_repair']=list(repair)
+                            if repair[0]==2 and repair[1]==proc['pid'] and repair[2]==int(proc['task'],16):
+                                for label,address,length in [('site',repair[4],24),('trampoline',repair[5],68)]:
+                                    raw=user.read(address,length)
+                                    (out/('audio-repair-'+label+'.bin')).write_bytes(raw)
+                                    result['audio_repair_'+label]=raw.hex()
                         dyld = proc.get('dyld_info', {})
                         count = dyld.get('image_count', 0)
                         if 0 < count <= 512:
