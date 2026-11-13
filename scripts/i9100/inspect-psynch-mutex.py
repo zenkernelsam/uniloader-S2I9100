@@ -72,7 +72,7 @@ def main():
                                 # Only the new package contains the156B
                                 # recursive-depth trampoline. Preserve its
                                 # full bytes, old packages retain68B format.
-                                trampoline_bytes=156 if symbols.tag!='cb77d173732f6ffe' and symbols.tag!='601edaa45d57a8aa' else 68
+                                trampoline_bytes=256 if '_i9100_audio_property_runtime' in symbols.values else 68 if symbols.tag in ('cb77d173732f6ffe','601edaa45d57a8aa') else 156
                                 for label,address,length in [('site',repair[4],24),('trampoline',repair[5],trampoline_bytes)]:
                                     raw=user.read(address,length)
                                     (out/('audio-repair-'+label+'.bin')).write_bytes(raw)

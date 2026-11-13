@@ -71,6 +71,7 @@ ABORT_SYMBOLS.add('_i9100_audio_property_lock_diag')
 ABORT_SYMBOLS.update({'_i9100_audio_property_lock_history','_i9100_media_lifecycle_diag'})
 ABORT_SYMBOLS.add('_i9100_media_signal_diag')
 ABORT_SYMBOLS.add('_i9100_media_kill_payload')
+ABORT_SYMBOLS.add('_i9100_media_audio_runtime')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -85,6 +86,15 @@ LS_SYMBOLS.add('_i9100_ls_callback_diag')
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_media_audio_runtime'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],96);(out/'media-audio-runtime.bin').write_bytes(data)
+        words=struct.unpack('<24I',data)
+        if words[0]:
+            if words[0]!=1:raise ValueError('Unknown media audio runtime schema')
+            result['media_audio_runtime']=dict(zip('version pid task address copy_error site site_copy_error branch_target'.split(),words[:8]))
+            result['media_audio_runtime']['words']=list(words[8:])
+            result['media_audio_runtime']['stage']=words[9]
     key='_i9100_ls_callback_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+64*96)*4);(out/'ls-callback.bin').write_bytes(data)
