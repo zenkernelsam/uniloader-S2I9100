@@ -70,6 +70,7 @@ ABORT_SYMBOLS = {'_i9100_abort_frames', '_i9100_abort_observation',
 ABORT_SYMBOLS.add('_i9100_audio_property_lock_diag')
 ABORT_SYMBOLS.update({'_i9100_audio_property_lock_history','_i9100_media_lifecycle_diag'})
 ABORT_SYMBOLS.add('_i9100_media_signal_diag')
+ABORT_SYMBOLS.add('_i9100_media_kill_payload')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -83,6 +84,15 @@ LS_SYMBOLS.update({'_i9100_ls_query_diag','_i9100_ls_query_alloc_diag','_i9100_l
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_media_kill_payload'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],768);(out/'media-kill-payload.bin').write_bytes(data)
+        w=struct.unpack('<192I',data)
+        if w[0]:
+            if w[0]!=1 or w[7]>16 or w[11]>512 or w[13]!=1:raise ValueError('Unknown media kill snapshot schema')
+            fields='sequence pid task pc lr sp fp count stack_error object copy_error bytes slide version reserved0 reserved1'.split()
+            r=dict(zip(fields,w[:16]));r['frames']=[dict(zip(('fp','previous','lr'),w[16+n*3:19+n*3])) for n in range(w[7])]
+            r['object_hex']=data[256:256+w[11]].hex();result['media_kill_payload']=r
     key='_i9100_media_signal_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+8*13)*4);(out/'media-signals.bin').write_bytes(data)
