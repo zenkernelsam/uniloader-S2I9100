@@ -24,6 +24,8 @@ def main():
     p.add_argument('--kernel', type=Path, required=True)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--process', required=True)
+    p.add_argument('--thread-limit',type=int,choices=range(1,17),default=16,
+                   help='Bound reads when the process is repeatedly exiting')
     a = p.parse_args()
     boot.f.validate_command('threads ' + a.process)
     out = boot.o.confined(a.output, boot.f.REPO / 'out')
@@ -49,7 +51,7 @@ def main():
                     answer, _ = session.command('panic-status')
                     boot.o.require(answer == 'OK panic=0 seconds=00000000', 'Panic active')
                     kernel = boot.m.Kernel(session, symbols)
-                    proc = stacks.capture_process(session, kernel, a.process, out, boot.m, True, 16)
+                    proc = stacks.capture_process(session, kernel, a.process, out, boot.m, True, a.thread_limit)
                     result = dict(tag=symbols.tag, process=proc,
                                   snapshot='sequential live bytes; raw owner matching is not a lock-consistency proof')
                     (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
@@ -67,7 +69,11 @@ def main():
                             repair=struct.unpack('<12I',kernel.read(symbols['_i9100_audio_property_lock_diag'],48))
                             result['audio_repair']=list(repair)
                             if repair[0]==2 and repair[1]==proc['pid'] and repair[2]==int(proc['task'],16):
-                                for label,address,length in [('site',repair[4],24),('trampoline',repair[5],68)]:
+                                # Only the new package contains the156B
+                                # recursive-depth trampoline. Preserve its
+                                # full bytes, old packages retain68B format.
+                                trampoline_bytes=156 if symbols.tag!='cb77d173732f6ffe' and symbols.tag!='601edaa45d57a8aa' else 68
+                                for label,address,length in [('site',repair[4],24),('trampoline',repair[5],trampoline_bytes)]:
                                     raw=user.read(address,length)
                                     (out/('audio-repair-'+label+'.bin')).write_bytes(raw)
                                     result['audio_repair_'+label]=raw.hex()
