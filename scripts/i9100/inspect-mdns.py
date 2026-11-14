@@ -198,6 +198,10 @@ def capture_ui_observations(kernel, symbols, out):
             if w[0]!=1 or w[1] not in (1,2) or w[4]>16:raise ValueError('Unknown first-media thread snapshot schema')
             fields='published version pid task count error slide incoming_mask runtime_address runtime_error calls callback_stage released reserved0 reserved1 reserved2'.split()
             r=dict(zip(fields,w));rows=[]
+            r['runtime_available']=4096<=w[8]<=0x3fffffc0 and w[9]==0
+            if not r['runtime_available']:
+                r['raw_runtime_words']=list(w[10:13])
+                r.update(calls=None,callback_stage=None,released=None)
             for n in range(w[4]):
                 row=struct.unpack_from('<72I',data,(16+n*72)*4)
                 if row[0]!=n+1 or row[23]>6:raise ValueError('Unknown first-media row schema')

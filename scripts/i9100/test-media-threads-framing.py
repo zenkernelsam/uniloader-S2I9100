@@ -7,7 +7,7 @@ import importlib.util
 import io
 from pathlib import Path
 import struct
-p=argparse.ArgumentParser(description=__doc__);p.add_argument('--fixture',type=Path,required=True);p.add_argument('--owner-fixture',type=Path);p.add_argument('--dispatch-fixture',type=Path);p.add_argument('--catalog-fixture',type=Path);p.add_argument('--exit-fixture',type=Path);a=p.parse_args()
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('--fixture',type=Path,required=True);p.add_argument('--native-fixture',type=Path);p.add_argument('--owner-fixture',type=Path);p.add_argument('--dispatch-fixture',type=Path);p.add_argument('--catalog-fixture',type=Path);p.add_argument('--exit-fixture',type=Path);a=p.parse_args()
 s=importlib.util.spec_from_file_location('peers_parser',Path(__file__).with_name('inspect-mdns.py'));m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 repo=Path(__file__).resolve().parents[2];out=repo/'out'/('media-threads-framing-'+datetime.now().strftime('%Y%m%d-%H%M%S'));out.mkdir()
 class Symbols:
@@ -20,6 +20,16 @@ def decode(label,data,symbols=None,key='media_first_threads'):
     target=out/label;target.mkdir()
     with contextlib.redirect_stdout(io.StringIO()):return m.capture_ui_observations(Memory(data),symbols or Symbols(),target)[key]
 raw=a.fixture.read_bytes();r=decode('production',raw);assert r['count']==3 and r['pid']==33 and r['callback_stage']==2
+assert r['runtime_available']
+if a.native_fixture:
+    native=decode('native-no-repair',a.native_fixture.read_bytes())
+    assert native['count']==3 and native['pid']==33 and not native['runtime_available']
+    assert native['calls'] is None and native['callback_stage'] is None and native['released'] is None
+    assert native['raw_runtime_words']==[0,0,0] and native['runtime_error']==0xffffffff
+    assert native['rows'][0]['tid_low']==578 and native['rows'][0]['instruction_hex']==r['rows'][0]['instruction_hex']
+changed=bytearray(raw);struct.pack_into('<I',changed,9*4,14)
+failed_runtime=decode('runtime-read-failed',bytes(changed))
+assert not failed_runtime['runtime_available'] and failed_runtime['callback_stage'] is None
 first=r['rows'][0];assert first['tid_low']==578 and first['registers'][12]==301 and first['mutex_words'][8]==578
 assert first['frame_rows'][0]['lr']==0x310fdd65 and first['handler_args'][0]==0x5500 and first['handler_args_observed']==1
 assert r['version']==2 and first['instruction_error']==0 and first['instruction_hex']=='0000a0e11eff2fe14433221188776655'

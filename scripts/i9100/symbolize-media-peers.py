@@ -91,7 +91,7 @@ def main():
     slide = peers['slide']
     lines = [f'Source: {source}', f'BUILD: {evidence.get("tag", "unspecified")}',
              f'First media PID={peers["pid"]} task={peers["task"]:08x} slide={slide:08x}',
-             f'Peers={peers["count"]} capture_error={peers["error"]} callback_stage={peers["callback_stage"]}',
+             f'Peers={peers["count"]} capture_error={peers["error"]} callback_stage={peers["callback_stage"] if peers.get("runtime_available",peers["runtime_error"]==0) else "unavailable"}',
              'Retained peer registers with sequential own-task user reads; not an atomic user-memory snapshot.',
              '<redacted> identifies the image, not a proven private function.']
     with (ROOT / 'assets/ios6-extract/dyld_cache6_armv7').open('rb') as file:
