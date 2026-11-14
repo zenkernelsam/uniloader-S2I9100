@@ -7,7 +7,7 @@ import importlib.util
 import io
 from pathlib import Path
 import struct
-p=argparse.ArgumentParser(description=__doc__);p.add_argument('--fixture',type=Path,required=True);p.add_argument('--owner-fixture',type=Path);p.add_argument('--dispatch-fixture',type=Path);a=p.parse_args()
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('--fixture',type=Path,required=True);p.add_argument('--owner-fixture',type=Path);p.add_argument('--dispatch-fixture',type=Path);p.add_argument('--catalog-fixture',type=Path);a=p.parse_args()
 s=importlib.util.spec_from_file_location('peers_parser',Path(__file__).with_name('inspect-mdns.py'));m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 repo=Path(__file__).resolve().parents[2];out=repo/'out'/('media-threads-framing-'+datetime.now().strftime('%Y%m%d-%H%M%S'));out.mkdir()
 class Symbols:
@@ -47,6 +47,15 @@ if a.dispatch_fixture:
     for label,word,value in [('dispatch-version',1,2),('dispatch-bytes',9,257),('dispatch-error',8,14)]:
         changed=bytearray(dispatch_raw);struct.pack_into('<I',changed,word*4,value)
         try:decode(label,bytes(changed),dispatch_symbols,'media_dispatch');raise AssertionError('Unknown dispatch layout accepted')
+        except ValueError:pass
+if a.catalog_fixture:
+    catalog_symbols=Symbols();catalog_symbols.values={'_i9100_early_process_diag':0x1000}
+    catalog_raw=a.catalog_fixture.read_bytes();catalog=decode('catalog',catalog_raw,catalog_symbols,'early_processes')
+    assert len(catalog['rows'])==1 and catalog['rows'][0]['pid']==14 and catalog['rows'][0]['idversion']==15
+    assert catalog['rows'][0]['name']=='FixtureExec' and catalog['rows'][0]['updates']==2
+    for label,word,value in [('catalog-version',0,2),('catalog-capacity',1,65),('catalog-pid',4+14*12+1,15)]:
+        changed=bytearray(catalog_raw);struct.pack_into('<I',changed,word*4,value)
+        try:decode(label,bytes(changed),catalog_symbols,'early_processes');raise AssertionError('Unknown catalog layout accepted')
         except ValueError:pass
 print('PASS production peer identities, saved registers/handler args/owner/frame layout; unknown schemas rejected')
 print('EVIDENCE',out)

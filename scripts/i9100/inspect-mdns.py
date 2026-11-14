@@ -80,6 +80,7 @@ ABORT_SYMBOLS.add('_i9100_media_threads')
 ABORT_SYMBOLS.add('_i9100_audio_owner_diag')
 ABORT_SYMBOLS.update({'_i9100_media_dispatch_diag','_i9100_fig_rpc_capacity'})
 ABORT_SYMBOLS.update({'_i9100_media_dispatch_wait','_i9100_media_semaphore_diag'})
+ABORT_SYMBOLS.add('_i9100_early_process_diag')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -94,6 +95,19 @@ LS_SYMBOLS.add('_i9100_ls_callback_diag')
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_early_process_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(4+64*12)*4);(out/'early-process.bin').write_bytes(data)
+        version,capacity,stride,updates=struct.unpack_from('<4I',data)
+        if (version,capacity,stride)!=(1,64,12):raise ValueError('Unknown early process catalog')
+        rows=[]
+        for pid in range(1,64):
+            w=struct.unpack_from('<12I',data,(4+pid*12)*4)
+            if not w[0]:continue
+            if w[0]!=1 or w[1]!=pid or w[10]!=1:raise ValueError('Unknown early PID identity')
+            name=struct.pack('<4I',*w[4:8]).split(b'\0',1)[0].decode('utf-8','replace')
+            rows.append(dict(pid=pid,idversion=w[2],task=w[3],name=name,code=w[8],updates=w[9]))
+        result['early_processes']=dict(updates=updates,rows=rows,retention='latest observed identity per early PID; not a live-process list')
     for key,name,filename in [('_i9100_media_dispatch_diag','media_dispatch','media-dispatch.bin'),
                               ('_i9100_media_dispatch_wait','media_dispatch_wait','media-dispatch-wait.bin')]:
         if key not in symbols.values:continue
