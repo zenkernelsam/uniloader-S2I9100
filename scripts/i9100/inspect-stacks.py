@@ -119,9 +119,8 @@ def capture_process(session,kernel,name,out,m,dyld_info=False,thread_limit=None,
 
 def main():
     here=Path(__file__).resolve().parent
-    f=module('forensic',here/'forensic-session.py')
-    m=module('memory',here/'live-memory.py')
-    odin=module('odin',here/'odin-loop.py')
+    boot=module('stacks_boot',here/'capture-boot-snapshot.py')
+    f,m,odin=boot.f,boot.m,boot.o
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--kernel',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
@@ -131,35 +130,48 @@ def main():
     p.add_argument('--kernel-context',action='store_true',help='Retain saved kernel registers and bounded own kernel frame links')
     p.add_argument('--thread-limit',type=int,choices=range(1,65),
                    help='Read only the first N raw snapshot threads; retain the observed total')
+    p.add_argument('--budget-seconds',type=int,choices=(120,180,300,600),default=300)
     a=p.parse_args();symbols=m.Symbols(a.kernel)
     for name in a.process:f.validate_command('threads '+name)
     out=a.output.resolve()
     if not out.is_relative_to(f.REPO/'out') or out.exists():p.error('Fresh directory in repository out required')
     with odin.host_lock():
         device=odin.cdc(odin.Host().inventory())
-        if device is None:raise RuntimeError('No live CDC device')
-        profile=json.loads((f.REPO/'out/automation/inventory-20261108-recovery-download.json').read_text(encoding='utf-8'))
+        if device is None or device['service'].lower()!='usbser':raise RuntimeError('No approved live CDC device')
+        profile=json.loads((odin.OUT/'inventory-20261106-211114-download-profile.json').read_text(encoding='utf-8'))
         if odin.normalize_location(device['location'])!=profile['location']:raise RuntimeError('Wrong USB topology')
-        out.mkdir(parents=True);transport=None
-        with (out/'events.jsonl').open('x') as events,(out/'received.bin').open('xb') as capture:
+        out.mkdir(parents=True)
+        with (out/'events.jsonl').open('x') as events:
             def record(phase,**fields):
                 row=dict(time=datetime.now(timezone.utc).isoformat(),phase=phase,**fields)
                 events.write(json.dumps(row)+'\n');events.flush()
-                if phase in ('OPEN_OK','DTR_OK','STOP','DONE'):print(json.dumps(row),flush=True)
+                if phase in ('OPEN_OK','DTR_OK','PROCESS_SAVED','PANIC_TRANSITION_SAVED','CLOSED','STOP','DONE'):print(json.dumps(row),flush=True)
             try:
-                transport=f.WinTransport(device['port'],record)
-                session=f.Session(transport,symbols.tag,record,capture,timeout=20)
-                session.handshake();kernel=m.Kernel(session,symbols)
-                results=[]
-                for name in a.process:
-                    proc=capture_process(session,kernel,name,out,m,a.dyld_info,a.thread_limit,a.kernel_context)
-                    results.append(proc)
-                    (out/'stacks.json').write_text(json.dumps(dict(tag=symbols.tag,processes=results),indent=2)+'\n')
+                with boot.open_session(device,symbols.tag,out,record,a.budget_seconds) as session:
+                    answer,_=session.command('panic-status')
+                    if answer!='OK panic=0 seconds=00000000':
+                        boot.retain_current_panic(session,out,record);raise RuntimeError('Active panic retained; no stack reads')
+                    kernel=m.Kernel(session,symbols);results=[]
+                    def save():
+                        (out/'stacks.json').write_text(json.dumps(dict(tag=symbols.tag,processes=results),indent=2)+'\n')
+                    for name in a.process:
+                        proc=capture_process(session,kernel,name,out,m,a.dyld_info,a.thread_limit,a.kernel_context)
+                        results.append(proc);save()
+                        _,after=session.command('threads '+name)
+                        (out/(name+'-threads-after.txt')).write_bytes(after)
+                        found=re.search(rb'proc\s+(\d+)\s+',after)
+                        threads=re.findall(rb'\bthr=(0x[0-9a-f]+)',after)
+                        proc['identity_stable']=bool(found and threads and int(found[1])==proc.get('pid') and
+                            hex(kernel.u32(int(threads[0],16)+0x3a0))==proc.get('task'))
+                        save()
+                        if not proc['identity_stable']:raise RuntimeError(name+' changed during capture; original saved, no retry')
+                        record('PROCESS_SAVED',process=name,pid=proc['pid'],task=proc['task'])
+                    answer,_=session.command('panic-status')
+                    if answer!='OK panic=0 seconds=00000000':
+                        boot.retain_current_panic(session,out,record);raise RuntimeError('Panic after stack capture retained')
                 record('DONE',processes=len(results))
             except BaseException as exc:
                 record('STOP',error=str(exc),retry=False);raise
-            finally:
-                if transport is not None:transport.close()
 
 
 if __name__=='__main__':main()
