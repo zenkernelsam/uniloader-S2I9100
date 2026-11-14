@@ -83,6 +83,7 @@ ABORT_SYMBOLS.update({'_i9100_media_dispatch_wait','_i9100_media_semaphore_diag'
 ABORT_SYMBOLS.add('_i9100_early_process_diag')
 ABORT_SYMBOLS.add('_i9100_early_exit_diag')
 ABORT_SYMBOLS.add('_i9100_power_policy')
+ABORT_SYMBOLS.add('_i9100_pmap_empty_unwire')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -820,7 +821,8 @@ def capture_ui_observations(kernel, symbols, out):
             raise ValueError('Retained abort count exceeds its schema')
         result[label]['text'] = data[words*4:words*4+241].split(b'\0')[0].decode('utf-8','replace')
     for name, size in [('i9100_panel_console_enabled',4), ('i9100_fb_physical',4),
-                       ('i9100_graphics_seq',8), ('i9100_frame_performance',28)]:
+                       ('i9100_graphics_seq',8), ('i9100_frame_performance',28),
+                       ('i9100_pmap_empty_unwire',8)]:
         key = '_'+name
         if key in symbols.values:
             data = kernel.read(symbols[key],size)
