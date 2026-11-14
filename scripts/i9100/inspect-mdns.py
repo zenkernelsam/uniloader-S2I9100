@@ -76,6 +76,7 @@ ABORT_SYMBOLS.add('_i9100_signal_exit')
 ABORT_SYMBOLS.update({'_i9100_fig_rpc_diag','_i9100_springboard_kill_payload','_i9100_audio_wait_diag'})
 ABORT_SYMBOLS.add('_i9100_syscall_restart_diag')
 ABORT_SYMBOLS.add('_i9100_previous_boot')
+ABORT_SYMBOLS.add('_i9100_media_threads')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -90,6 +91,23 @@ LS_SYMBOLS.add('_i9100_ls_callback_diag')
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_media_threads'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(16+16*72)*4);(out/'media-first-threads.bin').write_bytes(data)
+        w=struct.unpack_from('<16I',data)
+        if w[0]:
+            if w[0]!=1 or w[1]!=1 or w[4]>16:raise ValueError('Unknown first-media thread snapshot schema')
+            fields='published version pid task count error slide incoming_mask runtime_address runtime_error calls callback_stage released reserved0 reserved1 reserved2'.split()
+            r=dict(zip(fields,w));rows=[]
+            for n in range(w[4]):
+                row=struct.unpack_from('<72I',data,(16+n*72)*4)
+                if row[0]!=n+1 or row[23]>6:raise ValueError('Unknown first-media row schema')
+                rows.append(dict(sequence=row[0],thread=row[1],tid_low=row[2],tid_high=row[3],state=row[4],error=row[5],
+                    registers=list(row[6:19]),sp=row[19],lr=row[20],pc=row[21],cpsr=row[22],frame_count=row[23],
+                    mutex_error=row[24],stack_error=row[25],mutex_words=list(row[28:40]),
+                    frame_rows=[dict(fp=row[40+k*3],previous=row[41+k*3],lr=row[42+k*3]) for k in range(row[23])],
+                    handler_args=list(row[60:66]),handler_args_observed=row[66]))
+            r['rows']=rows;result['media_first_threads']=r
     key='_i9100_syscall_restart_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+16*10)*4);(out/'syscall-restarts.bin').write_bytes(data)
