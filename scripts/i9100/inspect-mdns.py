@@ -79,6 +79,7 @@ ABORT_SYMBOLS.add('_i9100_previous_boot')
 ABORT_SYMBOLS.add('_i9100_media_threads')
 ABORT_SYMBOLS.add('_i9100_audio_owner_diag')
 ABORT_SYMBOLS.update({'_i9100_media_dispatch_diag','_i9100_fig_rpc_capacity'})
+ABORT_SYMBOLS.update({'_i9100_media_dispatch_wait','_i9100_media_semaphore_diag'})
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -93,17 +94,40 @@ LS_SYMBOLS.add('_i9100_ls_callback_diag')
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
-    key='_i9100_media_dispatch_diag'
-    if key in symbols.values:
-        data=kernel.read(symbols[key],320);(out/'media-dispatch.bin').write_bytes(data)
+    for key,name,filename in [('_i9100_media_dispatch_diag','media_dispatch','media-dispatch.bin'),
+                              ('_i9100_media_dispatch_wait','media_dispatch_wait','media-dispatch-wait.bin')]:
+        if key not in symbols.values:continue
+        data=kernel.read(symbols[key],320);(out/filename).write_bytes(data)
         w=struct.unpack_from('<16I',data)
         if w[0]:
             if (w[0]!=1 or w[1]!=1 or w[9] not in (0,256) or
                 (w[9]==256 and (w[6] or w[8])) or (w[8]==0 and w[9]!=256)):
                 raise ValueError('Unknown media dispatch schema')
-            result['media_dispatch']=dict(version=w[1],pid=w[2],task=w[3],slide=w[4],slot=w[5],slot_error=w[6],
+            result[name]=dict(version=w[1],pid=w[2],task=w[3],slide=w[4],slot=w[5],slot_error=w[6],
                 queue=w[7],queue_error=w[8],bytes=w[9],raw_hex=data[64:64+w[9]].hex(),
-                retention='first media task; original CMSessionCreate dispatch_sync queue')
+                retention='first media task; '+('exact CMSessionCreate semaphore trap before wait' if name.endswith('_wait') else 'first kill'))
+            if name.endswith('_wait'):
+                if not w[10] or not w[11] or not 1<=w[13]<=6:raise ValueError('Unknown matched CMSession wait')
+                result[name].update(semaphore_name=w[10],semaphore=w[11],thread=w[12],matched_frames=w[13],pc=w[14],lr=w[15])
+    key='_i9100_media_semaphore_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(12+128*16)*4);(out/'media-semaphore.bin').write_bytes(data)
+        w=struct.unpack_from('<12I',data)
+        if w[0]:
+            if w[0]>128 or w[1]!=1 or w[2]!=128 or w[3]!=16 or w[8] not in (0,5,6,8):
+                raise ValueError('Unknown media semaphore schema')
+            rows=[];fields='sequence stage owner_pid thread tid_low tid_high current_task semaphore port count count_known result flags auxiliary caller version'.split()
+            for n in range(w[0]):
+                row=struct.unpack_from('<16I',data,(12+n*16)*4)
+                if row[0]!=n+1 or row[1] not in (1,2,3,4,5,6,8) or row[15]!=1 or row[10] not in (0,1):
+                    raise ValueError('Unknown media semaphore row')
+                if row[7]!=w[6] or row[8]!=w[7] or row[2]!=w[4]:raise ValueError('Media semaphore identity changed')
+                rows.append(dict(zip(fields,row)))
+            result['media_semaphore']=dict(count=w[0],pid=w[4],task=w[5],semaphore=w[6],port=w[7],finished_stage=w[8],lost=w[9],rows=rows)
+    if 'media_dispatch_wait' in result and 'media_semaphore' in result:
+        q=result['media_dispatch_wait'];s=result['media_semaphore']
+        if (q['pid'],q['task'],q['semaphore'],q['semaphore_name']) != (s['pid'],s['task'],s['semaphore'],s['port']):
+            raise ValueError('Queue and semaphore belong to different waits')
     key='_i9100_audio_owner_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(4+8*64)*4);(out/'audio-owners.bin').write_bytes(data)
