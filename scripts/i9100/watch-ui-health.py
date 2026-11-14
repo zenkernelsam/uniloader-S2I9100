@@ -19,7 +19,9 @@ def module(name,file):
 def main():
     boot=module('watch_boot','capture-boot-snapshot.py');o=boot.o
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--kernel',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--seconds',type=int,choices=range(30,601),default=240);a=p.parse_args()
+    p.add_argument('--seconds',type=int,choices=range(30,601),default=240)
+    p.add_argument('--rpc',action='store_true',help='Also retain original bounded Fig request/reply rows on this same handle')
+    a=p.parse_args()
     out=o.confined(a.output,boot.f.REPO/'out');o.require(not out.exists(),'Fresh health evidence required')
     symbols=boot.m.Symbols(o.confined(a.kernel,boot.f.REPO/'out'))
     profile=json.loads((o.OUT/'inventory-20261106-211114-download-profile.json').read_text())
@@ -37,6 +39,7 @@ def main():
                            '_i9100_audio_property_lock_diag','_i9100_process_exit','_i9100_backboard_exit','_i9100_signal_exit','_i9100_graphics_seq','_i9100_syscall_restart_diag','_i9100_previous_boot',
                            '_i9100_touch_observation','_i9100_input_test','_i9100_panel_console_enabled'}
                     names.update(key for key in symbols.values if key.endswith('leo_graphics_state'))
+                    if a.rpc:names.update({'_i9100_fig_rpc_diag','_i9100_fig_rpc_capacity'})
                     names.update({'_i9100_power_'+n for n in ('valid','percent','mv','connected','charging','temp','reason','revision_value')})
                     selected=boot.observations.ObservationSymbols(symbols,names)
                     while True:
