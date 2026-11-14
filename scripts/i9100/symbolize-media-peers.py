@@ -18,20 +18,67 @@ import importlib.util
 import json
 import mmap
 from pathlib import Path
+import struct
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 ROOT = REPO.parent
 
 
+def instruction_candidates(path, signature, live):
+    """Candidate slides only; instruction bytes do not prove a live image map."""
+    if not signature or len(signature) != 16 or len(set(signature)) < 2:
+        return []
+    data = path.read_bytes()
+    if len(data) < 28 or struct.unpack_from('<II', data) != (0xfeedface, 12):
+        raise ValueError('Reference must be an original ARM32 Mach-O')
+    count, size = struct.unpack_from('<II', data, 16)
+    if count > 256 or 28 + size > len(data):
+        raise ValueError('Reference load commands outside image')
+    position, sections = 28, []
+    for _ in range(count):
+        command, length = struct.unpack_from('<II', data, position)
+        if length < 8 or position + length > 28 + size:
+            raise ValueError('Invalid reference load command')
+        if command == 1:
+            if length < 56:
+                raise ValueError('Short reference segment')
+            number = struct.unpack_from('<I', data, position + 48)[0]
+            if 56 + number * 68 > length:
+                raise ValueError('Reference sections outside segment')
+            for n in range(number):
+                address, extent, offset, _, _, _, flags, _, _ = struct.unpack_from('<9I', data, position + 56 + n * 68 + 32)
+                if flags & 0x80000400:
+                    if offset + extent > len(data):
+                        raise ValueError('Reference instructions outside image')
+                    sections.append((address, extent, offset))
+        position += length
+    matches = []
+    for address, extent, offset in sections:
+        cursor, end = offset, offset + extent
+        while len(matches) < 8:
+            at = data.find(signature, cursor, end)
+            if at < 0:
+                break
+            original = address + at - offset
+            matches.append(f'{path} original_pc={original:08x} candidate_slide={live-original:08x}')
+            cursor = at + 1
+    return matches
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--observations', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--match-image', type=Path, action='append', default=[],
+                        help='Compare saved PC bytes with an existing ARM32 reference; candidate mapping only')
     args = parser.parse_args()
     source, output = args.observations.resolve(), args.output.resolve()
     if not source.is_relative_to(REPO / 'out') or not output.is_relative_to(ROOT / 'research'):
         parser.error('Read loader out observations and write research only')
+    references = [path.resolve() for path in args.match_image]
+    if len(references) > 8 or any(not (path.is_relative_to(ROOT / 'research') or path.is_relative_to(ROOT / 'assets')) for path in references):
+        parser.error('At most eight existing project reference images')
     evidence = json.loads(source.read_text())
     observations = evidence.get('observations', evidence)
     peers = observations['media_first_threads']
@@ -58,6 +105,11 @@ def main():
                 lines.append('REGS ' + ' '.join(f'r{n}={value:08x}' for n, value in enumerate(row['registers'])))
                 if peers['version'] == 2:
                     lines.append(f'PC_BYTES error={row["instruction_error"]} original={row["instruction_hex"]}')
+                    if row['instruction_hex'] and row['pc'] < 0x30000000:
+                        signature = bytes.fromhex(row['instruction_hex'])
+                        for reference in references:
+                            matches = instruction_candidates(reference, signature, row['pc'] & ~1)
+                            lines.extend('PC_BYTE_CANDIDATE ' + match for match in matches)
                 for label, value in [('PC', row['pc']), ('LR', row['lr'])] + [
                         (f'FRAME{n}', frame['lr']) for n, frame in enumerate(row['frame_rows'])]:
                     live = value & ~1
