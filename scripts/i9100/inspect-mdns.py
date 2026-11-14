@@ -81,6 +81,7 @@ ABORT_SYMBOLS.add('_i9100_audio_owner_diag')
 ABORT_SYMBOLS.update({'_i9100_media_dispatch_diag','_i9100_fig_rpc_capacity'})
 ABORT_SYMBOLS.update({'_i9100_media_dispatch_wait','_i9100_media_semaphore_diag'})
 ABORT_SYMBOLS.add('_i9100_early_process_diag')
+ABORT_SYMBOLS.add('_i9100_early_exit_diag')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -95,6 +96,19 @@ LS_SYMBOLS.add('_i9100_ls_callback_diag')
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_early_exit_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(4+64*16)*4);(out/'early-exit.bin').write_bytes(data)
+        version,capacity,stride,total=struct.unpack_from('<4I',data)
+        if (version,capacity,stride)!=(1,64,16):raise ValueError('Unknown early exit catalog')
+        rows=[];fields='published pid idversion task wait_status own_context user_state_known pc lr cpsr exception code subcode current_task csflags version'.split()
+        for pid in range(1,64):
+            w=struct.unpack_from('<16I',data,(4+pid*16)*4)
+            if not w[0]:continue
+            if w[0]!=1 or w[1]!=pid or w[15]!=1 or w[5] not in (0,1) or w[6] not in (0,1):
+                raise ValueError('Unknown early exit identity')
+            rows.append(dict(zip(fields,w)))
+        result['early_exits']=dict(total=total,rows=rows,retention='original wait status, no fabricated exit or continuation result')
     key='_i9100_early_process_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(4+64*12)*4);(out/'early-process.bin').write_bytes(data)
