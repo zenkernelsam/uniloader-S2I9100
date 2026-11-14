@@ -120,6 +120,23 @@ def main():
                     lines.append(f'{label} live={value:08x} {description}')
                 lines.append('HANDLER6 ' + ' '.join(f'{value:08x}' for value in row['handler_args']) +
                              f' observed={row["handler_args_observed"]}')
+            for owner in observations.get('audio_owners', {}).get('rows', []):
+                if (owner['pid'], owner['task']) != (peers['pid'], peers['task']):
+                    raise ValueError('Wait owner belongs to another task; no borrowed cache slide')
+                lines.append(f'OWNER wait_sequence={owner["sequence"]} mutex={owner["wait_mutex"]:08x} '
+                             f'tid={owner["owner_high"]:08x}:{owner["owner_low"]:08x} '
+                             f'thread={owner["thread"]:08x} state={owner["state"]:x} error={owner["error"]}')
+                if owner['error']:
+                    continue
+                lines.append('OWNER_REGS ' + ' '.join(f'r{n}={value:08x}' for n, value in enumerate(owner['registers'])))
+                for label, value in [('OWNER_PC', owner['pc']), ('OWNER_LR', owner['lr'])] + [
+                        (f'OWNER_FRAME{n}', frame['lr']) for n, frame in enumerate(owner['frame_rows'])]:
+                    live = value & ~1
+                    try:
+                        description = cache.describe(live - slide) if live >= 0x30000000 else 'outside shared cache; own-task image map required'
+                    except ValueError as error:
+                        description = 'unresolved: ' + str(error)
+                    lines.append(f'{label} live={value:08x} {description}')
     with output.open('x', encoding='utf-8') as file:
         file.write('\n'.join(lines) + '\n')
     print('\n'.join(lines), flush=True)

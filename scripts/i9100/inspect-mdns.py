@@ -77,6 +77,7 @@ ABORT_SYMBOLS.update({'_i9100_fig_rpc_diag','_i9100_springboard_kill_payload','_
 ABORT_SYMBOLS.add('_i9100_syscall_restart_diag')
 ABORT_SYMBOLS.add('_i9100_previous_boot')
 ABORT_SYMBOLS.add('_i9100_media_threads')
+ABORT_SYMBOLS.add('_i9100_audio_owner_diag')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -91,6 +92,23 @@ LS_SYMBOLS.add('_i9100_ls_callback_diag')
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_audio_owner_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(4+8*64)*4);(out/'audio-owners.bin').write_bytes(data)
+        count,version,capacity,stride=struct.unpack_from('<4I',data)
+        if count:
+            if version!=1 or capacity!=8 or stride!=64 or count>8:raise ValueError('Unknown audio owner schema')
+            rows=[]
+            for n in range(count):
+                w=struct.unpack_from('<64I',data,(4+n*64)*4)
+                if not w[0]:continue
+                if w[0]!=n+1 or w[13]!=1 or w[10]>6:raise ValueError('Unknown audio owner row')
+                rows.append(dict(sequence=w[0],pid=w[1],task=w[2],wait_mutex=w[3],code=w[4],
+                    owner_low=w[5],owner_high=w[6],thread=w[7],state=w[8],error=w[9],
+                    frame_count=w[10],stack_error=w[11],mutex_error=w[12],incoming_mask=w[14],scanned=w[15],
+                    registers=list(w[16:29]),sp=w[29],lr=w[30],pc=w[31],cpsr=w[32],mutex_words=list(w[34:46]),
+                    frame_rows=[dict(fp=w[46+k*3],previous=w[47+k*3],lr=w[48+k*3]) for k in range(w[10])]))
+            result['audio_owners']=dict(count=count,rows=rows,retention='owner at original first-task wait; correlate wait sequence')
     key='_i9100_media_threads'
     if key in symbols.values:
         data=kernel.read(symbols[key],(16+16*72)*4);(out/'media-first-threads.bin').write_bytes(data)
