@@ -2,7 +2,8 @@
 """Read saved user registers and frame chains from the live kernel page tables.
 
 ARM member offsets are from the matching trap.o DWARF: thread.machine=0x228,
-thread.task=0x3a0, machine.uss=4, task.map=0x18, vm_map.pmap=0x2c.
+thread.task=0x3a0, thread.thread_id=0x4c8, thread.kernel_stack=0x44,
+machine.uss=4, task.map=0x18, vm_map.pmap=0x2c.
 """
 import argparse
 from datetime import datetime, timezone
@@ -74,23 +75,35 @@ def capture_process(session,kernel,name,out,m,dyld_info=False,thread_limit=None,
             proc['dyld_info_error']=str(exc)
     for thread in proc['threads']:
         try:
+            if kernel.u32(thread['thread']+0x3a0)!=task:
+                raise m.MappingError('Thread no longer belongs to the captured task')
+            tid=struct.unpack('<Q',kernel.read(thread['thread']+0x4c8,8))[0]
+            thread.update(tid_low=tid&0xffffffff,tid_high=tid>>32,thread_identity_stable=False)
             if kernel_context:
-                kss=kernel.u32(thread['thread']+0x228)
-                kregs=struct.unpack('<17I',kernel.read(kss,68))
                 base=kernel.u32(thread['thread']+0x44)
-                evidence=dict(address=hex(kss),stack_base=hex(base),words=[hex(v) for v in kregs],frames=[])
-                thread['kernel_context']=evidence
-                kfp=kregs[7];seen_kernel=set()
-                while base<=kfp<=base+0x3ff8 and kfp not in seen_kernel and not kfp&3 and len(seen_kernel)<20:
-                    seen_kernel.add(kfp)
-                    previous,return_address=struct.unpack('<2I',kernel.read(kfp,8))
-                    evidence['frames'].append(dict(fp=hex(kfp),previous=hex(previous),lr=hex(return_address)))
-                    if previous<=kfp:break
-                    kfp=previous
-                if base<=kregs[13]<=base+0x3f00:
-                    raw=kernel.read(kregs[13],256)
-                    (out/f'{name}-kernel-stack-{thread["thread"]:08x}.bin').write_bytes(raw)
-                    evidence['stack_words']=[hex(v) for v in struct.unpack('<64I',raw)]
+                evidence=dict(stack_base=hex(base),available=False,frames=[]);thread['kernel_context']=evidence
+                if not base:
+                    # A blocked continuation gives its stack back. Its old
+                    # machine.kstackptr may now describe another thread.
+                    evidence['reason']='No attached kernel stack; continuation state is unavailable'
+                else:
+                    kss=kernel.u32(thread['thread']+0x228);evidence['address']=hex(kss)
+                    if not 0x80000000<=base<=kss<=base+0x3fbc:
+                        evidence['reason']='Saved kernel state lies outside the attached stack'
+                    else:
+                        kregs=struct.unpack('<17I',kernel.read(kss,68))
+                        evidence.update(available=True,words=[hex(v) for v in kregs])
+                        kfp=kregs[7];seen_kernel=set()
+                        while base<=kfp<=base+0x3ff8 and kfp not in seen_kernel and not kfp&3 and len(seen_kernel)<20:
+                            seen_kernel.add(kfp)
+                            previous,return_address=struct.unpack('<2I',kernel.read(kfp,8))
+                            evidence['frames'].append(dict(fp=hex(kfp),previous=hex(previous),lr=hex(return_address)))
+                            if previous<=kfp:break
+                            kfp=previous
+                        if base<=kregs[13]<=base+0x3f00:
+                            raw=kernel.read(kregs[13],256)
+                            (out/f'{name}-kernel-stack-{thread["thread"]:08x}.bin').write_bytes(raw)
+                            evidence['stack_words']=[hex(v) for v in struct.unpack('<64I',raw)]
             uss=kernel.u32(thread['thread']+0x22c)
             regs=struct.unpack('<17I',kernel.read(uss,68))
             thread.update(uss=hex(uss),registers={**{f'r{i}':hex(regs[i]) for i in range(13)},
@@ -110,6 +123,9 @@ def capture_process(session,kernel,name,out,m,dyld_info=False,thread_limit=None,
             if regs[12] in (301,305) and 0x1000<=regs[0]<0xc0000000:
                 try:thread['sync_argument']=[hex(x) for x in struct.unpack('<16I',user_read(regs[0],64))]
                 except m.MappingError as exc:thread['sync_argument_error']=str(exc)
+            thread['thread_identity_stable']=bool(kernel.u32(thread['thread']+0x3a0)==task and
+                struct.unpack('<Q',kernel.read(thread['thread']+0x4c8,8))[0]==tid)
+            if not thread['thread_identity_stable']:raise m.MappingError('Thread identity changed during its saved-state reads')
             print(name,hex(thread['thread']),hex(regs[15]),'r12='+hex(regs[12]),
                   'frames='+','.join(x['lr'] for x in frames),flush=True)
         except (m.MappingError,struct.error) as exc:
