@@ -72,6 +72,8 @@ ABORT_SYMBOLS.update({'_i9100_audio_property_lock_history','_i9100_media_lifecyc
 ABORT_SYMBOLS.add('_i9100_media_signal_diag')
 ABORT_SYMBOLS.add('_i9100_media_kill_payload')
 ABORT_SYMBOLS.add('_i9100_media_audio_runtime')
+ABORT_SYMBOLS.add('_i9100_signal_exit')
+ABORT_SYMBOLS.update({'_i9100_fig_rpc_diag','_i9100_springboard_kill_payload'})
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -86,6 +88,34 @@ LS_SYMBOLS.add('_i9100_ls_callback_diag')
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_fig_rpc_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+64*56)*4);(out/'fig-rpc.bin').write_bytes(data)
+        count=struct.unpack_from('<I',data)[0]
+        if count>64:raise ValueError('Unknown Fig RPC history capacity')
+        fields='sequence version stage pid thread task role id size captured bits option result address peer completion_seen completion_result receive_seen receive_result request_token sender_pid sender_euid reserved0 reserved1'.split()
+        rows=[]
+        for n in range(count):
+            at=(1+n*56)*4;w=struct.unpack_from('<24I',data,at)
+            if not w[0]:continue
+            r=dict(zip(fields,w))
+            if r['sequence']!=n+1 or r['version']!=1 or r['stage'] not in range(1,7) or r['role'] not in (1,2) or r['id'] not in (9393,9493) or not 24<=r['captured']<=128 or r['captured']!=r['size'] or r['completion_seen'] not in (0,1) or r['receive_seen'] not in (0,1):
+                raise ValueError('Unknown Fig RPC row schema')
+            raw=data[at+96:at+96+r['captured']];r['raw_hex']=raw.hex()
+            r['header']=[hex(v) for v in struct.unpack_from('<6I',raw)]
+            r['user_bytes_observed']=r['stage']==6 and r['result']==0
+            rows.append(r)
+        result['fig_rpc']=dict(count=count,rows=rows,capacity=64,retention='first rows only')
+    key='_i9100_springboard_kill_payload'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],768);(out/'springboard-kill-payload.bin').write_bytes(data)
+        w=struct.unpack_from('<64I',data)
+        if w[0]:
+            if w[0]!=1 or w[7]>16 or w[11]>512 or w[13]!=1 or w[14]!=9 or w[15]!=2:
+                raise ValueError('Unknown SpringBoard self-kill schema')
+            r=dict(zip('sequence pid task pc lr sp fp count stack_error object copy_error bytes slide version signal role'.split(),w[:16]))
+            r['frames']=[dict(fp=w[16+n*3],previous=w[17+n*3],lr=w[18+n*3]) for n in range(w[7])]
+            r['object_hex']=data[256:256+w[11]].hex();result['springboard_kill_payload']=r
     key='_i9100_media_audio_runtime'
     if key in symbols.values:
         data=kernel.read(symbols[key],96);(out/'media-audio-runtime.bin').write_bytes(data)
