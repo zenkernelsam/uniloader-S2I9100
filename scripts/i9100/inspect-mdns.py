@@ -74,6 +74,8 @@ ABORT_SYMBOLS.add('_i9100_media_kill_payload')
 ABORT_SYMBOLS.add('_i9100_media_audio_runtime')
 ABORT_SYMBOLS.add('_i9100_signal_exit')
 ABORT_SYMBOLS.update({'_i9100_fig_rpc_diag','_i9100_springboard_kill_payload','_i9100_audio_wait_diag'})
+ABORT_SYMBOLS.add('_i9100_syscall_restart_diag')
+ABORT_SYMBOLS.add('_i9100_previous_boot')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -88,6 +90,20 @@ LS_SYMBOLS.add('_i9100_ls_callback_diag')
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_syscall_restart_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+16*10)*4);(out/'syscall-restarts.bin').write_bytes(data)
+        count=struct.unpack_from('<I',data)[0]
+        if count>16:raise ValueError('Unknown syscall restart capacity')
+        fields='sequence pid code before_pc restart_pc width cpsr r0 r1 r12'.split();rows=[]
+        for n in range(count):
+            w=struct.unpack_from('<10I',data,(1+n*10)*4)
+            if not w[0]:continue
+            r=dict(zip(fields,w))
+            if r['sequence']!=n+1 or r['width'] not in (2,4) or ((r['before_pc']-r['restart_pc'])&0xffffffff)!=r['width'] or r['cpsr']&(1<<29):
+                raise ValueError('Unknown syscall restart schema')
+            rows.append(r)
+        result['syscall_restarts']=dict(count=count,rows=rows,retention='first16')
     key='_i9100_audio_wait_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+8*100)*4);(out/'audio-waits.bin').write_bytes(data)

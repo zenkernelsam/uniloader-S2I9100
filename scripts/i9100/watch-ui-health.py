@@ -34,7 +34,7 @@ def main():
                 with boot.open_session(device,symbols.tag,out,record,600) as session:
                     kernel=boot.m.Kernel(session,symbols);deadline=time.monotonic()+a.seconds;number=0
                     names={'_i9100_audio_wait_diag','_i9100_media_audio_runtime','_i9100_media_kill_payload','_i9100_springboard_kill_payload',
-                           '_i9100_audio_property_lock_diag','_i9100_process_exit','_i9100_backboard_exit','_i9100_signal_exit','_i9100_graphics_seq'}
+                           '_i9100_audio_property_lock_diag','_i9100_process_exit','_i9100_backboard_exit','_i9100_signal_exit','_i9100_graphics_seq','_i9100_syscall_restart_diag','_i9100_previous_boot'}
                     names.update({'_i9100_power_'+n for n in ('valid','percent','mv','connected','charging','temp','reason','revision_value')})
                     selected=boot.observations.ObservationSymbols(symbols,names)
                     while True:
