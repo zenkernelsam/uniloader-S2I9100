@@ -22,7 +22,10 @@ def decode(label,data):
 raw=a.fixture.read_bytes();r=decode('production',raw);assert r['count']==3 and r['pid']==33 and r['callback_stage']==2
 first=r['rows'][0];assert first['tid_low']==578 and first['registers'][12]==301 and first['mutex_words'][8]==578
 assert first['frame_rows'][0]['lr']==0x310fdd65 and first['handler_args'][0]==0x5500 and first['handler_args_observed']==1
-for label,word,value in [('version',1,2),('count',4,17),('sequence',16,2),('frames',16+23,7)]:
+assert r['version']==2 and first['instruction_error']==0 and first['instruction_hex']=='0000a0e11eff2fe14433221188776655'
+legacy=bytearray(raw);struct.pack_into('<I',legacy,4,1)
+old=decode('legacy',bytes(legacy));assert old['rows'][0]['instruction_error'] is None and old['rows'][0]['instruction_hex'] is None
+for label,word,value in [('version',1,3),('count',4,17),('sequence',16,2),('frames',16+23,7)]:
     changed=bytearray(raw);struct.pack_into('<I',changed,word*4,value)
     try:decode(label,bytes(changed));raise AssertionError('Unknown peer layout accepted')
     except ValueError:pass

@@ -35,7 +35,7 @@ def main():
     evidence = json.loads(source.read_text())
     observations = evidence.get('observations', evidence)
     peers = observations['media_first_threads']
-    if (peers['published'] != 1 or peers['version'] != 1 or
+    if (peers['published'] != 1 or peers['version'] not in (1, 2) or
             not 0 <= peers['count'] <= 16 or len(peers['rows']) != peers['count']):
         raise ValueError('Unknown first-media snapshot schema')
     spec = importlib.util.spec_from_file_location('peer_cache', HERE / 'symbolize-ios6-stacks.py')
@@ -56,6 +56,8 @@ def main():
                 if row['error']:
                     continue
                 lines.append('REGS ' + ' '.join(f'r{n}={value:08x}' for n, value in enumerate(row['registers'])))
+                if peers['version'] == 2:
+                    lines.append(f'PC_BYTES error={row["instruction_error"]} original={row["instruction_hex"]}')
                 for label, value in [('PC', row['pc']), ('LR', row['lr'])] + [
                         (f'FRAME{n}', frame['lr']) for n, frame in enumerate(row['frame_rows'])]:
                     live = value & ~1

@@ -96,7 +96,7 @@ def capture_ui_observations(kernel, symbols, out):
         data=kernel.read(symbols[key],(16+16*72)*4);(out/'media-first-threads.bin').write_bytes(data)
         w=struct.unpack_from('<16I',data)
         if w[0]:
-            if w[0]!=1 or w[1]!=1 or w[4]>16:raise ValueError('Unknown first-media thread snapshot schema')
+            if w[0]!=1 or w[1] not in (1,2) or w[4]>16:raise ValueError('Unknown first-media thread snapshot schema')
             fields='published version pid task count error slide incoming_mask runtime_address runtime_error calls callback_stage released reserved0 reserved1 reserved2'.split()
             r=dict(zip(fields,w));rows=[]
             for n in range(w[4]):
@@ -106,7 +106,10 @@ def capture_ui_observations(kernel, symbols, out):
                     registers=list(row[6:19]),sp=row[19],lr=row[20],pc=row[21],cpsr=row[22],frame_count=row[23],
                     mutex_error=row[24],stack_error=row[25],mutex_words=list(row[28:40]),
                     frame_rows=[dict(fp=row[40+k*3],previous=row[41+k*3],lr=row[42+k*3]) for k in range(row[23])],
-                    handler_args=list(row[60:66]),handler_args_observed=row[66]))
+                    handler_args=list(row[60:66]),handler_args_observed=row[66],
+                    instruction_error=row[67] if w[1]==2 and not row[5] and (row[22]&31)==16 else None,
+                    instruction_hex=data[(16+n*72+68)*4:(16+n*72+72)*4].hex()
+                        if w[1]==2 and not row[5] and (row[22]&31)==16 and row[67]==0 else None))
             r['rows']=rows;result['media_first_threads']=r
     key='_i9100_syscall_restart_diag'
     if key in symbols.values:
