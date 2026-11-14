@@ -82,6 +82,7 @@ ABORT_SYMBOLS.update({'_i9100_media_dispatch_diag','_i9100_fig_rpc_capacity'})
 ABORT_SYMBOLS.update({'_i9100_media_dispatch_wait','_i9100_media_semaphore_diag'})
 ABORT_SYMBOLS.add('_i9100_early_process_diag')
 ABORT_SYMBOLS.add('_i9100_early_exit_diag')
+ABORT_SYMBOLS.add('_i9100_power_policy')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -96,6 +97,14 @@ LS_SYMBOLS.add('_i9100_ls_callback_diag')
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_power_policy'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],40);(out/'power-policy.bin').write_bytes(data)
+        w=struct.unpack('<10I',data)
+        if w[0]:
+            if w[0]!=1 or any(x not in (0,1) for x in w[1:5]):raise ValueError('Unknown charging policy state')
+            result['power_policy']=dict(enabled=w[1],full=w[2],timeout=w[3],recharging=w[4],low_samples=w[5],
+                charge_start=w[6]|(w[7]<<32),charge_refresh=w[8]|(w[9]<<32),snapshot='non-atomic workloop fields')
     key='_i9100_early_exit_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(4+64*16)*4);(out/'early-exit.bin').write_bytes(data)
