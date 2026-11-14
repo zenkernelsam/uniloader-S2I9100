@@ -27,6 +27,24 @@ frame=module('boot_frame','capture-framebuffer.py')
 panic=module('boot_panic','panic-recovery.py')
 
 
+def retain_current_panic(session,out,record):
+    """Save a positively identified panic on this existing handle once.
+
+    An explicit panic-readonly response is a completed refusal, not a timeout
+    or an uncertain driver call. Use new sequence numbers for the two allowed
+    panic queries; never resend the refused memory request or open a new port.
+    """
+    answer,_=session.command('panic-status');active,remaining=panic.countdown(answer)
+    if not active:raise ValueError('panic-readonly did not confirm an active panic')
+    _,raw=session.command('panic-log');(out/'panic-log.bin').write_bytes(raw)
+    header,text=panic.decode_snapshot(raw)
+    (out/'panic-log.txt').write_text(text.decode('utf-8','replace'),encoding='utf-8')
+    result=dict(active=active,remaining_seconds=remaining,snapshot=header,bytes=len(raw))
+    (out/'panic-transition.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
+    record('PANIC_TRANSITION_SAVED',**result)
+    return result
+
+
 class SnapshotSession(f.Session):
     def __init__(self,*args,budget_seconds=300,command_limit=1024,**kwargs):
         super().__init__(*args,**kwargs)
@@ -48,6 +66,10 @@ class SnapshotSession(f.Session):
         try:return super()._wait(predicate,label)
         finally:self.timeout=timeout
 
+    def watch_panic(self,out,record):
+        self.panic_output=out;self.panic_record=record;self.panic_transition=None
+        self.panic_save_attempted=False
+
     def command(self,verb):
         # Read-only requests remain on the same nonce/BUILD session.
         if verb not in ('ping','root-status','panic-status','panic-log') and not re.fullmatch(r'(threads|ports) [A-Za-z0-9_.-]{1,32}|read-memory [0-9a-fA-F]{8} [0-9a-fA-F]{1,8}',verb):
@@ -56,7 +78,17 @@ class SnapshotSession(f.Session):
         if self.clock()>=self.deadline or self.command_count>=self.command_limit:
             raise TimeoutError('Snapshot time/command budget exhausted; no retry')
         self.command_count+=1
-        return super().command(verb)
+        try:return super().command(verb)
+        except f.ProtocolError as error:
+            if str(error)=='ERR panic-readonly' and hasattr(self,'panic_output') and not self.panic_save_attempted:
+                self.panic_save_attempted=True
+                # No incomplete DATA can be interpreted as the following
+                # scalar reply. The exact refusal had no binary payload.
+                self.receiver.line.clear();self.receiver.drop=False
+                try:self.panic_transition=retain_current_panic(self,self.panic_output,self.panic_record)
+                except BaseException as saving_error:
+                    self.panic_record('PANIC_TRANSITION_STOP',error=str(saving_error),retry=False)
+            raise
 
 
 @contextmanager
@@ -66,6 +98,7 @@ def open_session(device,tag,out,record,budget_seconds=300):
         try:
             transport=f.WinTransport(device['port'],record)
             session=SnapshotSession(transport,tag,record,received,timeout=20,budget_seconds=budget_seconds)
+            session.watch_panic(out,record)
             session.handshake()
             yield session
         except BaseException:

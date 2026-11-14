@@ -73,7 +73,7 @@ ABORT_SYMBOLS.add('_i9100_media_signal_diag')
 ABORT_SYMBOLS.add('_i9100_media_kill_payload')
 ABORT_SYMBOLS.add('_i9100_media_audio_runtime')
 ABORT_SYMBOLS.add('_i9100_signal_exit')
-ABORT_SYMBOLS.update({'_i9100_fig_rpc_diag','_i9100_springboard_kill_payload'})
+ABORT_SYMBOLS.update({'_i9100_fig_rpc_diag','_i9100_springboard_kill_payload','_i9100_audio_wait_diag'})
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -88,6 +88,23 @@ LS_SYMBOLS.add('_i9100_ls_callback_diag')
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_audio_wait_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(1+8*100)*4);(out/'audio-waits.bin').write_bytes(data)
+        count=struct.unpack_from('<I',data)[0]
+        if count>8:raise ValueError('Unknown audio wait capacity')
+        fields='sequence pid task thread code mutex pc lr sp fp frames stack_error mutex_error version'.split()
+        rows=[]
+        for n in range(count):
+            w=struct.unpack_from('<100I',data,(1+n*100)*4)
+            if not w[0]:continue
+            r=dict(zip(fields,w[:14]))
+            if r['sequence']!=n+1 or r['version']!=1 or r['code'] not in (301,302) or r['frames']>8:
+                raise ValueError('Unknown audio wait schema')
+            r.update(registers=list(w[14:27]),cpsr=w[27],mutex_words=list(w[28:44]),runtime_words=list(w[44:60]),
+                frame_rows=[dict(fp=w[60+i*3],previous=w[61+i*3],lr=w[62+i*3]) for i in range(w[10])])
+            rows.append(r)
+        result['audio_waits']=dict(count=count,rows=rows,retention='first installed media task, callback stage 2')
     key='_i9100_fig_rpc_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+64*56)*4);(out/'fig-rpc.bin').write_bytes(data)
@@ -99,7 +116,7 @@ def capture_ui_observations(kernel, symbols, out):
             at=(1+n*56)*4;w=struct.unpack_from('<24I',data,at)
             if not w[0]:continue
             r=dict(zip(fields,w))
-            if r['sequence']!=n+1 or r['version']!=1 or r['stage'] not in range(1,7) or r['role'] not in (1,2) or r['id'] not in (9393,9493) or not 24<=r['captured']<=128 or r['captured']!=r['size'] or r['completion_seen'] not in (0,1) or r['receive_seen'] not in (0,1):
+            if r['sequence']!=n+1 or r['version']!=1 or r['stage'] not in range(1,7) or r['role'] not in (1,2) or r['id'] not in (9393,9493,2020,2120) or not 24<=r['captured']<=128 or r['captured']!=r['size'] or r['completion_seen'] not in (0,1) or r['receive_seen'] not in (0,1):
                 raise ValueError('Unknown Fig RPC row schema')
             raw=data[at+96:at+96+r['captured']];r['raw_hex']=raw.hex()
             r['header']=[hex(v) for v in struct.unpack_from('<6I',raw)]
