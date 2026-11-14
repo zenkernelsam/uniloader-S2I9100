@@ -78,6 +78,7 @@ ABORT_SYMBOLS.add('_i9100_syscall_restart_diag')
 ABORT_SYMBOLS.add('_i9100_previous_boot')
 ABORT_SYMBOLS.add('_i9100_media_threads')
 ABORT_SYMBOLS.add('_i9100_audio_owner_diag')
+ABORT_SYMBOLS.update({'_i9100_media_dispatch_diag','_i9100_fig_rpc_capacity'})
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -92,6 +93,17 @@ LS_SYMBOLS.add('_i9100_ls_callback_diag')
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_media_dispatch_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],320);(out/'media-dispatch.bin').write_bytes(data)
+        w=struct.unpack_from('<16I',data)
+        if w[0]:
+            if (w[0]!=1 or w[1]!=1 or w[9] not in (0,256) or
+                (w[9]==256 and (w[6] or w[8])) or (w[8]==0 and w[9]!=256)):
+                raise ValueError('Unknown media dispatch schema')
+            result['media_dispatch']=dict(version=w[1],pid=w[2],task=w[3],slide=w[4],slot=w[5],slot_error=w[6],
+                queue=w[7],queue_error=w[8],bytes=w[9],raw_hex=data[64:64+w[9]].hex(),
+                retention='first media task; original CMSessionCreate dispatch_sync queue')
     key='_i9100_audio_owner_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(4+8*64)*4);(out/'audio-owners.bin').write_bytes(data)
@@ -162,9 +174,11 @@ def capture_ui_observations(kernel, symbols, out):
         result['audio_waits']=dict(count=count,rows=rows,retention='first installed media task, callback stage 2')
     key='_i9100_fig_rpc_diag'
     if key in symbols.values:
-        data=kernel.read(symbols[key],(1+64*56)*4);(out/'fig-rpc.bin').write_bytes(data)
+        capacity=struct.unpack('<I',kernel.read(symbols['_i9100_fig_rpc_capacity'],4))[0] if '_i9100_fig_rpc_capacity' in symbols.values else 64
+        if capacity not in (64,128):raise ValueError('Unknown Fig RPC capacity')
+        data=kernel.read(symbols[key],(1+capacity*56)*4);(out/'fig-rpc.bin').write_bytes(data)
         count=struct.unpack_from('<I',data)[0]
-        if count>64:raise ValueError('Unknown Fig RPC history capacity')
+        if count>capacity:raise ValueError('Unknown Fig RPC history capacity')
         fields='sequence version stage pid thread task role id size captured bits option result address peer completion_seen completion_result receive_seen receive_result request_token sender_pid sender_euid reserved0 reserved1'.split()
         rows=[]
         for n in range(count):
@@ -177,7 +191,7 @@ def capture_ui_observations(kernel, symbols, out):
             r['header']=[hex(v) for v in struct.unpack_from('<6I',raw)]
             r['user_bytes_observed']=r['stage']==6 and r['result']==0
             rows.append(r)
-        result['fig_rpc']=dict(count=count,rows=rows,capacity=64,retention='first rows only')
+        result['fig_rpc']=dict(count=count,rows=rows,capacity=capacity,retention='first rows only')
     key='_i9100_springboard_kill_payload'
     if key in symbols.values:
         data=kernel.read(symbols[key],768);(out/'springboard-kill-payload.bin').write_bytes(data)

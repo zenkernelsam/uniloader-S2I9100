@@ -7,7 +7,7 @@ import importlib.util
 import io
 from pathlib import Path
 import struct
-p=argparse.ArgumentParser(description=__doc__);p.add_argument('--fixture',type=Path,required=True);p.add_argument('--owner-fixture',type=Path);a=p.parse_args()
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('--fixture',type=Path,required=True);p.add_argument('--owner-fixture',type=Path);p.add_argument('--dispatch-fixture',type=Path);a=p.parse_args()
 s=importlib.util.spec_from_file_location('peers_parser',Path(__file__).with_name('inspect-mdns.py'));m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 repo=Path(__file__).resolve().parents[2];out=repo/'out'/('media-threads-framing-'+datetime.now().strftime('%Y%m%d-%H%M%S'));out.mkdir()
 class Symbols:
@@ -38,6 +38,15 @@ if a.owner_fixture:
     for label,word,value in [('owner-version',1,2),('owner-cap',2,9),('owner-row-version',4+13,2),('owner-frames',4+10,7)]:
         changed=bytearray(owner_raw);struct.pack_into('<I',changed,word*4,value)
         try:decode(label,bytes(changed),owner_symbols,'audio_owners');raise AssertionError('Unknown owner layout accepted')
+        except ValueError:pass
+if a.dispatch_fixture:
+    dispatch_symbols=Symbols();dispatch_symbols.values={'_i9100_media_dispatch_diag':0x1000}
+    dispatch_raw=a.dispatch_fixture.read_bytes();q=decode('dispatch',dispatch_raw,dispatch_symbols,'media_dispatch')
+    assert q['pid']==33 and q['slot']==0x39594dd0 and q['queue']==0x25000 and q['bytes']==256
+    assert b'com.apple.coremedia.fixture' in bytes.fromhex(q['raw_hex'])
+    for label,word,value in [('dispatch-version',1,2),('dispatch-bytes',9,257),('dispatch-error',8,14)]:
+        changed=bytearray(dispatch_raw);struct.pack_into('<I',changed,word*4,value)
+        try:decode(label,bytes(changed),dispatch_symbols,'media_dispatch');raise AssertionError('Unknown dispatch layout accepted')
         except ValueError:pass
 print('PASS production peer identities, saved registers/handler args/owner/frame layout; unknown schemas rejected')
 print('EVIDENCE',out)
