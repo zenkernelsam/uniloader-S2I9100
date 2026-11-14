@@ -10,8 +10,8 @@ def main():
     p.add_argument('--size',type=lambda s:int(s,16),required=True)
     p.add_argument('--output',type=Path,required=True)
     a=p.parse_args();root=Path(__file__).resolve().parents[3]
-    if not a.image.resolve().is_relative_to(root/'assets') or not a.output.resolve().is_relative_to(root/'research'):
-        p.error('Read the existing asset and write research only')
+    if not (a.image.resolve().is_relative_to(root/'assets') or a.image.resolve().is_relative_to(root/'research')) or not a.output.resolve().is_relative_to(root/'research'):
+        p.error('Read an existing project asset/reference and write research only')
     b=a.image.read_bytes();pos=28;segments=[];sections=[];sym=dy=None
     if struct.unpack_from('<I',b)[0]!=0xfeedface:p.error('Expected ARM32 Mach-O')
     for _ in range(struct.unpack_from('<I',b,16)[0]):
