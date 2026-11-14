@@ -84,6 +84,7 @@ ABORT_SYMBOLS.add('_i9100_early_process_diag')
 ABORT_SYMBOLS.add('_i9100_early_exit_diag')
 ABORT_SYMBOLS.add('_i9100_power_policy')
 ABORT_SYMBOLS.add('_i9100_pmap_empty_unwire')
+ABORT_SYMBOLS.add('_i9100_launchd_listener_diag')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -98,6 +99,12 @@ LS_SYMBOLS.add('_i9100_ls_callback_diag')
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_launchd_listener_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],64);(out/'launchd-listener.bin').write_bytes(data)
+        w=struct.unpack('<16I',data)
+        if w[0]!=1 or w[1]>3:raise ValueError('Unknown launchd listener guard state')
+        result['launchd_listener_guard']=dict(zip(('version','state','pid','task','header','site','trampoline','vm_result','copy_error','installed','restore_result','stage','uuid_match','cleanup_result','reserved','idversion'),w))
     key='_i9100_power_policy'
     if key in symbols.values:
         data=kernel.read(symbols[key],40);(out/'power-policy.bin').write_bytes(data)
