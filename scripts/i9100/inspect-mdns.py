@@ -94,6 +94,7 @@ ABORT_SYMBOLS.add('_i9100_ui_sounds_unavailable_diag')
 ABORT_SYMBOLS.update({'_i9100_slab_publication_diag','_i9100_slab_publication_rows','_i9100_slab_failure_mapping_diag'})
 ABORT_SYMBOLS.update({'_pmap_asid_ncpus','_pmap_asid_disabled','_processor_avail_count','_real_ncpus'})
 ABORT_SYMBOLS.update({'_i9100_hid_fixed_cadence_diag','_i9100_touch_sender_identity'})
+ABORT_SYMBOLS.update({'_i9100_ui_execution_diag','_i9100_ui_execution_rows'})
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -142,9 +143,52 @@ def decode_slab_publications(diag, data, failure):
                 retention='first 64 immutable publications; PPN equality does not establish mapping lifetime')
 
 
+def decode_ui_execution(diag,data):
+    d=struct.unpack('<32I',diag)
+    if d[0]!=1 or d[1]>3 or d[6]>8 or d[10]>d[6] or d[11]>4:raise ValueError('Unknown Setup UI probe schema')
+    probe=dict(version=d[0],state=d[1],pid=d[2],task=d[3],header=d[4],code=d[5],attempts=d[6],vm_result=d[7],
+               copy_error=d[8],restore_error=d[9],installed=d[10],stage=d[11],idversion=d[12],
+               handler_count=d[16],touch_phase_count=d[17],window_send_count=d[18],sequence=d[19],cache_slide=d[31])
+    seq,version,capacity,stride=struct.unpack_from('<4I',data)
+    if len(data)!=(4+32*96)*4 or (seq and (version,capacity,stride)!=(1,32,96)):raise ValueError('Unknown UI execution ring')
+    rows=[]
+    for n in range(32):
+        r=struct.unpack_from('<96I',data,(4+n*96)*4)
+        if not r[0] or not max(1,seq-31)<=r[0]<=seq:continue
+        if not 1<=r[4]<=3 or r[13]>192 or r[15]>128:raise ValueError('UI row outside bounds')
+        current=(r[1],r[2],r[3])==(d[2],d[12],d[3])
+        if current and r[5]!=d[5]+(r[4]-1)*64+22:raise ValueError('UI row has no matching native execution site')
+        actor=struct.pack('<48I',*r[16:64]);event=struct.pack('<32I',*r[64:96])
+        row=dict(sequence=r[0],pid=r[1],idversion=r[2],task=r[3],phase=r[4],pc=r[5],sp=r[6],stack_error=r[7],
+                 arguments=list(r[8:12]),actor_error=r[12],actor_bytes=r[13],event_error=r[14],event_bytes=r[15],current_installation=current)
+        row['actor_hex']=actor[:r[13]].hex();row['event_hex']=event[:r[15]].hex()
+        if not r[12]:
+            if r[4]==1 and r[13]==116:
+                flags=int.from_bytes(actor[88:101],'little')
+                row['application']=dict(block_interaction=(flags>>17)&15,launch_received=(flags>>24)&1,suspended=(flags>>8)&1,
+                    events_only=(flags>>9)&1,classic=(flags>>65)&1,touch_map=struct.unpack_from('<I',actor,8)[0])
+            if r[4]==2 and r[13]==80:
+                row['touch']=dict(next_phase=r[10],previous_phase=struct.unpack_from('<I',actor,16)[0],tap_count=struct.unpack_from('<I',actor,24)[0],
+                    window=struct.unpack_from('<I',actor,28)[0],view=struct.unpack_from('<I',actor,32)[0],gesture_view=struct.unpack_from('<I',actor,36)[0],
+                    location=list(struct.unpack_from('<2f',actor,52)),previous_location=list(struct.unpack_from('<2f',actor,60)),
+                    path_index=actor[68],path_identity=actor[69],flags=actor[76],eaten=actor[77])
+            if r[4]==3 and r[13]==192:
+                row['window']=dict(last_down_view=struct.unpack_from('<I',actor,100)[0],touch_data=struct.unpack_from('<I',actor,116)[0],
+                    screen=struct.unpack_from('<I',actor,132)[0],root_controller=struct.unpack_from('<I',actor,144)[0])
+        if r[4]==1 and not r[14] and r[15]==128:
+            row['gs_event']=dict(type=struct.unpack_from('<I',event,8)[0],location=list(struct.unpack_from('<2f',event,16)),
+                window_location=list(struct.unpack_from('<2f',event,24)),hand_type=struct.unpack_from('<I',event,60)[0])
+        rows.append(row)
+    return dict(diagnostic=probe,sequence=seq,rows=sorted(rows,key=lambda x:x['sequence']),scope='original Setup UIKit execution, no UI rewrite')
+
+
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    if '_i9100_ui_execution_diag' in symbols.values and '_i9100_ui_execution_rows' in symbols.values:
+        raw=kernel.read(symbols['_i9100_ui_execution_diag'],128);(out/'ui-execution-diag.bin').write_bytes(raw)
+        rows=kernel.read(symbols['_i9100_ui_execution_rows'],(4+32*96)*4);(out/'ui-execution-rows.bin').write_bytes(rows)
+        result['ui_execution']=decode_ui_execution(raw,rows)
     mmu={}
     for key in ('_pmap_asid_ncpus','_pmap_asid_disabled','_processor_avail_count','_real_ncpus'):
         if key in symbols.values:mmu[key.lstrip('_')]=kernel.u32(symbols[key])
@@ -1083,6 +1127,7 @@ def capture_ui_observations(kernel, symbols, out):
                 if (row['pid'],row['task'])!=identity:raise ValueError(key+' includes another target')
     (out/'ui-observations.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     preview=dict(result)
+    if 'ui_execution' in result:preview['ui_execution']=dict(result['ui_execution'],rows=result['ui_execution']['rows'][-5:])
     if 'slab_publication' in result:
         entry=result['slab_publication']
         preview['slab_publication']=dict(entry,rows=entry['rows'][-6:])

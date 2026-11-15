@@ -44,6 +44,7 @@ def main():
     parser.add_argument('--hid-execution-trace',action='store_true',help='Observe actual Backboard callback/digitizer/GS execution')
     parser.add_argument('--hid-fixed-cadence',action='store_true',help='Restore the no-rate-control capability only for the verified S2 touch sender')
     parser.add_argument('--slab-publication-trace',action='store_true',help='Diagnostic: retain the original iOS6 slab header before list publication')
+    parser.add_argument('--ui-execution-trace',action='store_true',help='Observe actual original Setup UIKit handlers without changing their results')
     parser.add_argument('--system-sounds-unavailable',action='store_true',help='Development: only SpringBoard system-sound status APIs return -1500 and playback is muted')
     parser.add_argument('--xpc-diag', action='store_true', help='Retain XPC boundary metadata in kernel RAM')
     parser.add_argument('--reboot-download-fallback', action='store_true',
@@ -75,6 +76,8 @@ def main():
         parser.error('--hid-fixed-cadence requires --hid-execution-trace')
     if args.slab_publication_trace and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--slab-publication-trace requires --control, --xpc-diag and --ios6-hid')
+    if args.ui_execution_trace and (not args.control or not args.xpc_diag or not args.ios6_hid):
+        parser.error('--ui-execution-trace requires --control, --xpc-diag and --ios6-hid')
     if args.system_sounds_unavailable and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--system-sounds-unavailable requires --control, --xpc-diag and --ios6-hid')
     if args.ls_ui_timeout and (not args.control or not args.xpc_diag):
@@ -135,6 +138,8 @@ def main():
         raise RuntimeError('Kernel lacks the explicit fixed-cadence capability restoration')
     if args.slab_publication_trace and b'i9100slabtrace\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit slab publication diagnostic')
+    if args.ui_execution_trace and b'i9100uitrace\0' not in raw_data:
+        raise RuntimeError('Kernel lacks the explicit Setup UIKit execution diagnostic')
     if args.system_sounds_unavailable and b'i9100nosound\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit system-sound unavailability capability')
     if args.reboot_download_fallback and b'i9100rebootdownload\0' not in raw_data:
@@ -172,6 +177,7 @@ def main():
         *(['--hid-execution-trace'] if args.hid_execution_trace else []),
         *(['--hid-fixed-cadence'] if args.hid_fixed_cadence else []),
         *(['--slab-publication-trace'] if args.slab_publication_trace else []),
+        *(['--ui-execution-trace'] if args.ui_execution_trace else []),
         *(['--system-sounds-unavailable'] if args.system_sounds_unavailable else []),
         *(['--xpc-diag'] if args.xpc_diag else []),
         *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
@@ -224,6 +230,7 @@ def main():
     assert (b'i9100hidtrace=1' in data) == args.hid_execution_trace
     assert (b'i9100hidcadence=1' in data) == args.hid_fixed_cadence
     assert (b'i9100slabtrace=1' in data) == args.slab_publication_trace
+    assert (b'i9100uitrace=1' in data) == args.ui_execution_trace
     assert (b'i9100nosound=1' in data) == args.system_sounds_unavailable
     assert 'S2I9100-OS6'.encode('utf-16le') in data
     symbols = subprocess.check_output(['arm-none-eabi-nm','-n',str(build/'uniLoader.o')],text=True)
@@ -265,6 +272,7 @@ def main():
         'hid_execution_trace': args.hid_execution_trace,
         'hid_fixed_cadence': args.hid_fixed_cadence,
         'slab_publication_trace': args.slab_publication_trace,
+        'ui_execution_trace': args.ui_execution_trace,
         'system_sounds_unavailable': args.system_sounds_unavailable,
         'xpc_diag': args.xpc_diag,
         'reboot_download_fallback': args.reboot_download_fallback,

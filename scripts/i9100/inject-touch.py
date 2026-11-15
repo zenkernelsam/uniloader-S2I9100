@@ -40,11 +40,13 @@ def main():
                    help='Bounded follow-up duration; 80ms can retain the first Down in the execution ring')
     p.add_argument('--wait-language',action='store_true',
                    help='Before the follow-up, observe the actual language-list card in bounded scanout samples')
+    p.add_argument('--ui-layout',type=Path,help='Read Setup application state on this same awake handle before the follow-up')
     p.add_argument('--trace',action='store_true',help='Retain current HID/GS execution immediately after the gesture on the same handle')
     a=p.parse_args()
     if a.wake_first and a.home:p.error('--wake-first requires a touch gesture')
     if a.follow_tap and not a.swipe:p.error('--follow-tap requires --swipe')
     if a.wait_language and not a.follow_tap:p.error('--wait-language requires --follow-tap')
+    if a.ui_layout and not a.wait_language:p.error('--ui-layout requires --wait-language')
     points=([0,0,0,0] if a.home else a.swipe if a.swipe else a.tap+a.tap)
     ms=a.ms if a.ms is not None else (200 if a.home else 400 if a.swipe else 100)
     command=('hid-home '+format(ms,'x') if a.home else 'hid-swipe '+' '.join(format(n,'x') for n in [*points,ms]))
@@ -98,6 +100,10 @@ def main():
                         raw=kernel.read(symbols['_i9100_hid_execution_diag'],96);diag=struct.unpack('<24I',raw)
                         step['hid_counts']=dict(callback=diag[16],digitizer=diag[17],gs=diag[18],sequence=diag[19])
                     completed.append(step)
+                    if a.ui_layout and step_command!=command and not home:
+                        ui=module('input_ui_state','inspect-ui-app.py');target=out/'after-tap-ui';target.mkdir()
+                        result_ui=ui.capture(session,kernel,symbols,'Setup',json.loads(a.ui_layout.read_text()),target)
+                        step['setup_state_after']=result_ui['flags']
                     if a.wake_first and home:time.sleep(.5)
                     if a.follow_tap and not home and step_command==command:
                         if a.wait_language:
@@ -112,6 +118,10 @@ def main():
                                 o.require(time.monotonic()<deadline,'Language card not observed; follow-up not sent')
                                 time.sleep(.2)
                             (out/'language-ready.json').write_text(json.dumps(dict(samples=samples,observed=True),indent=2)+'\n')
+                            if a.ui_layout:
+                                ui=module('input_ui_state','inspect-ui-app.py');target=out/'before-tap-ui';target.mkdir()
+                                result_ui=ui.capture(session,kernel,symbols,'Setup',json.loads(a.ui_layout.read_text()),target)
+                                step['setup_state_before']=result_ui['flags']
                         else:time.sleep(.5)
                 result=dict(tag=symbols.tag,device=device,command=command,sequence=state[2],
                     enqueued=state[8],phase=state[1],queue_completed=True,ui_delivery_verified=False,samples=samples,steps=completed,wake_first=a.wake_first)
@@ -121,6 +131,7 @@ def main():
                     names.update({'_i9100_slab_publication_diag','_i9100_slab_publication_rows','_i9100_slab_failure_mapping_diag',
                                   '_i9100_backboard_exit','_i9100_backboard_abort_observation','_i9100_abort_frames','_i9100_ios6_slab_payload'})
                     names.update({'_i9100_hid_fixed_cadence_diag','_i9100_touch_sender_identity'})
+                    names.update({'_i9100_ui_execution_diag','_i9100_ui_execution_rows'})
                     target=out/'after-input';target.mkdir()
                     result['observations']=observed.capture_ui_observations(kernel,observed.ObservationSymbols(symbols,names),target)
                 (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')

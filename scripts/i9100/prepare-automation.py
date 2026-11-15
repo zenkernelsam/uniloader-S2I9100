@@ -20,6 +20,7 @@ parser.add_argument('--quiet-charge-feedback',action='store_true')
 parser.add_argument('--hid-execution-trace',action='store_true')
 parser.add_argument('--hid-fixed-cadence',action='store_true')
 parser.add_argument('--slab-publication-trace',action='store_true')
+parser.add_argument('--ui-execution-trace',action='store_true')
 parser.add_argument('--system-sounds-unavailable',action='store_true')
 parser.add_argument('--xpc-diag', action='store_true')
 parser.add_argument('--reboot-download-fallback', action='store_true')
@@ -47,6 +48,8 @@ if args.hid_fixed_cadence and not args.hid_execution_trace:
     parser.error('--hid-fixed-cadence requires --hid-execution-trace')
 if args.slab_publication_trace and (not args.xpc_diag or not args.ios6_hid):
     parser.error('--slab-publication-trace requires --xpc-diag and --ios6-hid')
+if args.ui_execution_trace and (not args.xpc_diag or not args.ios6_hid):
+    parser.error('--ui-execution-trace requires --xpc-diag and --ios6-hid')
 if args.system_sounds_unavailable and (not args.xpc_diag or not args.ios6_hid):
     parser.error('--system-sounds-unavailable requires --xpc-diag and --ios6-hid')
 if args.input_test and not args.ios6_hid:
@@ -79,6 +82,7 @@ subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--ke
                 *(['--hid-execution-trace'] if args.hid_execution_trace else []),
                 *(['--hid-fixed-cadence'] if args.hid_fixed_cadence else []),
                 *(['--slab-publication-trace'] if args.slab_publication_trace else []),
+                *(['--ui-execution-trace'] if args.ui_execution_trace else []),
                 *(['--system-sounds-unavailable'] if args.system_sounds_unavailable else []),
                 *(['--xpc-diag'] if args.xpc_diag else []),
                 *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
