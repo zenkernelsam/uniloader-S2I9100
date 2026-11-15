@@ -20,10 +20,12 @@ def main():
     p.add_argument('--max-pages',type=int,choices=range(1,1025),default=512)
     p.add_argument('--start',type=lambda x:int(x,16),default=0x1000)
     p.add_argument('--end',type=lambda x:int(x,16),default=0x4000000)
+    p.add_argument('--direct-pages',action='store_true',help='Read only already mapped pages in the bounded requested interval, without walking a changing VM list')
     a=p.parse_args();f=module('callback_forensic','forensic-session.py')
     if not 4096<=a.start<a.end<=0x2f000000 or (a.start|a.end)&4095:
         p.error('Use a bounded page-aligned heap interval below user stacks')
     m=module('callback_memory','live-memory.py');o=module('callback_odin','odin-loop.py')
+    boot=module('callback_boot','capture-boot-snapshot.py')
     symbols=m.Symbols(a.kernel);saved=json.loads(a.context.read_text())
     o.require(saved['tag']==symbols.tag,'Saved context BUILD differs')
     ctx=next(x for x in saved['processes'] if x['process']=='backboardd')
@@ -39,10 +41,13 @@ def main():
         with (out/'events.jsonl').open('x') as events,(out/'received.bin').open('xb') as capture:
             def record(phase,**fields):
                 events.write(json.dumps(dict(time=datetime.now(timezone.utc).isoformat(),phase=phase,**fields))+'\n');events.flush()
-                if phase in ('OPEN_OK','DTR_OK','PROGRESS','DONE','STOP'):print(phase,fields,flush=True)
+                if phase in ('OPEN_OK','DTR_OK','PROGRESS','DONE','STOP','CLOSED'):print(phase,fields,flush=True)
             try:
-                transport=f.WinTransport(dev['port'],record);s=f.Session(transport,symbols.tag,record,capture,timeout=20)
-                s.handshake();k=m.Kernel(s,symbols)
+                transport=f.WinTransport(dev['port'],record);s=boot.SnapshotSession(transport,symbols.tag,record,capture,timeout=20,budget_seconds=600)
+                s.watch_panic(out,record);s.handshake();k=m.Kernel(s,symbols)
+                answer,_=s.command('panic-status')
+                if answer!='OK panic=0 seconds=00000000':
+                    boot.retain_current_panic(s,out,record);raise RuntimeError('Active panic retained; no page scan')
                 def identity(raw):
                     g=re.search(rb'proc\s+(\d+)\s+backboardd.*?task=(0x[0-9a-f]+)',raw)
                     o.require(g is not None,'Backboard absent')
@@ -62,19 +67,20 @@ def main():
                             (out/f'kernel-page-{page:08x}.bin').write_bytes(cache[page])
                         result.extend(cache[page][va&4095:(va&4095)+n]);va+=n;size-=n
                     return bytes(result)
-                header=cached(mapva,48);node=u32(header,16);sentinel=mapva+12
                 ranges=[];seen=set();truncated=False
-                for _ in range(1024):
-                    if node==sentinel:break
-                    o.require(node and node not in seen and 0x80000000<=node<0xffff0000 and not node&3,'VM list changed')
-                    seen.add(node);entry=cached(node,48)
-                    start,end=u32(entry,8),u32(entry,12);bits=u32(entry,40)
-                    # The ARM map also lists commpage aliases immediately
-                    # above 0x40000000. They are valid entries, but never scanned.
-                    o.require(start<end<=0xffffffff,'Invalid VM entry')
-                    ranges.append(dict(node=hex(node),start=start,end=end,protection=(bits>>7)&7,submap=bool(bits&2)))
-                    node=u32(entry,4)
-                else:truncated=True
+                if a.direct_pages:
+                    ranges=[dict(start=a.start,end=a.end,protection=3,submap=False,source='requested bounded interval; mapped-page read only')]
+                else:
+                    header=cached(mapva,48);node=u32(header,16);sentinel=mapva+12
+                    for _ in range(1024):
+                        if node==sentinel:break
+                        o.require(node and node not in seen and 0x80000000<=node<0xffff0000 and not node&3,'VM list changed')
+                        seen.add(node);entry=cached(node,48)
+                        start,end=u32(entry,8),u32(entry,12);bits=u32(entry,40)
+                        o.require(start<end<=0xffffffff,'Invalid VM entry')
+                        ranges.append(dict(node=hex(node),start=start,end=end,protection=(bits>>7)&7,submap=bool(bits&2)))
+                        node=u32(entry,4)
+                    else:truncated=True
                 (out/'ranges.json').write_text(json.dumps(ranges,indent=2)+'\n')
                 matches=[];scanned=0;missing=0;pages={};needle=struct.pack('<I',expected)
                 # Ordinary heap/plugin allocations only; image text, dyld
@@ -108,13 +114,16 @@ def main():
                     if scanned>=a.max_pages:truncated=True;break
                 _,after=s.command('ports backboardd');(out/'after-ports.txt').write_bytes(after)
                 o.require(identity(after)==(pid,task),'Backboard replaced during scan')
+                o.require(k.u32(task+0x18)==mapva and k.u32(mapva+0x2c)==pmapva,'Backboard map replaced during scan')
                 result=dict(tag=symbols.tag,pid=pid,task=hex(task),slide=hex(slide),vtable=hex(expected),
-                    vm_entries=len(ranges),pages=scanned,unmaterialized=missing,capped=truncated,matches=matches,
+                    vm_entries=None if a.direct_pages else len(ranges),pages=scanned,unmaterialized=missing,capped=truncated,matches=matches,
+                    scan_method='mapped interval' if a.direct_pages else 'VM list',
                     interval=[hex(a.start),hex(a.end)],
                     snapshot='non-atomic read-only scan; no target execution or memory writes')
                 (out/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result,indent=2),flush=True)
-                record('DONE')
             except BaseException as e:record('STOP',error=str(e));raise
             finally:
                 if transport is not None:transport.close()
+                record('CLOSED')
+            record('DONE')
 if __name__=='__main__':main()
