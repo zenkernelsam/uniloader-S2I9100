@@ -15,6 +15,7 @@
     "iokit/i9100_pl330.o",
     "iokit/i9100_i2s.o",
     "iokit/i9100_mc1n2.o",
+    "iokit/i9100_pcm_stream.o",
     "iokit/i9100_sdio.o",
     "iokit/i9100_bcm4330.o",
     "iokit/i9100_bluetooth_h4.o",
@@ -33,7 +34,7 @@
     "iokit/IOS7I9100EMMC.cpo",
     "iokit/IOS7I9100GPT.cpo"
   ],
-  "patch_sha256": "959913b60034328fdb6d7ba5da86721d27c9c2ceb6380cebfbf0eb8ff126383c",
+  "patch_sha256": "ebb67f7c5b80f73ae49959c5b4791d59da4b7924d25680d1c90af80f81af5655",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first"
