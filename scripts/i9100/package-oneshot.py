@@ -41,6 +41,7 @@ def main():
     parser.add_argument('--audio-property-lock',action='store_true',help='Private mediaserverd correction for the witnessed property callback lock inversion')
     parser.add_argument('--launchd-listener-guard',action='store_true',help='Reject a NULL listener-port job using the newer launchd error return')
     parser.add_argument('--quiet-charge-feedback',action='store_true',help='Diagnostic: silence only SpringBoard charging feedback 1106')
+    parser.add_argument('--hid-execution-trace',action='store_true',help='Observe actual Backboard callback/digitizer/GS execution')
     parser.add_argument('--xpc-diag', action='store_true', help='Retain XPC boundary metadata in kernel RAM')
     parser.add_argument('--reboot-download-fallback', action='store_true',
                         help='Recover normal iOS reboot requests into Download after filesystem shutdown')
@@ -65,6 +66,8 @@ def main():
         parser.error('--launchd-listener-guard requires --control, --xpc-diag and --ios6-hid')
     if args.quiet_charge_feedback and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--quiet-charge-feedback requires --control, --xpc-diag and --ios6-hid')
+    if args.hid_execution_trace and (not args.control or not args.xpc_diag or not args.ios6_hid):
+        parser.error('--hid-execution-trace requires --control, --xpc-diag and --ios6-hid')
     if args.ls_ui_timeout and (not args.control or not args.xpc_diag):
         parser.error('--ls-ui-timeout requires --control and --xpc-diag')
     if args.ls_bootstrap and not args.control:
@@ -117,6 +120,8 @@ def main():
         raise RuntimeError('Kernel lacks the explicit launchd listener guard capability')
     if args.quiet_charge_feedback and b'i9100quietcharge\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit charging feedback diagnostic')
+    if args.hid_execution_trace and b'i9100hidtrace\0' not in raw_data:
+        raise RuntimeError('Kernel lacks the explicit HID execution diagnostic')
     if args.reboot_download_fallback and b'i9100rebootdownload\0' not in raw_data:
         raise RuntimeError('Kernel lacks the i9100 PE reboot recovery capability')
     if args.tcc_development and b'i9100tccdev\0' not in raw_data:
@@ -149,6 +154,7 @@ def main():
         *(['--audio-property-lock'] if args.audio_property_lock else []),
         *(['--launchd-listener-guard'] if args.launchd_listener_guard else []),
         *(['--quiet-charge-feedback'] if args.quiet_charge_feedback else []),
+        *(['--hid-execution-trace'] if args.hid_execution_trace else []),
         *(['--xpc-diag'] if args.xpc_diag else []),
         *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
         *(['--tcc-development'] if args.tcc_development else []),
@@ -197,6 +203,7 @@ def main():
     assert (b'i9100audiolock=1' in data) == args.audio_property_lock
     assert (b'i9100launchdguard=1' in data) == args.launchd_listener_guard
     assert (b'i9100quietcharge=1' in data) == args.quiet_charge_feedback
+    assert (b'i9100hidtrace=1' in data) == args.hid_execution_trace
     assert 'S2I9100-OS6'.encode('utf-16le') in data
     symbols = subprocess.check_output(['arm-none-eabi-nm','-n',str(build/'uniLoader.o')],text=True)
     (output/'loader-symbols.txt').write_text(symbols)
@@ -234,6 +241,7 @@ def main():
         'audio_property_lock': args.audio_property_lock,
         'launchd_listener_guard': args.launchd_listener_guard,
         'quiet_charge_feedback': args.quiet_charge_feedback,
+        'hid_execution_trace': args.hid_execution_trace,
         'xpc_diag': args.xpc_diag,
         'reboot_download_fallback': args.reboot_download_fallback,
         'tcc_development_unconfined': args.tcc_development,

@@ -41,6 +41,7 @@ def main():
                     names.update(key for key in symbols.values if key.endswith('leo_graphics_state'))
                     names.add('_i9100_audio_owner_stack')
                     names.add('_i9100_quiet_charge_diag')
+                    names.update({'_i9100_hid_execution_diag','_i9100_hid_execution_rows'})
                     if a.rpc:names.update({'_i9100_fig_rpc_diag','_i9100_fig_rpc_capacity'})
                     names.update({'_i9100_power_'+n for n in ('valid','percent','mv','connected','charging','temp','reason','revision_value')})
                     selected=boot.observations.ObservationSymbols(symbols,names)

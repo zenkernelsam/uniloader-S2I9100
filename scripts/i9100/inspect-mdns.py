@@ -89,6 +89,7 @@ ABORT_SYMBOLS.add('_i9100_pmap_empty_unwire')
 ABORT_SYMBOLS.add('_i9100_launchd_listener_diag')
 ABORT_SYMBOLS.add('_i9100_audio_observation_target')
 ABORT_SYMBOLS.add('_i9100_quiet_charge_diag')
+ABORT_SYMBOLS.update({'_i9100_hid_execution_diag','_i9100_hid_execution_rows'})
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -112,6 +113,44 @@ def capture_ui_observations(kernel, symbols, out):
                         not 4096<=w[5]<=0x3fffffc0 or not w[6] or not 2<=w[7]<=4):
             raise ValueError('Invalid executed-callback target')
         result['audio_observation_target']=dict(zip(('version','state','pid','task','slide','runtime_address','calls_at_selection','stage_at_selection'),w))
+    key='_i9100_hid_execution_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],96);(out/'hid-execution-diag.bin').write_bytes(data)
+        w=struct.unpack('<24I',data)
+        if w[0]!=1 or w[1]>3 or w[6]>8 or w[10]>w[6] or w[11]>4:raise ValueError('Unknown HID execution probe schema')
+        result['hid_execution']=dict(version=w[0],state=w[1],pid=w[2],task=w[3],header=w[4],code=w[5],attempts=w[6],
+            vm_result=w[7],copy_error=w[8],restore_result=w[9],installed=w[10],stage=w[11],idversion=w[12],
+            callback_count=w[16],digitizer_count=w[17],gs_count=w[18],sequence=w[19])
+    key='_i9100_hid_execution_rows'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],(4+32*64)*4);(out/'hid-execution-rows.bin').write_bytes(data)
+        sequence,version,capacity,stride=struct.unpack_from('<4I',data)
+        rows=[]
+        if sequence:
+            if (version,capacity,stride)!=(1,32,64):raise ValueError('Unknown HID execution ring schema')
+            for n in range(32):
+                r=struct.unpack_from('<64I',data,(4+n*64)*4)
+                if not r[0] or not max(1,sequence-31)<=r[0]<=sequence:continue
+                if r[4] not in (1,2,3) or r[14]>136:raise ValueError('Invalid HID execution row')
+                row=dict(sequence=r[0],pid=r[1],idversion=r[2],task=r[3],phase=r[4],pc=r[5],sp=r[6],stack_error=r[7],
+                    arguments=list(r[8:12]),pointer=r[12],data_error=r[13],bytes=r[14],apsr=r[15],registers=list(r[50:64]))
+                raw=data[(4+n*64+16)*4:(4+n*64+16)*4+r[14]];row['raw_hex']=raw.hex()
+                if not r[13] and r[4] in (1,2):
+                    if r[14]<40:raise ValueError('HID event prefix missing')
+                    row['event']=dict(children_pointer=struct.unpack_from('<I',raw,24)[0],size=struct.unpack_from('<I',raw,32)[0],type=struct.unpack_from('<I',raw,36)[0])
+                    if r[14]==136 and row['event']['type']==11:
+                        row['event'].update(options=struct.unpack_from('<I',raw,48)[0],sender=struct.unpack_from('<Q',raw,56)[0],
+                            x=struct.unpack_from('<i',raw,64)[0],y=struct.unpack_from('<i',raw,68)[0],transducer=struct.unpack_from('<I',raw,80)[0],event_mask=struct.unpack_from('<I',raw,88)[0])
+                if not r[13] and r[4]==3:
+                    if r[14]!=116:raise ValueError('Unknown GS record size')
+                    row['gs']=dict(type=struct.unpack_from('<I',raw)[0],window_port=r[9],system_app=r[10])
+                probe=result.get('hid_execution',{})
+                row['current_installation']=(r[1],r[2],r[3])==(probe.get('pid'),probe.get('idversion'),probe.get('task'))
+                if row['current_installation'] and r[5]!=probe['code']+(r[4]-1)*64+22:
+                    raise ValueError('HID row has no matching execution site')
+                rows.append(row)
+            rows.sort(key=lambda r:r['sequence'])
+        result['hid_execution_rows']=dict(sequence=sequence,rows=rows,sequential=True)
     key='_i9100_quiet_charge_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],64);(out/'quiet-charge.bin').write_bytes(data)
