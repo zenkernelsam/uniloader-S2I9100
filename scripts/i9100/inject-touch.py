@@ -86,6 +86,8 @@ def main():
                 if a.trace:
                     observed=module('input_observed','inspect-mdns.py')
                     names={'_i9100_hid_execution_diag','_i9100_hid_execution_rows','_i9100_touch_observation','_i9100_input_test','_i9100_process_exit','_i9100_graphics_seq','_i9100_ui_sounds_unavailable_diag'}
+                    names.update({'_i9100_slab_publication_diag','_i9100_slab_publication_rows','_i9100_slab_failure_mapping_diag',
+                                  '_i9100_backboard_exit','_i9100_backboard_abort_observation','_i9100_abort_frames','_i9100_ios6_slab_payload'})
                     target=out/'after-input';target.mkdir()
                     result['observations']=observed.capture_ui_observations(kernel,observed.ObservationSymbols(symbols,names),target)
                 (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
