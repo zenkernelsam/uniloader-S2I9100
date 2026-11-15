@@ -41,12 +41,14 @@ def main():
     p.add_argument('--wait-language',action='store_true',
                    help='Before the follow-up, observe the actual language-list card in bounded scanout samples')
     p.add_argument('--ui-layout',type=Path,help='Read Setup application state on this same awake handle before the follow-up')
+    p.add_argument('--require-ui-trace',action='store_true',help='Before the follow-up require the actual Setup observer installation')
     p.add_argument('--trace',action='store_true',help='Retain current HID/GS execution immediately after the gesture on the same handle')
     a=p.parse_args()
     if a.wake_first and a.home:p.error('--wake-first requires a touch gesture')
     if a.follow_tap and not a.swipe:p.error('--follow-tap requires --swipe')
     if a.wait_language and not a.follow_tap:p.error('--wait-language requires --follow-tap')
     if a.ui_layout and not a.wait_language:p.error('--ui-layout requires --wait-language')
+    if a.require_ui_trace and not a.wait_language:p.error('--require-ui-trace requires --wait-language')
     points=([0,0,0,0] if a.home else a.swipe if a.swipe else a.tap+a.tap)
     ms=a.ms if a.ms is not None else (200 if a.home else 400 if a.swipe else 100)
     command=('hid-home '+format(ms,'x') if a.home else 'hid-swipe '+' '.join(format(n,'x') for n in [*points,ms]))
@@ -118,6 +120,10 @@ def main():
                                 o.require(time.monotonic()<deadline,'Language card not observed; follow-up not sent')
                                 time.sleep(.2)
                             (out/'language-ready.json').write_text(json.dumps(dict(samples=samples,observed=True),indent=2)+'\n')
+                            if a.require_ui_trace:
+                                u=struct.unpack('<32I',kernel.read(symbols['_i9100_ui_execution_diag'],128))
+                                o.require(u[0]==1 and u[1]==2 and u[10]>0 and u[11]==4,'Setup observer not installed; follow-up not sent')
+                                (out/'ui-preflight.bin').write_bytes(struct.pack('<32I',*u))
                             if a.ui_layout:
                                 ui=module('input_ui_state','inspect-ui-app.py');target=out/'before-tap-ui';target.mkdir()
                                 result_ui=ui.capture(session,kernel,symbols,'Setup',json.loads(a.ui_layout.read_text()),target)
