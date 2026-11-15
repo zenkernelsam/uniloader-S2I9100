@@ -18,7 +18,7 @@ def main():
     a=p.parse_args();out=b.o.confined(a.output,b.f.REPO/'out');b.o.require(not out.exists(),'Fresh evidence required')
     symbols=b.m.Symbols(b.o.confined(a.kernel,b.f.REPO/'out'))
     names={'_i9100_hid_execution_diag','_i9100_hid_execution_rows','_i9100_touch_observation','_i9100_input_test',
-           '_i9100_graphics_seq','_i9100_process_exit','_i9100_backboard_exit','_i9100_quiet_charge_diag'}
+           '_i9100_graphics_seq','_i9100_process_exit','_i9100_backboard_exit','_i9100_quiet_charge_diag','_i9100_ui_sounds_unavailable_diag'}
     names.update({'_i9100_power_'+n for n in ('valid','percent','mv','connected','charging','temp','reason','revision_value')})
     selected=b.observations.ObservationSymbols(symbols,names)
     profile=json.loads((b.o.OUT/'inventory-20261106-211114-download-profile.json').read_text())
@@ -38,7 +38,7 @@ def main():
                         b.retain_current_panic(session,out,record);raise RuntimeError('Current panic retained')
                     kernel=b.m.Kernel(session,symbols);before=out/'before';before.mkdir()
                     state=b.observations.capture_ui_observations(kernel,selected,before)
-                    record('STATE',hid=state.get('hid_execution'),touch=state.get('touch'),power=state.get('power'),graphics=state.get('i9100_graphics_seq'))
+                    record('STATE',hid=state.get('hid_execution'),touch=state.get('touch'),power=state.get('power'),graphics=state.get('i9100_graphics_seq'),springboard_exit=state.get('i9100_process_exit'),backboard_exit=state.get('i9100_backboard_exit'),quiet_charge=state.get('quiet_charge_feedback'))
                     probe=state.get('hid_execution',{})
                     if a.require_self_test:
                         b.o.require(probe.get('version')==2 and probe.get('state')==2 and probe.get('self_test_count')==1 and probe.get('matching_svc_count',0)>=1,'Actual HID observer self-test not confirmed')
@@ -87,7 +87,7 @@ def main():
                         result['filter']=dict(system=hex(shim['arguments'][0]),service=hex(shim['arguments'][2]),task=hex(probe['task']),map=hex(mapva),pmap=hex(pmap),pages=pages,client_entries=entries)
                     if a.frame:
                         target=out/'frame';target.mkdir()
-                        result['frame']=b.frame.capture_frame(kernel,symbols,target,device,32768,record)
+                        result['frame']=b.frame.capture_frame(kernel,symbols,target,device,8192,record)
                     (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
                 record('DONE',frame=bool(a.frame),interaction_verified=False)
             except BaseException as e:record('STOP',error=str(e),retry=False);raise

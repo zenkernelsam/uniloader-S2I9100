@@ -90,6 +90,7 @@ ABORT_SYMBOLS.add('_i9100_launchd_listener_diag')
 ABORT_SYMBOLS.add('_i9100_audio_observation_target')
 ABORT_SYMBOLS.add('_i9100_quiet_charge_diag')
 ABORT_SYMBOLS.update({'_i9100_hid_execution_diag','_i9100_hid_execution_rows'})
+ABORT_SYMBOLS.add('_i9100_ui_sounds_unavailable_diag')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -161,6 +162,15 @@ def capture_ui_observations(kernel, symbols, out):
                 rows.append(row)
             rows.sort(key=lambda r:r['sequence'])
         result['hid_execution_rows']=dict(sequence=sequence,rows=rows,sequential=True)
+    key='_i9100_ui_sounds_unavailable_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],128);(out/'ui-sounds-unavailable.bin').write_bytes(data)
+        w=struct.unpack('<32I',data)
+        if w[0]!=1 or w[1]>3 or w[6]>8 or w[10]>w[6] or w[11]>4:raise ValueError('Unknown UI system-sound unavailability schema')
+        result['ui_system_sounds']=dict(version=w[0],state=w[1],pid=w[2],task=w[3],header=w[4],code=w[5],attempts=w[6],
+            vm_result=w[7],copy_error=w[8],restore_error=w[9],installed=w[10],stage=w[11],idversion=w[12],
+            declared_error=struct.unpack('<i',data[120:124])[0],cache_slide=w[31],sequence=w[19],
+            calls=dict(zip(('create','play','alert','add_completion','remove_completion','dispose','get_property_info','get_property','set_property'),[w[n] for n in (16,17,18,20,21,22,23,24,25)])))
     key='_i9100_quiet_charge_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],64);(out/'quiet-charge.bin').write_bytes(data)
