@@ -1,0 +1,154 @@
+--- a/scripts/i9100/prepare-automation.py
++++ b/scripts/i9100/prepare-automation.py
+@@ -18,6 +18,8 @@
+ parser.add_argument('--launchd-listener-guard',action='store_true')
+ parser.add_argument('--quiet-charge-feedback',action='store_true')
+ parser.add_argument('--hid-execution-trace',action='store_true')
++parser.add_argument('--emmc-readonly',action='store_true')
++parser.add_argument('--emmc-input-clock',type=int,default=0)
+ parser.add_argument('--system-sounds-unavailable',action='store_true')
+ parser.add_argument('--xpc-diag', action='store_true')
+ parser.add_argument('--reboot-download-fallback', action='store_true')
+@@ -31,6 +33,10 @@
+ parser.add_argument('--input-test', action='store_true')
+ parser.add_argument('--aks-development', action='store_true')
+ args = parser.parse_args()
++if args.emmc_readonly and not 400000<=args.emmc_input_clock<=200000000:
++    parser.error('Explicit verified effective CIU clock required for eMMC RO')
++if args.emmc_input_clock and not args.emmc_readonly:
++    parser.error('--emmc-input-clock requires --emmc-readonly')
+ if args.ls_ui_timeout and not args.xpc_diag:
+     parser.error('--ls-ui-timeout requires --xpc-diag')
+ if args.audio_property_lock and (not args.xpc_diag or not args.ios6_hid):
+@@ -61,6 +67,7 @@
+            'iokit/IOS7LeoHIDTouch.cpo',
+            'iokit/i9100_power.o', 'iokit/i9100_power_bus.o', 'iokit/IOS7I9100Power.cpo',
+            'osfmk/vm_map.o', 'osfmk/vm_user.o', 'osfmk/mach_kernelrpc.o', 'bsd/kern_exit.o', 'osfmk/pmap.o']
++objects += ['iokit/IOS7I9100EMMC.cpo','iokit/IOS7I9100GPT.cpo','iokit/i9100_emmc.o','iokit/i9100_emmc_layout.o']
+ subprocess.run([sys.executable, xnu / 'tools/rebuild-i9100.py', '--output', kernel, '--link', *objects], check=True)
+ subprocess.run(['bash', repo / 'scripts/i9100/build-rawcom.sh'], check=True)
+ subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--kernel', kernel / 'mach_kernel',
+@@ -71,6 +78,7 @@
+                 *(['--launchd-listener-guard'] if args.launchd_listener_guard else []),
+                 *(['--quiet-charge-feedback'] if args.quiet_charge_feedback else []),
+                 *(['--hid-execution-trace'] if args.hid_execution_trace else []),
++                *(['--emmc-readonly','--emmc-input-clock',str(args.emmc_input_clock)] if args.emmc_readonly else []),
+                 *(['--system-sounds-unavailable'] if args.system_sounds_unavailable else []),
+                 *(['--xpc-diag'] if args.xpc_diag else []),
+                 *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
+--- a/scripts/i9100/package-oneshot.py
++++ b/scripts/i9100/package-oneshot.py
+@@ -42,6 +42,8 @@
+     parser.add_argument('--launchd-listener-guard',action='store_true',help='Reject a NULL listener-port job using the newer launchd error return')
+     parser.add_argument('--quiet-charge-feedback',action='store_true',help='Diagnostic: silence only SpringBoard charging feedback 1106')
+     parser.add_argument('--hid-execution-trace',action='store_true',help='Observe actual Backboard callback/digitizer/GS execution')
++    parser.add_argument('--emmc-readonly',action='store_true')
++    parser.add_argument('--emmc-input-clock',type=int,default=0)
+     parser.add_argument('--system-sounds-unavailable',action='store_true',help='Development: only SpringBoard system-sound status APIs return -1500 and playback is muted')
+     parser.add_argument('--xpc-diag', action='store_true', help='Retain XPC boundary metadata in kernel RAM')
+     parser.add_argument('--reboot-download-fallback', action='store_true',
+@@ -61,6 +63,10 @@
+     parser.add_argument('--control-bootargs-only', action='store_true',
+                         help='Diagnostic: control loader bootargs with a baseline kernel; no command capability claim')
+     args = parser.parse_args()
++    if args.emmc_readonly and not 400000<=args.emmc_input_clock<=200000000:
++        parser.error('Explicit verified effective CIU clock required for eMMC RO')
++    if args.emmc_input_clock and not args.emmc_readonly:
++        parser.error('--emmc-input-clock requires --emmc-readonly')
+     if args.audio_property_lock and (not args.control or not args.xpc_diag or not args.ios6_hid):
+         parser.error('--audio-property-lock requires --control, --xpc-diag and --ios6-hid')
+     if args.launchd_listener_guard and (not args.control or not args.xpc_diag or not args.ios6_hid):
+@@ -125,6 +131,8 @@
+         raise RuntimeError('Kernel lacks the explicit charging feedback diagnostic')
+     if args.hid_execution_trace and b'i9100hidtrace\0' not in raw_data:
+         raise RuntimeError('Kernel lacks the explicit HID execution diagnostic')
++    if args.emmc_readonly and b'i9100emmcro\0' not in raw_data:
++        raise RuntimeError('Kernel lacks the read-only eMMC module')
+     if args.system_sounds_unavailable and b'i9100nosound\0' not in raw_data:
+         raise RuntimeError('Kernel lacks the explicit system-sound unavailability capability')
+     if args.reboot_download_fallback and b'i9100rebootdownload\0' not in raw_data:
+@@ -160,6 +168,7 @@
+         *(['--launchd-listener-guard'] if args.launchd_listener_guard else []),
+         *(['--quiet-charge-feedback'] if args.quiet_charge_feedback else []),
+         *(['--hid-execution-trace'] if args.hid_execution_trace else []),
++        *(['--emmc-readonly','--emmc-input-clock',str(args.emmc_input_clock)] if args.emmc_readonly else []),
+         *(['--system-sounds-unavailable'] if args.system_sounds_unavailable else []),
+         *(['--xpc-diag'] if args.xpc_diag else []),
+         *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
+@@ -210,6 +219,8 @@
+     assert (b'i9100launchdguard=1' in data) == args.launchd_listener_guard
+     assert (b'i9100quietcharge=1' in data) == args.quiet_charge_feedback
+     assert (b'i9100hidtrace=1' in data) == args.hid_execution_trace
++    assert (b'i9100emmcro=1' in data) == args.emmc_readonly
++    if args.emmc_readonly:assert ('i9100emmcclk='+str(args.emmc_input_clock)).encode() in data
+     assert (b'i9100nosound=1' in data) == args.system_sounds_unavailable
+     assert 'S2I9100-OS6'.encode('utf-16le') in data
+     symbols = subprocess.check_output(['arm-none-eabi-nm','-n',str(build/'uniLoader.o')],text=True)
+@@ -249,6 +260,8 @@
+         'launchd_listener_guard': args.launchd_listener_guard,
+         'quiet_charge_feedback': args.quiet_charge_feedback,
+         'hid_execution_trace': args.hid_execution_trace,
++        'emmc_readonly': args.emmc_readonly,
++        'emmc_effective_input_clock_hz': args.emmc_input_clock,
+         'system_sounds_unavailable': args.system_sounds_unavailable,
+         'xpc_diag': args.xpc_diag,
+         'reboot_download_fallback': args.reboot_download_fallback,
+--- a/scripts/i9100/relink-loader.py
++++ b/scripts/i9100/relink-loader.py
+@@ -33,6 +33,8 @@
+     parser.add_argument('--launchd-listener-guard',action='store_true')
+     parser.add_argument('--quiet-charge-feedback',action='store_true')
+     parser.add_argument('--hid-execution-trace',action='store_true')
++    parser.add_argument('--emmc-readonly',action='store_true')
++    parser.add_argument('--emmc-input-clock',type=int,default=0)
+     parser.add_argument('--system-sounds-unavailable',action='store_true')
+     parser.add_argument('--xpc-diag', action='store_true')
+     parser.add_argument('--reboot-download-fallback', action='store_true')
+@@ -46,6 +48,10 @@
+     parser.add_argument('--aks-development', action='store_true')
+     parser.add_argument('sources', nargs='*')
+     args = parser.parse_args()
++    if args.emmc_readonly and not 400000<=args.emmc_input_clock<=200000000:
++        parser.error('Explicit verified effective CIU clock required for eMMC RO')
++    if args.emmc_input_clock and not args.emmc_readonly:
++        parser.error('--emmc-input-clock requires --emmc-readonly')
+     if args.audio_property_lock and (not args.control or not args.xpc_diag or not args.ios6_hid):
+         parser.error('--audio-property-lock requires --control, --xpc-diag and --ios6-hid')
+     if args.launchd_listener_guard and (not args.control or not args.xpc_diag or not args.ios6_hid):
+@@ -138,6 +144,8 @@
+                 command.append('-DI9100_QUIET_CHARGE_BUILD=1')
+             if args.hid_execution_trace:
+                 command.append('-DI9100_HID_EXECUTION_TRACE_BUILD=1')
++            if args.emmc_readonly:
++                command += ['-DI9100_EMMC_RO_BUILD=1','-DI9100_EMMC_INPUT_CLOCK='+str(args.emmc_input_clock)]
+             if args.system_sounds_unavailable:
+                 command.append('-DI9100_SYSTEM_SOUNDS_UNAVAILABLE_BUILD=1')
+             if args.xpc_diag:
+--- a/arch/arm/load-kernel.c
++++ b/arch/arm/load-kernel.c
+@@ -173,6 +173,16 @@
+ #else
+ #define I9100_QUIET_CHARGE_CMDLINE ""
+ #endif
++#ifdef I9100_EMMC_RO_BUILD
++#ifndef I9100_EMMC_INPUT_CLOCK
++#error "verified eMMC effective input clock required"
++#endif
++#define I9100_EMMC_STR_I(v) #v
++#define I9100_EMMC_STR(v) I9100_EMMC_STR_I(v)
++#define I9100_EMMC_RO_CMDLINE " i9100emmcro=1 i9100emmcclk=" I9100_EMMC_STR(I9100_EMMC_INPUT_CLOCK)
++#else
++#define I9100_EMMC_RO_CMDLINE ""
++#endif
+ #ifdef I9100_HID_EXECUTION_TRACE_BUILD
+ #define I9100_HID_EXECUTION_TRACE_CMDLINE " i9100hidtrace=1"
+ #else
+@@ -229,7 +239,7 @@
+ #else
+ #define I9100_HOME_TEST_CMDLINE ""
+ #endif
+-#define I9100_EFFECTIVE_CMDLINE CONFIG_XNU_CMDLINE " i9100control=1 _i9100build=" I9100_CONTROL_TAG I9100_LS_BOOTSTRAP_CMDLINE I9100_LS_UI_TIMEOUT_CMDLINE I9100_XPC_DIAG_CMDLINE I9100_REBOOT_DOWNLOAD_CMDLINE I9100_TCC_DEVELOPMENT_CMDLINE I9100_MDNS_DEVELOPMENT_CMDLINE I9100_PANIC_RECOVERY_CMDLINE I9100_PANIC_TEST_CMDLINE I9100_HOME_TEST_CMDLINE I9100_HID_ABI_CMDLINE I9100_INPUT_TEST_CMDLINE I9100_AKS_DEVELOPMENT_CMDLINE I9100_AUDIO_PROPERTY_LOCK_CMDLINE I9100_LAUNCHD_LISTENER_GUARD_CMDLINE I9100_QUIET_CHARGE_CMDLINE I9100_HID_EXECUTION_TRACE_CMDLINE I9100_SYSTEM_SOUNDS_UNAVAILABLE_CMDLINE
++#define I9100_EFFECTIVE_CMDLINE CONFIG_XNU_CMDLINE " i9100control=1 _i9100build=" I9100_CONTROL_TAG I9100_LS_BOOTSTRAP_CMDLINE I9100_LS_UI_TIMEOUT_CMDLINE I9100_XPC_DIAG_CMDLINE I9100_REBOOT_DOWNLOAD_CMDLINE I9100_TCC_DEVELOPMENT_CMDLINE I9100_MDNS_DEVELOPMENT_CMDLINE I9100_PANIC_RECOVERY_CMDLINE I9100_PANIC_TEST_CMDLINE I9100_HOME_TEST_CMDLINE I9100_HID_ABI_CMDLINE I9100_INPUT_TEST_CMDLINE I9100_AKS_DEVELOPMENT_CMDLINE I9100_AUDIO_PROPERTY_LOCK_CMDLINE I9100_LAUNCHD_LISTENER_GUARD_CMDLINE I9100_QUIET_CHARGE_CMDLINE I9100_HID_EXECUTION_TRACE_CMDLINE I9100_SYSTEM_SOUNDS_UNAVAILABLE_CMDLINE I9100_EMMC_RO_CMDLINE
+ #else
+ #define I9100_EFFECTIVE_CMDLINE CONFIG_XNU_CMDLINE
+ #endif
