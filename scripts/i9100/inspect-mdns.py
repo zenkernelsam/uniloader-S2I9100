@@ -92,6 +92,7 @@ ABORT_SYMBOLS.add('_i9100_quiet_charge_diag')
 ABORT_SYMBOLS.update({'_i9100_hid_execution_diag','_i9100_hid_execution_rows'})
 ABORT_SYMBOLS.add('_i9100_ui_sounds_unavailable_diag')
 ABORT_SYMBOLS.update({'_i9100_slab_publication_diag','_i9100_slab_publication_rows','_i9100_slab_failure_mapping_diag'})
+ABORT_SYMBOLS.update({'_pmap_asid_ncpus','_pmap_asid_disabled','_processor_avail_count','_real_ncpus'})
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -143,6 +144,10 @@ def decode_slab_publications(diag, data, failure):
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    mmu={}
+    for key in ('_pmap_asid_ncpus','_pmap_asid_disabled','_processor_avail_count','_real_ncpus'):
+        if key in symbols.values:mmu[key.lstrip('_')]=kernel.u32(symbols[key])
+    if mmu:result['mmu_configuration']=dict(mmu,snapshot='non-atomic configuration globals; no hardware PAR capture')
     if all(key in symbols.values for key in ('_i9100_slab_publication_diag','_i9100_slab_publication_rows','_i9100_slab_failure_mapping_diag')):
         blobs=[]
         for key,size,name in (('_i9100_slab_publication_diag',128,'slab-publication-diag.bin'),
