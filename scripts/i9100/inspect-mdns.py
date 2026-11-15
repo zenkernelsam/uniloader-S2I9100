@@ -77,6 +77,7 @@ ABORT_SYMBOLS.update({'_i9100_fig_rpc_diag','_i9100_springboard_kill_payload','_
 ABORT_SYMBOLS.add('_i9100_syscall_restart_diag')
 ABORT_SYMBOLS.add('_i9100_previous_boot')
 ABORT_SYMBOLS.add('_i9100_media_threads')
+ABORT_SYMBOLS.add('_i9100_media_identity')
 ABORT_SYMBOLS.add('_i9100_audio_owner_diag')
 ABORT_SYMBOLS.update({'_i9100_media_dispatch_diag','_i9100_fig_rpc_capacity'})
 ABORT_SYMBOLS.update({'_i9100_media_dispatch_wait','_i9100_media_semaphore_diag'})
@@ -225,6 +226,31 @@ def capture_ui_observations(kernel, symbols, out):
                     instruction_hex=data[(16+n*72+68)*4:(16+n*72+72)*4].hex()
                         if w[1]==2 and not row[5] and (row[22]&31)==16 and row[67]==0 else None))
             r['rows']=rows;result['media_first_threads']=r
+    key='_i9100_media_identity'
+    if key in symbols.values and 'media_first_threads' in result:
+        data=kernel.read(symbols[key],(8+16*8)*4);(out/'media-identity.bin').write_bytes(data)
+        w=struct.unpack_from('<8I',data);peers=result['media_first_threads']
+        if w[0]:
+            if w[0]!=1 or w[1]!=1 or w[5]!=16 or w[6]!=8 or w[7]!=0 or w[4]>16:
+                raise ValueError('Unknown media identity schema')
+            if (w[2],w[3],w[4])!=(peers['pid'],peers['task'],peers['count']):
+                raise ValueError('Media identity and peers belong to different snapshots')
+            rows=[]
+            for n in range(w[4]):
+                r=struct.unpack_from('<8I',data,(8+n*8)*4);peer=peers['rows'][n]
+                if r[0]!=n+1 or r[0]!=peer['sequence']:
+                    raise ValueError('Media identity row does not match peer')
+                if r[5]==0 and (r[3]!=0 or r[2]!=0 or not 4096<=(r[1]&~3)<=0x3ffffffc):
+                    raise ValueError('Media TLS bytes have no valid raw source')
+                waiting=not peer['error'] and (peer['cpsr']&31)==16 and peer['registers'][12] in (301,302)
+                mutex=peer['registers'][0]
+                if r[7]==0 and (not waiting or not 4100<=mutex<=0x3fffffd0 or mutex&3):
+                    raise ValueError('Media mutex prefix has no matching wait')
+                rows.append(dict(sequence=r[0],tid_low=peer['tid_low'],tid_high=peer['tid_high'],
+                    raw_tls_low=r[1],raw_tls_high=r[2],raw_tls_error=r[3],
+                    tls_word=r[4],tls_error=r[5],mutex_prefix=r[6],prefix_error=r[7],
+                    mutex_address=mutex if waiting else None))
+            result['media_identity']=dict(version=w[1],pid=w[2],task=w[3],count=w[4],rows=rows,sequential=True)
     key='_i9100_syscall_restart_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],(1+16*10)*4);(out/'syscall-restarts.bin').write_bytes(data)
