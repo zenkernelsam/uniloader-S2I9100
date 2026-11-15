@@ -90,7 +90,7 @@ def main():
     spec.loader.exec_module(module)
     slide = peers['slide']
     lines = [f'Source: {source}', f'BUILD: {evidence.get("tag", "unspecified")}',
-             f'First media PID={peers["pid"]} task={peers["task"]:08x} slide={slide:08x}',
+             f'Media retention={peers.get("selection","legacy-first-kill")} PID={peers["pid"]} task={peers["task"]:08x} slide={slide:08x}',
              f'Peers={peers["count"]} capture_error={peers["error"]} callback_stage={peers["callback_stage"] if peers.get("runtime_available",peers["runtime_error"]==0) else "unavailable"}',
              'Retained peer registers with sequential own-task user reads; not an atomic user-memory snapshot.',
              '<redacted> identifies the image, not a proven private function.']

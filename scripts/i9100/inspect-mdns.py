@@ -85,6 +85,7 @@ ABORT_SYMBOLS.add('_i9100_early_exit_diag')
 ABORT_SYMBOLS.add('_i9100_power_policy')
 ABORT_SYMBOLS.add('_i9100_pmap_empty_unwire')
 ABORT_SYMBOLS.add('_i9100_launchd_listener_diag')
+ABORT_SYMBOLS.add('_i9100_audio_observation_target')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -99,6 +100,15 @@ LS_SYMBOLS.add('_i9100_ls_callback_diag')
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    key='_i9100_audio_observation_target'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],32);(out/'audio-observation-target.bin').write_bytes(data)
+        w=struct.unpack('<8I',data)
+        if w[0]!=1 or w[1]>2:raise ValueError('Unknown audio observation target')
+        if w[1]==2 and (not w[2] or not w[3] or w[4]&4095 or w[4]>=0x40000000-0x394951c0 or
+                        not 4096<=w[5]<=0x3fffffc0 or not w[6] or not 2<=w[7]<=4):
+            raise ValueError('Invalid executed-callback target')
+        result['audio_observation_target']=dict(zip(('version','state','pid','task','slide','runtime_address','calls_at_selection','stage_at_selection'),w))
     key='_i9100_launchd_listener_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],64);(out/'launchd-listener.bin').write_bytes(data)
@@ -195,9 +205,10 @@ def capture_ui_observations(kernel, symbols, out):
         data=kernel.read(symbols[key],(16+16*72)*4);(out/'media-first-threads.bin').write_bytes(data)
         w=struct.unpack_from('<16I',data)
         if w[0]:
-            if w[0]!=1 or w[1] not in (1,2) or w[4]>16:raise ValueError('Unknown first-media thread snapshot schema')
+            if w[0]!=1 or w[1] not in (1,2) or w[4]>16 or w[13]>1:raise ValueError('Unknown first-media thread snapshot schema')
             fields='published version pid task count error slide incoming_mask runtime_address runtime_error calls callback_stage released reserved0 reserved1 reserved2'.split()
             r=dict(zip(fields,w));rows=[]
+            r['selection']='executed-callback' if w[13] else 'first-native-kill'
             r['runtime_available']=4096<=w[8]<=0x3fffffc0 and w[9]==0
             if not r['runtime_available']:
                 r['raw_runtime_words']=list(w[10:13])
@@ -861,6 +872,19 @@ def capture_ui_observations(kernel, symbols, out):
         result['graphics'] = dict(zip(GRAPHICS_FIELDS,struct.unpack('<73I',data)))
         if result['graphics']['version'] not in (0,2):
             raise ValueError('Unknown live graphics counter version')
+    target=result.get('audio_observation_target',{})
+    if target.get('state')==2:
+        identity=(target['pid'],target['task'])
+        for key in ('media_semaphore','media_dispatch_wait','media_audio_runtime','media_dispatch'):
+            entry=result.get(key)
+            if entry and (entry.get('pid'),entry.get('task'))!=identity:
+                raise ValueError(key+' belongs to another observation target')
+        peers=result.get('media_first_threads')
+        if peers and peers.get('selection')=='executed-callback' and (peers['pid'],peers['task'],peers['slide'])!=(target['pid'],target['task'],target['slide']):
+            raise ValueError('Selected peers belong to another executed callback')
+        for key in ('audio_waits','audio_owners'):
+            for row in result.get(key,{}).get('rows',[]):
+                if (row['pid'],row['task'])!=identity:raise ValueError(key+' includes another target')
     (out/'ui-observations.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     preview=dict(result)
     for key in ('backboard_vm','slab_vm'):

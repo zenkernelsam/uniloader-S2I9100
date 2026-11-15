@@ -7,7 +7,7 @@ import importlib.util
 import io
 from pathlib import Path
 import struct
-p=argparse.ArgumentParser(description=__doc__);p.add_argument('--fixture',type=Path,required=True);p.add_argument('--native-fixture',type=Path);p.add_argument('--owner-fixture',type=Path);p.add_argument('--dispatch-fixture',type=Path);p.add_argument('--catalog-fixture',type=Path);p.add_argument('--exit-fixture',type=Path);a=p.parse_args()
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('--fixture',type=Path,required=True);p.add_argument('--native-fixture',type=Path);p.add_argument('--selected-fixture',type=Path);p.add_argument('--target-fixture',type=Path);p.add_argument('--early-payload-fixture',type=Path);p.add_argument('--selected-runtime-fixture',type=Path);p.add_argument('--owner-fixture',type=Path);p.add_argument('--dispatch-fixture',type=Path);p.add_argument('--catalog-fixture',type=Path);p.add_argument('--exit-fixture',type=Path);a=p.parse_args()
 s=importlib.util.spec_from_file_location('peers_parser',Path(__file__).with_name('inspect-mdns.py'));m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 repo=Path(__file__).resolve().parents[2];out=repo/'out'/('media-threads-framing-'+datetime.now().strftime('%Y%m%d-%H%M%S'));out.mkdir()
 class Symbols:
@@ -15,7 +15,10 @@ class Symbols:
     def __getitem__(self,key):return self.values[key]
 class Memory:
     def __init__(self,data):self.data=data
-    def read(self,address,size):assert address==0x1000 and size==len(self.data);return self.data
+    def read(self,address,size):
+        data=self.data[address] if isinstance(self.data,dict) else self.data
+        assert (isinstance(self.data,dict) or address==0x1000) and size==len(data)
+        return data
 def decode(label,data,symbols=None,key='media_first_threads'):
     target=out/label;target.mkdir()
     with contextlib.redirect_stdout(io.StringIO()):return m.capture_ui_observations(Memory(data),symbols or Symbols(),target)[key]
@@ -30,6 +33,34 @@ if a.native_fixture:
 changed=bytearray(raw);struct.pack_into('<I',changed,9*4,14)
 failed_runtime=decode('runtime-read-failed',bytes(changed))
 assert not failed_runtime['runtime_available'] and failed_runtime['callback_stage'] is None
+if a.target_fixture:
+    target_symbols=Symbols();target_symbols.values={'_i9100_audio_observation_target':0x1000}
+    target_raw=a.target_fixture.read_bytes();target=decode('target',target_raw,target_symbols,'audio_observation_target')
+    assert target['state']==2 and target['pid']==34 and target['calls_at_selection']>0
+    for label,word,value in [('target-version',0,2),('target-state',1,3),('target-empty-pid',2,0),('target-empty-calls',6,0),('target-stage',7,0)]:
+        changed=bytearray(target_raw);struct.pack_into('<I',changed,word*4,value)
+        try:decode(label,bytes(changed),target_symbols,'audio_observation_target');raise AssertionError('Bad target accepted')
+        except ValueError:pass
+    if a.selected_fixture:
+        selected_raw=a.selected_fixture.read_bytes()
+        # Both production C fixtures use modeled tasks at different host
+        # addresses. Adapt only that address for the combined parser fixture.
+        combined_target=bytearray(target_raw);struct.pack_into('<I',combined_target,3*4,struct.unpack_from('<I',selected_raw,3*4)[0])
+        combined=Symbols();combined.values={'_i9100_audio_observation_target':0x1000,'_i9100_media_threads':0x2000}
+        selected=decode('selected-combined',{0x1000:bytes(combined_target),0x2000:selected_raw},combined)
+        assert selected['pid']==34 and selected['selection']=='executed-callback'
+        for label,word,value in [('selected-wrong-pid',2,35),('selected-wrong-task',3,0xdead),('selected-wrong-slide',4,0x200000)]:
+            changed=bytearray(combined_target);struct.pack_into('<I',changed,word*4,value)
+            try:decode(label,{0x1000:bytes(changed),0x2000:selected_raw},combined);raise AssertionError('Mixed selected identity accepted')
+            except ValueError:pass
+    if a.early_payload_fixture and a.selected_runtime_fixture:
+        retained=Symbols();retained.values={'_i9100_audio_observation_target':0x1000,'_i9100_media_kill_payload':0x2000,'_i9100_media_audio_runtime':0x3000}
+        data={0x1000:target_raw,0x2000:a.early_payload_fixture.read_bytes(),0x3000:a.selected_runtime_fixture.read_bytes()}
+        result=decode('earliest-plus-selected',data,retained,'media_kill_payload')
+        assert result['pid']==33
+        changed=bytearray(data[0x3000]);struct.pack_into('<I',changed,4,35)
+        try:decode('runtime-wrong-target',{**data,0x3000:bytes(changed)},retained,'media_audio_runtime');raise AssertionError('Wrong runtime target accepted')
+        except ValueError:pass
 first=r['rows'][0];assert first['tid_low']==578 and first['registers'][12]==301 and first['mutex_words'][8]==578
 assert first['frame_rows'][0]['lr']==0x310fdd65 and first['handler_args'][0]==0x5500 and first['handler_args_observed']==1
 assert r['version']==2 and first['instruction_error']==0 and first['instruction_hex']=='0000a0e11eff2fe14433221188776655'
