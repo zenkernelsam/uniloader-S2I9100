@@ -34,6 +34,7 @@ def main():
     gestures.add_argument('--home',action='store_true')
     p.add_argument('--ms',type=int)
     p.add_argument('--wake-first',action='store_true',help='One Home press followed by this gesture on the same handle')
+    p.add_argument('--trace',action='store_true',help='Retain current HID/GS execution immediately after the gesture on the same handle')
     a=p.parse_args()
     if a.wake_first and a.home:p.error('--wake-first requires a touch gesture')
     points=([0,0,0,0] if a.home else a.swipe if a.swipe else a.tap+a.tap)
@@ -82,6 +83,11 @@ def main():
                     if a.wake_first and home:time.sleep(.5)
                 result=dict(tag=symbols.tag,device=device,command=command,sequence=state[2],
                     enqueued=state[8],phase=state[1],queue_completed=True,ui_delivery_verified=False,samples=samples,steps=completed,wake_first=a.wake_first)
+                if a.trace:
+                    observed=module('input_observed','inspect-mdns.py')
+                    names={'_i9100_hid_execution_diag','_i9100_hid_execution_rows','_i9100_touch_observation','_i9100_input_test','_i9100_process_exit','_i9100_graphics_seq','_i9100_ui_sounds_unavailable_diag'}
+                    target=out/'after-input';target.mkdir()
+                    result['observations']=observed.capture_ui_observations(kernel,observed.ObservationSymbols(symbols,names),target)
                 (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
                 print(json.dumps(result,indent=2),flush=True);record('DONE',queue_only=True)
             except BaseException as exc:record('STOP',error=str(exc),retry=False);raise
