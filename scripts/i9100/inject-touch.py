@@ -58,6 +58,11 @@ def main():
                 transport=f.WinTransport(device['port'],record)
                 session=f.Session(transport,symbols.tag,record,capture,timeout=20,allow_input_test=True)
                 session.handshake();kernel=m.Kernel(session,symbols)
+                if a.trace:
+                    o.require('_i9100_hid_execution_diag' in symbols.values,'Trace requested but no HID observer exists')
+                    probe=struct.unpack('<32I',kernel.read(symbols['_i9100_hid_execution_diag'],128))
+                    o.require(probe[0]==2 and probe[1]==2 and probe[10]>0 and probe[24]==probe[10] and probe[26]>=1,
+                              'HID observer did not install/self-test; no input command sent')
                 address=symbols['_i9100_input_test']
                 steps=([(True,[0,0,0,0],200,'hid-home c8')] if a.wake_first else [])+[(a.home,points,ms,command)]
                 completed=[]
