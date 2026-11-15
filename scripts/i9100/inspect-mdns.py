@@ -79,6 +79,7 @@ ABORT_SYMBOLS.add('_i9100_previous_boot')
 ABORT_SYMBOLS.add('_i9100_media_threads')
 ABORT_SYMBOLS.add('_i9100_media_identity')
 ABORT_SYMBOLS.add('_i9100_audio_owner_diag')
+ABORT_SYMBOLS.add('_i9100_audio_owner_stack')
 ABORT_SYMBOLS.update({'_i9100_media_dispatch_diag','_i9100_fig_rpc_capacity'})
 ABORT_SYMBOLS.update({'_i9100_media_dispatch_wait','_i9100_media_semaphore_diag'})
 ABORT_SYMBOLS.add('_i9100_early_process_diag')
@@ -205,6 +206,38 @@ def capture_ui_observations(kernel, symbols, out):
                     registers=list(w[16:29]),sp=w[29],lr=w[30],pc=w[31],cpsr=w[32],mutex_words=list(w[34:46]),
                     frame_rows=[dict(fp=w[46+k*3],previous=w[47+k*3],lr=w[48+k*3]) for k in range(w[10])]))
             result['audio_owners']=dict(count=count,version=version,rows=rows,retention='owner at original first-task wait; correlate wait sequence')
+    key='_i9100_audio_owner_stack'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],80*4);(out/'audio-owner-stack.bin').write_bytes(data)
+        w=struct.unpack_from('<16I',data)
+        if w[0]:
+            if w[0]!=1 or w[1]!=1 or not 1<=w[4]<=8 or w[10]!=256 or w[7]!=w[8]+248 or w[14]>1 or w[15]:
+                raise ValueError('Unknown audio owner stack schema')
+            if w[12]!=0x30e52055+w[13] or w[7]&3 or not 4096<=w[8] or w[7]>0x3ffffff8:
+                raise ValueError('Audio owner stack has no matching original caller')
+            raw=data[64:];matching=not w[9] and struct.unpack_from('<2I',raw,248)==(w[11],w[12])
+            if bool(w[14])!=matching:raise ValueError('Audio owner stack frame validation disagrees')
+            result['audio_owner_stack']=dict(version=w[1],pid=w[2],task=w[3],wait_sequence=w[4],
+                owner_low=w[5],owner_high=w[6],frame=w[7],start=w[8],copy_error=w[9],bytes=w[10],
+                previous=w[11],lr=w[12],slide=w[13],frame_matches=matching,raw_hex=raw.hex())
+            if matching:
+                # Candidate interpretation of the original fed0 prologue;
+                # raw bytes remain primary until the plugin map is proven.
+                sp=((w[7]-88)&~15)-96;offset=sp-w[8]
+                if not (0<=offset and offset+0x60<=len(raw)):raise ValueError('Guard prologue outside retained stack')
+                result['audio_owner_stack']['candidate_guard']=dict(sp=sp,
+                    lock_return=struct.unpack_from('<I',raw,offset+0x1c)[0],
+                    mutex=struct.unpack_from('<I',raw,offset+0x24)[0],
+                    release_byte=raw[offset+0x28],cleanup_stage=struct.unpack_from('<I',raw,offset+0x30)[0])
+            matched_owner=False
+            for owner in result.get('audio_owners',{}).get('rows',[]):
+                if owner['sequence']==w[4]:
+                    matched_owner=True
+                    if (owner['pid'],owner['task'],owner['owner_low'],owner['owner_high'])!=(w[2],w[3],w[5],w[6]) or not any(
+                        (f['fp'],f['previous'],f['lr'])==(w[7],w[11],w[12]) for f in owner['frame_rows']):
+                        raise ValueError('Audio owner stack belongs to another owner walk')
+            if '_i9100_audio_owner_diag' in symbols.values and not matched_owner:
+                raise ValueError('Audio owner stack has no published matching owner walk')
     key='_i9100_media_threads'
     if key in symbols.values:
         data=kernel.read(symbols[key],(16+16*72)*4);(out/'media-first-threads.bin').write_bytes(data)
@@ -905,10 +938,12 @@ def capture_ui_observations(kernel, symbols, out):
     target=result.get('audio_observation_target',{})
     if target.get('state')==2:
         identity=(target['pid'],target['task'])
-        for key in ('media_semaphore','media_dispatch_wait','media_audio_runtime','media_dispatch'):
+        for key in ('media_semaphore','media_dispatch_wait','media_audio_runtime','media_dispatch','audio_owner_stack'):
             entry=result.get(key)
             if entry and (entry.get('pid'),entry.get('task'))!=identity:
                 raise ValueError(key+' belongs to another observation target')
+        if result.get('audio_owner_stack',{}).get('slide',target['slide'])!=target['slide']:
+            raise ValueError('Audio owner stack has another cache slide')
         peers=result.get('media_first_threads')
         if peers and peers.get('selection')=='executed-callback' and (peers['pid'],peers['task'],peers['slide'])!=(target['pid'],target['task'],target['slide']):
             raise ValueError('Selected peers belong to another executed callback')

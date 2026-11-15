@@ -102,6 +102,25 @@ if a.owner_fixture:
     assert owners['rows'][0]['registers'][0]==0x12040 and owners['rows'][0]['frame_rows'][0]['lr']==0x310fdd65
     assert owners['rows'][1]['error']==2 and owners['rows'][1]['frame_count']==0
     assert owners['version']==2
+    stack_path=a.owner_fixture.with_name('audio-owner-stack.bin')
+    if stack_path.exists():
+        stack_symbols=Symbols();stack_symbols.values={'_i9100_audio_owner_stack':0x1000}
+        stack_raw=stack_path.read_bytes()
+        stack=decode('owner-stack',stack_raw,stack_symbols,'audio_owner_stack')
+        assert stack['frame_matches'] and stack['candidate_guard']==dict(sp=0x30750,lock_return=1,mutex=0x12000,release_byte=1,cleanup_stage=7)
+        for label,word,value in [('stack-version',1,2),('stack-sequence',4,9),('stack-length',10,252),('stack-caller',12,0x310fdd65),('stack-match',14,0)]:
+            changed=bytearray(stack_raw);struct.pack_into('<I',changed,word*4,value)
+            try:decode(label,bytes(changed),stack_symbols,'audio_owner_stack');raise AssertionError('Bad stack accepted')
+            except ValueError:pass
+        changed=bytearray(stack_raw);struct.pack_into('<I',changed,9*4,14);struct.pack_into('<I',changed,14*4,0)
+        badcopy=decode('stack-copy-failed',bytes(changed),stack_symbols,'audio_owner_stack')
+        assert not badcopy['frame_matches'] and 'candidate_guard' not in badcopy
+        changed=bytearray(stack_raw);struct.pack_into('<I',changed,78*4,0x30820);struct.pack_into('<I',changed,14*4,0)
+        moved=decode('stack-frame-moved',bytes(changed),stack_symbols,'audio_owner_stack')
+        assert not moved['frame_matches'] and 'candidate_guard' not in moved
+        mixed=Symbols();mixed.values={'_i9100_audio_owner_diag':0x1000,'_i9100_audio_owner_stack':0x4000}
+        try:decode('stack-other-walk',{0x1000:owner_raw,0x4000:stack_raw},mixed,'audio_owner_stack');raise AssertionError('Unrelated owner stack accepted')
+        except ValueError:pass
     deep_path=a.owner_fixture.with_name('audio-owner-deep.bin')
     if deep_path.exists():
         deep=decode('deep-owner',deep_path.read_bytes(),owner_symbols,'audio_owners')
