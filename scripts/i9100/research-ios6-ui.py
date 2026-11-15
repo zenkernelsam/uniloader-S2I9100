@@ -10,8 +10,29 @@ s=importlib.util.spec_from_file_location('cache_symbols',here/'symbolize-ios6-st
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 sys.path.insert(0,str(root/'assets/py-native-hid'))
 from capstone import Cs,CS_ARCH_ARM,CS_MODE_THUMB
+def flag_fields(encoding):
+    """ARM32 named flag structs, including ordinary fields between bitfields."""
+    if not encoding.startswith('{?=') or not encoding.endswith('}'):return []
+    body=encoding[3:-1];tokens=list(re.finditer(r'"([^"]+)"(b[0-9]+|[cCsSiIlLqQfdB])',body))
+    if ''.join(x[0] for x in tokens)!=body:raise ValueError('Unsupported original flag structure encoding')
+    sizes={'c':8,'C':8,'B':8,'s':16,'S':16,'i':32,'I':32,'l':32,'L':32,'q':64,'Q':64,'f':32,'d':64}
+    bit=0;result=[]
+    for token in tokens:
+        name,kind=token[1],token[2]
+        if kind.startswith('b'):
+            width=int(kind[1:]);result.append(dict(name=name,bit=bit,width=width));bit+=width
+        else:
+            width=sizes[kind];align=min(width,32);bit=(bit+align-1)//align*align
+            result.append(dict(name=name,bit=bit,width=width,type=kind));bit+=width
+    return result
+
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--classes',nargs='*',default=[],help='Additional original Objective-C classes')
+    p.add_argument('--images',nargs='+',default=['UIKit'],help='Cache image leaf names containing the requested classes')
+    p.add_argument('--native',action='append',default=[],help='Disassemble original Class:selector (up to 4096 bytes)')
+    p.add_argument('--only-native',action='store_true',help='Omit the default disassembly set')
+    a=p.parse_args()
     out=a.output.resolve()
     if not out.is_relative_to(root/'research') or out.exists():p.error('Fresh project research directory required')
     out.mkdir(parents=True)
@@ -22,18 +43,23 @@ def main():
             def words(v,n):return struct.unpack('<'+'I'*n,read(v,n*4))
             def string(v):return c.string(c.offset(v),min(len(data),c.offset(v)+16384))
             base,name=next((v,n) for v,n in c.images if n.endswith('/UIKit'))
-            mh=words(base,7);at=base+28;classlist=[]
-            for _ in range(mh[4]):
-                cmd,size=words(at,2)
-                if cmd==1:
-                    nsect=words(at+48,1)[0]
-                    for j in range(nsect):
-                        sec=read(at+56+j*68,68)
-                        if sec[:16].rstrip(b'\0')==b'__objc_classlist':
-                            v,n=struct.unpack_from('<2I',sec,32);classlist.extend(words(v,n//4))
-                at+=size
-            classes={};wanted={'UIApplication','UIWindow','UIEvent','UITouch','UITouchesEvent','UIView','UIScreen','UIGestureRecognizer','UITableView','UIScrollView'}
-            for v in classlist:
+            classlist=[]
+            for imagebase,imagename in c.images:
+                if imagename.rsplit('/',1)[-1] not in a.images:continue
+                mh=words(imagebase,7);at=imagebase+28
+                for _ in range(mh[4]):
+                    cmd,size=words(at,2)
+                    if cmd==1:
+                        nsect=words(at+48,1)[0]
+                        for j in range(nsect):
+                            sec=read(at+56+j*68,68)
+                            if sec[:16].rstrip(b'\0')==b'__objc_classlist':
+                                v,n=struct.unpack_from('<2I',sec,32)
+                                classlist.extend((q,imagename) for q in words(v,n//4))
+                    at+=size
+            classes={};wanted={'UIApplication','UIWindow','UIEvent','UITouch','UITouchesEvent','UIView','UIScreen','UIGestureRecognizer','UITableView','UIScrollView'}|set(a.classes)
+            native=set(a.native)
+            for v,imagename in classlist:
                 try:
                     ro=words(v,5)[4]&~3;w=words(ro,10);cn=string(w[4])
                     if cn not in wanted:continue
@@ -43,7 +69,7 @@ def main():
                         if not 12<=step<=32 or count>4096:raise ValueError('Unknown method list')
                         for k in range(count):
                             sel,types,imp=words(ml+8+k*step,3);sn=string(sel)
-                            if any(x in sn.lower() for x in ('event','touch','hit','window','location','coordinate','select','gesture','phase')):
+                            if cn in a.classes or cn+':'+sn in native or any(x in sn.lower() for x in ('event','touch','hit','window','location','coordinate','select','gesture','phase')):
                                 methods.append(dict(selector=sn,address=hex(imp&~1),thumb=bool(imp&1)))
                     ivars=[];iv=w[7]
                     if iv:
@@ -57,11 +83,10 @@ def main():
                     for ivar in ivars:
                         fields=re.findall(r'"([^\"]+)"b([0-9]+)',ivar.get('type') or '')
                         if fields:
-                            bit=0;parts=[]
-                            for fn,width in fields:
-                                parts.append(dict(name=fn,bit=bit,width=int(width)));bit+=int(width)
+                            parts=flag_fields(ivar['type'])
+                            if parts and max(x['bit']+x['width'] for x in parts)>ivar['size']*8:raise ValueError('Original flags exceed original ivar')
                             bitfields[ivar['name']]=parts
-                    classes[cn]=dict(class_address=hex(v),instance_size=w[2],methods=methods,ivars=ivars,bitfields=bitfields)
+                    classes[cn]=dict(class_address=hex(v),superclass=hex(words(v,2)[1]),image=imagename,instance_size=w[2],methods=methods,ivars=ivars,bitfields=bitfields)
                 except ValueError as e:
                     classes['error-'+hex(v)]=str(e)
             gsbase,gsname=next((v,n) for v,n in c.images if '/GraphicsServices.framework/' in n)
@@ -73,10 +98,15 @@ def main():
             globals=[dict(name=sn,address=hex(v)) for v,sn in usymbols if sn in ('_UIApp','_UIApplicationInstance','_UIApplicationHandleEvent') or 'sharedApplication' in sn]
             (out/'handlers.json').write_text(json.dumps(dict(uikit=name,classes=classes,graphicsservices=getters,globals=globals),indent=2)+'\n')
             md=Cs(CS_ARCH_ARM,CS_MODE_THUMB);md.detail=False
-            targets=[(x['name'],int(x['address'],16),256) for x in getters]
+            targets=[] if a.only_native else [(x['name'],int(x['address'],16),256) for x in getters]
+            found_native=set()
             for cn,obj in classes.items():
                 if isinstance(obj,dict):
                     for x in obj['methods']:
+                        if cn+':'+x['selector'] in native:
+                            targets.append((cn+':'+x['selector'],int(x['address'],16),4096))
+                            found_native.add(cn+':'+x['selector'])
+                        if a.only_native:continue
                         if cn=='UIApplication' and any(z in x['selector'].lower() for z in ('handle','sendevent','gsevent')):
                             targets.append((cn+':'+x['selector'],int(x['address'],16),1400))
                         if cn=='UIApplication' and x['selector'] in ('isIgnoringInteractionEvents','isSuspendedEventsOnly','ignoresInteractionEvents','blockInteractionEventsCount','keyWindow','windows','_touchMap'):
@@ -88,9 +118,27 @@ def main():
                         if cn=='UITouch' and x['selector'] in ('setPhase:','_setPhase:','_setLocationInWindow:resetPrevious:'):
                             targets.append((cn+':'+x['selector'],int(x['address'],16),256))
             lines=[]
+            if native-found_native:raise ValueError('Original selectors absent: '+', '.join(sorted(native-found_native)))
             for label,v,n in targets:
                 lines.append('FUNCTION '+label+' '+hex(v))
-                for ins in md.disasm(read(v,n),v):lines.append(f'{ins.address:08x} {ins.bytes.hex():12s} {ins.mnemonic:10s} {ins.op_str}')
+                literals={}
+                for ins in md.disasm(read(v,n),v):
+                    note='';match=re.fullmatch(r'(r[0-9]+), #(0x[0-9a-f]+|[0-9]+)',ins.op_str)
+                    if ins.mnemonic=='movw' and match:literals[match[1]]=int(match[2],0)
+                    elif ins.mnemonic=='movt' and match and match[1] in literals:
+                        literals[match[1]]|=int(match[2],0)<<16
+                    elif ins.mnemonic=='add' and ins.op_str.endswith(', pc'):
+                        reg=ins.op_str.split(',')[0]
+                        if reg in literals:
+                            address=(literals.pop(reg)+ins.address+4)&0xffffffff
+                            try:
+                                value=words(address,1)[0];note=f' ; original[{address:08x}]={value:08x}'
+                                try:
+                                    st=string(value)
+                                    if 0<len(st)<160 and all(x.isprintable() for x in st):note+=' '+repr(st)
+                                except (ValueError,UnicodeError):pass
+                            except (ValueError,struct.error):pass
+                    lines.append(f'{ins.address:08x} {ins.bytes.hex():12s} {ins.mnemonic:10s} {ins.op_str}'+note)
                 lines.append('')
             (out/'native-ui.txt').write_text('\n'.join(lines)+'\n')
             print(json.dumps(dict(result='READ',uikit_classes=list(classes),getters=getters,disassembled=len(targets),output=str(out)),indent=2))

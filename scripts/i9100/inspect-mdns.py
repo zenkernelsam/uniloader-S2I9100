@@ -145,17 +145,20 @@ def decode_slab_publications(diag, data, failure):
 
 def decode_ui_execution(diag,data):
     d=struct.unpack('<32I',diag)
-    if d[0]!=1 or d[1]>3 or d[6]>8 or d[10]>d[6] or d[11]>4:raise ValueError('Unknown Setup UI probe schema')
+    if d[0] not in (1,2) or d[1]>3 or d[6]>8 or d[10]>d[6] or d[11]>4:raise ValueError('Unknown Setup UI probe schema')
+    cap,sites=(32,3) if d[0]==1 else (64,9)
     probe=dict(version=d[0],state=d[1],pid=d[2],task=d[3],header=d[4],code=d[5],attempts=d[6],vm_result=d[7],
                copy_error=d[8],restore_error=d[9],installed=d[10],stage=d[11],idversion=d[12],
                handler_count=d[16],touch_phase_count=d[17],window_send_count=d[18],sequence=d[19],cache_slide=d[31])
+    if d[0]==2:probe.update(send_touches_count=d[20],table_began_count=d[21],table_ended_count=d[22],
+        table_select_count=d[23],gesture_state_count=d[24],language_select_count=d[25])
     seq,version,capacity,stride=struct.unpack_from('<4I',data)
-    if len(data)!=(4+32*96)*4 or (seq and (version,capacity,stride)!=(1,32,96)):raise ValueError('Unknown UI execution ring')
+    if len(data)!=(4+cap*96)*4 or (seq and (version,capacity,stride)!=(d[0],cap,96)):raise ValueError('Unknown UI execution ring')
     rows=[]
-    for n in range(32):
+    for n in range(cap):
         r=struct.unpack_from('<96I',data,(4+n*96)*4)
-        if not r[0] or not max(1,seq-31)<=r[0]<=seq:continue
-        if not 1<=r[4]<=3 or r[13]>192 or r[15]>128:raise ValueError('UI row outside bounds')
+        if not r[0] or not max(1,seq-cap+1)<=r[0]<=seq:continue
+        if not 1<=r[4]<=sites or r[13]>192 or r[15]>128:raise ValueError('UI row outside bounds')
         current=(r[1],r[2],r[3])==(d[2],d[12],d[3])
         if current and r[5]!=d[5]+(r[4]-1)*64+22:raise ValueError('UI row has no matching native execution site')
         actor=struct.pack('<48I',*r[16:64]);event=struct.pack('<32I',*r[64:96])
@@ -175,6 +178,15 @@ def decode_ui_execution(diag,data):
             if r[4]==3 and r[13]==192:
                 row['window']=dict(last_down_view=struct.unpack_from('<I',actor,100)[0],touch_data=struct.unpack_from('<I',actor,116)[0],
                     screen=struct.unpack_from('<I',actor,132)[0],root_controller=struct.unpack_from('<I',actor,144)[0])
+            if r[4]==8 and r[13]==55:
+                row['gesture']=dict(next_state=r[10],previous_state=struct.unpack_from('<I',actor,48)[0],
+                    view=struct.unpack_from('<I',actor,12)[0],delegate=struct.unpack_from('<I',actor,20)[0],flags=int.from_bytes(actor[52:55],'little'))
+        if r[4] in (5,6,7) and not r[14] and r[15]==128:
+            flags=int.from_bytes(event[36:64],'little')
+            row['table']=dict(current_touch=struct.unpack_from('<I',event,32)[0],flags_hex=event[36:64].hex(),
+                allows_selection=(flags>>133)&1,allows_multiple_selection=(flags>>135)&1,ignore_touch_select=(flags>>130)&1,
+                highlighted_paths=struct.unpack_from('<I',event,64)[0],selected_paths=struct.unpack_from('<I',event,68)[0],
+                pending_selection=struct.unpack_from('<I',event,80)[0],touched_content_view=struct.unpack_from('<I',event,88)[0])
         if r[4]==1 and not r[14] and r[15]==128:
             row['gs_event']=dict(type=struct.unpack_from('<I',event,8)[0],location=list(struct.unpack_from('<2f',event,16)),
                 window_location=list(struct.unpack_from('<2f',event,24)),hand_type=struct.unpack_from('<I',event,60)[0])
@@ -187,7 +199,9 @@ def capture_ui_observations(kernel, symbols, out):
     result = {}
     if '_i9100_ui_execution_diag' in symbols.values and '_i9100_ui_execution_rows' in symbols.values:
         raw=kernel.read(symbols['_i9100_ui_execution_diag'],128);(out/'ui-execution-diag.bin').write_bytes(raw)
-        rows=kernel.read(symbols['_i9100_ui_execution_rows'],(4+32*96)*4);(out/'ui-execution-rows.bin').write_bytes(rows)
+        version=struct.unpack_from('<I',raw)[0]
+        if version not in (1,2):raise ValueError('Unknown Setup UI observation version')
+        rows=kernel.read(symbols['_i9100_ui_execution_rows'],(4+(32 if version==1 else 64)*96)*4);(out/'ui-execution-rows.bin').write_bytes(rows)
         result['ui_execution']=decode_ui_execution(raw,rows)
     mmu={}
     for key in ('_pmap_asid_ncpus','_pmap_asid_disabled','_processor_avail_count','_real_ncpus'):

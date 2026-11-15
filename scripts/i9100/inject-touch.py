@@ -122,7 +122,7 @@ def main():
                             (out/'language-ready.json').write_text(json.dumps(dict(samples=samples,observed=True),indent=2)+'\n')
                             if a.require_ui_trace:
                                 u=struct.unpack('<32I',kernel.read(symbols['_i9100_ui_execution_diag'],128))
-                                o.require(u[0]==1 and u[1]==2 and u[10]>0 and u[11]==4,'Setup observer not installed; follow-up not sent')
+                                o.require(u[0] in (1,2) and u[1]==2 and u[10]>0 and u[11]==4,'Setup observer not installed; follow-up not sent')
                                 (out/'ui-preflight.bin').write_bytes(struct.pack('<32I',*u))
                             if a.ui_layout:
                                 ui=module('input_ui_state','inspect-ui-app.py');target=out/'before-tap-ui';target.mkdir()
