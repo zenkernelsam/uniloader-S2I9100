@@ -153,9 +153,10 @@ def capture_ui_observations(kernel, symbols, out):
     if key in symbols.values:
         raw=kernel.read(symbols[key],64);(out/'hid-fixed-cadence.bin').write_bytes(raw)
         w=struct.unpack('<16I',raw)
-        if w[0]!=1 or w[1]>1 or w[3]+w[4]+w[5]+w[6]>w[2]:raise ValueError('Unknown fixed-cadence observation')
+        if w[0]!=1 or w[1]>1:raise ValueError('Unknown fixed-cadence observation')
         result['hid_fixed_cadence']=dict(zip(('version','observed','calls','cleared','already_clear','copy_errors','rejected',
             'pid','task','idversion','service','previous_capability','sender_low','sender_high','reserved','last_error'),w))
+        result['hid_fixed_cadence']['snapshot']='non-atomic counters; not an aggregate equality assertion'
     key='_i9100_touch_sender_identity'
     if key in symbols.values:
         w=struct.unpack('<4I',kernel.read(symbols[key],16))
