@@ -14,6 +14,8 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--kernel',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--frame',action='store_true');p.add_argument('--require-self-test',action='store_true')
+    p.add_argument('--chunk-bytes',type=int,choices=(4096,8192,16384,32768),default=8192,
+                   help='Bounded frame DATA burst; larger bursts shorten a live animation capture')
     p.add_argument('--filter-state',action='store_true',help='Retain bounded current service/client dictionary pages from the executed shim')
     a=p.parse_args();out=b.o.confined(a.output,b.f.REPO/'out');b.o.require(not out.exists(),'Fresh evidence required')
     symbols=b.m.Symbols(b.o.confined(a.kernel,b.f.REPO/'out'))
@@ -88,7 +90,7 @@ def main():
                         result['filter']=dict(system=hex(shim['arguments'][0]),service=hex(shim['arguments'][2]),task=hex(probe['task']),map=hex(mapva),pmap=hex(pmap),pages=pages,client_entries=entries)
                     if a.frame:
                         target=out/'frame';target.mkdir()
-                        result['frame']=b.frame.capture_frame(kernel,symbols,target,device,8192,record)
+                        result['frame']=b.frame.capture_frame(kernel,symbols,target,device,a.chunk_bytes,record)
                     (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
                 record('DONE',frame=bool(a.frame),interaction_verified=False)
             except BaseException as e:record('STOP',error=str(e),retry=False);raise
