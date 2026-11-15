@@ -36,10 +36,15 @@ def main():
     p.add_argument('--wake-first',action='store_true',help='One Home press followed by this gesture on the same handle')
     p.add_argument('--follow-tap',type=int,nargs=2,metavar=('X','Y'),
                    help='One bounded tap after this swipe, before an idle transition can interrupt setup')
+    p.add_argument('--follow-ms',type=int,choices=range(80,1501),default=100,
+                   help='Bounded follow-up duration; 80ms can retain the first Down in the execution ring')
+    p.add_argument('--wait-language',action='store_true',
+                   help='Before the follow-up, observe the actual language-list card in bounded scanout samples')
     p.add_argument('--trace',action='store_true',help='Retain current HID/GS execution immediately after the gesture on the same handle')
     a=p.parse_args()
     if a.wake_first and a.home:p.error('--wake-first requires a touch gesture')
     if a.follow_tap and not a.swipe:p.error('--follow-tap requires --swipe')
+    if a.wait_language and not a.follow_tap:p.error('--wait-language requires --follow-tap')
     points=([0,0,0,0] if a.home else a.swipe if a.swipe else a.tap+a.tap)
     ms=a.ms if a.ms is not None else (200 if a.home else 400 if a.swipe else 100)
     command=('hid-home '+format(ms,'x') if a.home else 'hid-swipe '+' '.join(format(n,'x') for n in [*points,ms]))
@@ -70,9 +75,9 @@ def main():
                 steps=([(True,[0,0,0,0],200,'hid-home c8')] if a.wake_first else [])+[(a.home,points,ms,command)]
                 if a.follow_tap:
                     follow=a.follow_tap+a.follow_tap
-                    follow_command='hid-swipe '+' '.join(format(n,'x') for n in [*follow,100])
+                    follow_command='hid-swipe '+' '.join(format(n,'x') for n in [*follow,a.follow_ms])
                     f.validate_command(follow_command,allow_input_test=True)
-                    steps.append((False,follow,100,follow_command))
+                    steps.append((False,follow,a.follow_ms,follow_command))
                 completed=[]
                 for home,step_points,step_ms,step_command in steps:
                     before=struct.unpack('<16I',kernel.read(address,64))
@@ -94,7 +99,20 @@ def main():
                         step['hid_counts']=dict(callback=diag[16],digitizer=diag[17],gs=diag[18],sequence=diag[19])
                     completed.append(step)
                     if a.wake_first and home:time.sleep(.5)
-                    if a.follow_tap and not home and step_command==command:time.sleep(.5)
+                    if a.follow_tap and not home and step_command==command:
+                        if a.wait_language:
+                            physical=kernel.u32(symbols['_i9100_fb_physical'])
+                            o.require(0x40000000<=physical and physical+1536000<=0x80000000,'Scanout outside DRAM')
+                            deadline=time.monotonic()+12;samples=[]
+                            while True:
+                                pixels=[list(kernel.read_phys(physical+y*1920+x*4,4)[:3]) for x,y in ((240,240),(240,200),(20,240))]
+                                ready=min(pixels[0])>200 and 40<min(pixels[1])<=max(pixels[1])<200 and max(pixels[2])<20
+                                samples.append(dict(pixels=pixels,ready=ready))
+                                if ready:break
+                                o.require(time.monotonic()<deadline,'Language card not observed; follow-up not sent')
+                                time.sleep(.2)
+                            (out/'language-ready.json').write_text(json.dumps(dict(samples=samples,observed=True),indent=2)+'\n')
+                        else:time.sleep(.5)
                 result=dict(tag=symbols.tag,device=device,command=command,sequence=state[2],
                     enqueued=state[8],phase=state[1],queue_completed=True,ui_delivery_verified=False,samples=samples,steps=completed,wake_first=a.wake_first)
                 if a.trace:
