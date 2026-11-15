@@ -91,6 +91,7 @@ ABORT_SYMBOLS.add('_i9100_audio_observation_target')
 ABORT_SYMBOLS.add('_i9100_quiet_charge_diag')
 ABORT_SYMBOLS.update({'_i9100_hid_execution_diag','_i9100_hid_execution_rows'})
 ABORT_SYMBOLS.add('_i9100_ui_sounds_unavailable_diag')
+ABORT_SYMBOLS.update({'_i9100_slab_publication_diag','_i9100_slab_publication_rows','_i9100_slab_failure_mapping_diag'})
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -102,9 +103,53 @@ LS_SYMBOLS.update({'_i9100_ls_query_diag','_i9100_ls_query_alloc_diag','_i9100_l
 LS_SYMBOLS.add('_i9100_ls_callback_diag')
 
 
+def decode_slab_publications(diag, data, failure):
+    """Immutable first-64 rows; process identity and PPNs remain snapshots."""
+    w=struct.unpack('<32I',diag)
+    if w[0]!=1 or w[1]>3 or w[6]>8 or w[10]>w[6] or w[11]>4:
+        raise ValueError('Unknown slab publication diagnostic')
+    probe=dict(version=w[0],state=w[1],pid=w[2],task=w[3],header=w[4],code=w[5],attempts=w[6],
+               vm_result=w[7],copy_error=w[8],restore_error=w[9],installed=w[10],stage=w[11],
+               idversion=w[12],map=w[13],pmap=w[14],calls=w[16],dropped=w[17],site=w[30],cache_slide=w[31])
+    count,version,capacity,stride=struct.unpack_from('<4I',data)
+    if len(data)!=(4+64*32)*4 or count>64 or (count and (version,capacity,stride)!=(1,64,32)):
+        raise ValueError('Unknown slab publication row bounds')
+    rows=[];unpublished=[]
+    for n in range(count):
+        r=struct.unpack_from('<32I',data,(4+n*32)*4)
+        if not r[0]:
+            unpublished.append(n);continue
+        if r[0]!=n+1 or not r[1] or not r[2] or not r[3]:
+            raise ValueError('Invalid slab publication identity/sequence')
+        row=dict(sequence=r[0],pid=r[1],idversion=r[2],task=r[3],candidate=r[4],link=r[5],
+                 expected=r[6],actual=r[7],stack_error=r[8],header_error=r[9],expected_error=r[10],
+                 ppn_before=r[11],ppn_after=r[12],pc=r[13],sp=r[14],map=r[15],header=list(r[16:24]),registers=list(r[24:32]))
+        row['current_installation']=(r[1],r[2],r[3])==(probe['pid'],probe['idversion'],probe['task'])
+        if row['current_installation'] and r[13]!=probe['code']+22:
+            raise ValueError('Slab row has no matching execution site')
+        row['magic_matches']=not any(r[8:11]) and r[6]==r[7]
+        row['mapping_stable_during_copy']=bool(r[11] and r[11]==r[12])
+        rows.append(row)
+    f=struct.unpack('<16I',failure)
+    if f[0]!=1 or f[1]>1 or (f[1] and f[15]!=1):
+        raise ValueError('Unknown slab failure mapping snapshot')
+    failed=dict(zip(('version','sequence','pid','idversion','task','candidate','map','pmap','ppn_before',
+                     'ppn_after','actual','copy_error','installed','publication_calls','site','stage'),f))
+    failed['mapping_stable_during_copy']=bool(f[8] and f[8]==f[9])
+    return dict(diagnostic=probe,rows=rows,count=count,unpublished=unpublished,failure=failed,
+                retention='first 64 immutable publications; PPN equality does not establish mapping lifetime')
+
+
 def capture_ui_observations(kernel, symbols, out):
     """Retained exit/abort evidence and display counters from this exact BUILD."""
     result = {}
+    if all(key in symbols.values for key in ('_i9100_slab_publication_diag','_i9100_slab_publication_rows','_i9100_slab_failure_mapping_diag')):
+        blobs=[]
+        for key,size,name in (('_i9100_slab_publication_diag',128,'slab-publication-diag.bin'),
+                              ('_i9100_slab_publication_rows',(4+64*32)*4,'slab-publication-rows.bin'),
+                              ('_i9100_slab_failure_mapping_diag',64,'slab-failure-mapping.bin')):
+            blob=kernel.read(symbols[key],size);(out/name).write_bytes(blob);blobs.append(blob)
+        result['slab_publication']=decode_slab_publications(*blobs)
     key='_i9100_audio_observation_target'
     if key in symbols.values:
         data=kernel.read(symbols[key],32);(out/'audio-observation-target.bin').write_bytes(data)
@@ -1019,6 +1064,9 @@ def capture_ui_observations(kernel, symbols, out):
                 if (row['pid'],row['task'])!=identity:raise ValueError(key+' includes another target')
     (out/'ui-observations.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     preview=dict(result)
+    if 'slab_publication' in result:
+        entry=result['slab_publication']
+        preview['slab_publication']=dict(entry,rows=entry['rows'][-6:])
     for key in ('backboard_vm','slab_vm'):
         if key in result:
             preview[key]=dict(result[key],rows=result[key]['rows'][-6:])
