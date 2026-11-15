@@ -41,7 +41,7 @@ def main():
                     record('STATE',hid=state.get('hid_execution'),touch=state.get('touch'),power=state.get('power'),graphics=state.get('i9100_graphics_seq'),springboard_exit=state.get('i9100_process_exit'),backboard_exit=state.get('i9100_backboard_exit'),quiet_charge=state.get('quiet_charge_feedback'))
                     probe=state.get('hid_execution',{})
                     if a.require_self_test:
-                        b.o.require(probe.get('version')==2 and probe.get('state')==2 and probe.get('self_test_count')==1 and probe.get('matching_svc_count',0)>=1,'Actual HID observer self-test not confirmed')
+                        b.o.require(probe.get('version')==2 and probe.get('state')==2 and probe.get('installed',0)>0 and probe.get('self_test_count')==probe.get('installed') and probe.get('matching_svc_count',0)>=1,'Actual HID observer self-test not confirmed')
                     result=dict(tag=symbols.tag,sequential=True,observations=state,interaction_verified=False)
                     if a.filter_state:
                         rows=state.get('hid_execution_rows',{}).get('rows',[])
