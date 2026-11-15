@@ -16,9 +16,13 @@ class Symbols:
 class Memory:
     def __init__(self,data):self.data=data
     def read(self,address,size):
-        data=self.data[address] if isinstance(self.data,dict) else self.data
-        assert (isinstance(self.data,dict) or address==0x1000) and size==len(data)
-        return data
+        regions=self.data if isinstance(self.data,dict) else {0x1000:self.data}
+        if address in regions:
+            assert size<=len(regions[address])
+            return regions[address][:size]
+        for base,data in regions.items():
+            if base<=address and address+size<=base+len(data):return data[address-base:address-base+size]
+        raise AssertionError('Read outside fixture')
 def decode(label,data,symbols=None,key='media_first_threads'):
     target=out/label;target.mkdir()
     with contextlib.redirect_stdout(io.StringIO()):return m.capture_ui_observations(Memory(data),symbols or Symbols(),target)[key]
@@ -97,7 +101,20 @@ if a.owner_fixture:
     assert owners['count']==2 and owners['rows'][0]['sequence']==1 and owners['rows'][0]['owner_low']==579
     assert owners['rows'][0]['registers'][0]==0x12040 and owners['rows'][0]['frame_rows'][0]['lr']==0x310fdd65
     assert owners['rows'][1]['error']==2 and owners['rows'][1]['frame_count']==0
-    for label,word,value in [('owner-version',1,2),('owner-cap',2,9),('owner-row-version',4+13,2),('owner-frames',4+10,7)]:
+    assert owners['version']==2
+    deep_path=a.owner_fixture.with_name('audio-owner-deep.bin')
+    if deep_path.exists():
+        deep=decode('deep-owner',deep_path.read_bytes(),owner_symbols,'audio_owners')
+        assert deep['count']==3 and deep['rows'][2]['frame_count']==16
+        assert deep['rows'][2]['frame_rows'][15]['lr']==0x310fdd65
+    legacy=bytearray(struct.pack('<4I',2,1,8,64))
+    for n in range(8):
+        row=bytearray(owner_raw[(4+n*96)*4:(4+n*96+64)*4])
+        if struct.unpack_from('<I',row)[0]:struct.pack_into('<I',row,13*4,1)
+        legacy.extend(row)
+    old=decode('legacy-owner',bytes(legacy),owner_symbols,'audio_owners')
+    assert old['version']==1 and old['rows'][0]['frame_rows']==owners['rows'][0]['frame_rows']
+    for label,word,value in [('owner-version',1,3),('owner-cap',2,9),('owner-row-version',4+13,3),('owner-frames',4+10,17),('owner-stride',3,95)]:
         changed=bytearray(owner_raw);struct.pack_into('<I',changed,word*4,value)
         try:decode(label,bytes(changed),owner_symbols,'audio_owners');raise AssertionError('Unknown owner layout accepted')
         except ValueError:pass

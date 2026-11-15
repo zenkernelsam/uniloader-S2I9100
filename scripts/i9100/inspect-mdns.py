@@ -186,21 +186,25 @@ def capture_ui_observations(kernel, symbols, out):
             raise ValueError('Queue and semaphore belong to different waits')
     key='_i9100_audio_owner_diag'
     if key in symbols.values:
-        data=kernel.read(symbols[key],(4+8*64)*4);(out/'audio-owners.bin').write_bytes(data)
-        count,version,capacity,stride=struct.unpack_from('<4I',data)
+        header=kernel.read(symbols[key],16)
+        count,version,capacity,stride=struct.unpack('<4I',header)
         if count:
-            if version!=1 or capacity!=8 or stride!=64 or count>8:raise ValueError('Unknown audio owner schema')
+            layouts={1:(64,6),2:(96,16)}
+            if version not in layouts or capacity!=8 or stride!=layouts[version][0] or count>8:raise ValueError('Unknown audio owner schema')
+            frames_max=layouts[version][1]
+            data=kernel.read(symbols[key],(4+8*stride)*4);(out/'audio-owners.bin').write_bytes(data)
+            if data[:16]!=header:raise ValueError('Audio owners changed during capture')
             rows=[]
             for n in range(count):
-                w=struct.unpack_from('<64I',data,(4+n*64)*4)
+                w=struct.unpack_from('<'+str(stride)+'I',data,(4+n*stride)*4)
                 if not w[0]:continue
-                if w[0]!=n+1 or w[13]!=1 or w[10]>6:raise ValueError('Unknown audio owner row')
+                if w[0]!=n+1 or w[13]!=version or w[10]>frames_max:raise ValueError('Unknown audio owner row')
                 rows.append(dict(sequence=w[0],pid=w[1],task=w[2],wait_mutex=w[3],code=w[4],
                     owner_low=w[5],owner_high=w[6],thread=w[7],state=w[8],error=w[9],
                     frame_count=w[10],stack_error=w[11],mutex_error=w[12],incoming_mask=w[14],scanned=w[15],
                     registers=list(w[16:29]),sp=w[29],lr=w[30],pc=w[31],cpsr=w[32],mutex_words=list(w[34:46]),
                     frame_rows=[dict(fp=w[46+k*3],previous=w[47+k*3],lr=w[48+k*3]) for k in range(w[10])]))
-            result['audio_owners']=dict(count=count,rows=rows,retention='owner at original first-task wait; correlate wait sequence')
+            result['audio_owners']=dict(count=count,version=version,rows=rows,retention='owner at original first-task wait; correlate wait sequence')
     key='_i9100_media_threads'
     if key in symbols.values:
         data=kernel.read(symbols[key],(16+16*72)*4);(out/'media-first-threads.bin').write_bytes(data)
