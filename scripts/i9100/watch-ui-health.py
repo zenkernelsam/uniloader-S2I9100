@@ -40,6 +40,7 @@ def main():
                            '_i9100_touch_observation','_i9100_input_test','_i9100_panel_console_enabled','_i9100_early_process_diag','_i9100_early_exit_diag','_i9100_power_policy','_i9100_pmap_empty_unwire','_i9100_launchd_listener_diag','_i9100_audio_observation_target'}
                     names.update(key for key in symbols.values if key.endswith('leo_graphics_state'))
                     names.add('_i9100_audio_owner_stack')
+                    names.add('_i9100_quiet_charge_diag')
                     if a.rpc:names.update({'_i9100_fig_rpc_diag','_i9100_fig_rpc_capacity'})
                     names.update({'_i9100_power_'+n for n in ('valid','percent','mv','connected','charging','temp','reason','revision_value')})
                     selected=boot.observations.ObservationSymbols(symbols,names)

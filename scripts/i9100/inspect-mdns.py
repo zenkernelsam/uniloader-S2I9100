@@ -88,6 +88,7 @@ ABORT_SYMBOLS.add('_i9100_power_policy')
 ABORT_SYMBOLS.add('_i9100_pmap_empty_unwire')
 ABORT_SYMBOLS.add('_i9100_launchd_listener_diag')
 ABORT_SYMBOLS.add('_i9100_audio_observation_target')
+ABORT_SYMBOLS.add('_i9100_quiet_charge_diag')
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -111,6 +112,13 @@ def capture_ui_observations(kernel, symbols, out):
                         not 4096<=w[5]<=0x3fffffc0 or not w[6] or not 2<=w[7]<=4):
             raise ValueError('Invalid executed-callback target')
         result['audio_observation_target']=dict(zip(('version','state','pid','task','slide','runtime_address','calls_at_selection','stage_at_selection'),w))
+    key='_i9100_quiet_charge_diag'
+    if key in symbols.values:
+        data=kernel.read(symbols[key],64);(out/'quiet-charge.bin').write_bytes(data)
+        w=struct.unpack('<16I',data)
+        if w[0]!=1 or w[1]>3 or w[6]>8 or w[12]>w[6] or w[13]>5:
+            raise ValueError('Unknown quiet charging feedback state')
+        result['quiet_charge_feedback']=dict(zip(('version','state','pid','task','header','site','attempts','vm_result','copy_error','restore_result','uuid_match','original_match','installed','stage','idversion','reserved'),w))
     key='_i9100_launchd_listener_diag'
     if key in symbols.values:
         data=kernel.read(symbols[key],64);(out/'launchd-listener.bin').write_bytes(data)

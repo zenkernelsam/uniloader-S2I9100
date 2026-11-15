@@ -71,6 +71,15 @@ def capture_process(session,kernel,name,out,m,dyld_info=False,thread_limit=None,
             if words[0]>=12 and len(words)>=21:
                 proc['dyld_info']['cache_slide']=hex(words[20])
                 print(name,'CACHE_SLIDE',hex(words[20]),flush=True)
+            if 0<words[1]<=4096 and 4096<=words[2]<=0x3ffffff4:
+                first=user_read(words[2],12)
+                (out/(name+'-dyld-first-image.bin')).write_bytes(first)
+                image,path,mtime=struct.unpack('<3I',first)
+                if 4096<=image<=0x3ffff000 and not image&4095:
+                    header=user_read(image,4096)
+                    if struct.unpack_from('<2I',header)==(0xfeedface,12):
+                        (out/(name+'-main-header.bin')).write_bytes(header)
+                        proc['dyld_info']['main_image']=dict(address=hex(image),path_address=hex(path),mtime=mtime)
         except (m.MappingError,struct.error) as exc:
             proc['dyld_info_error']=str(exc)
     for thread in proc['threads']:

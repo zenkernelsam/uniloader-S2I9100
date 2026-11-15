@@ -31,6 +31,7 @@ def main():
     parser.add_argument('--ls-ui-timeout',action='store_true')
     parser.add_argument('--audio-property-lock',action='store_true')
     parser.add_argument('--launchd-listener-guard',action='store_true')
+    parser.add_argument('--quiet-charge-feedback',action='store_true')
     parser.add_argument('--xpc-diag', action='store_true')
     parser.add_argument('--reboot-download-fallback', action='store_true')
     parser.add_argument('--tcc-development', action='store_true')
@@ -47,6 +48,8 @@ def main():
         parser.error('--audio-property-lock requires --control, --xpc-diag and --ios6-hid')
     if args.launchd_listener_guard and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--launchd-listener-guard requires --control, --xpc-diag and --ios6-hid')
+    if args.quiet_charge_feedback and (not args.control or not args.xpc_diag or not args.ios6_hid):
+        parser.error('--quiet-charge-feedback requires --control, --xpc-diag and --ios6-hid')
     if args.ls_ui_timeout and (not args.control or not args.xpc_diag):
         parser.error('--ls-ui-timeout requires --control and --xpc-diag')
     if args.control and (not args.control_tag or len(args.control_tag) != 16 or
@@ -125,6 +128,8 @@ def main():
                 command.append('-DI9100_AUDIO_PROPERTY_LOCK_BUILD=1')
             if args.launchd_listener_guard:
                 command.append('-DI9100_LAUNCHD_LISTENER_GUARD_BUILD=1')
+            if args.quiet_charge_feedback:
+                command.append('-DI9100_QUIET_CHARGE_BUILD=1')
             if args.xpc_diag:
                 command.append('-DI9100_XPC_DIAG_BUILD=1')
             if args.reboot_download_fallback:
