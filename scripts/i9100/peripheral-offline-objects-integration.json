@@ -27,12 +27,13 @@
     "iokit/i9100_emmc_layout.o",
     "iokit/i9100_uart_bluetooth.o",
     "iokit/i9100_pwm_haptic.o",
+    "iokit/i9100_bcm_f2.o",
     "iokit/i9100_dma_native.cpo",
     "iokit/i9100_peripheral_native.cpo",
     "iokit/IOS7I9100EMMC.cpo",
     "iokit/IOS7I9100GPT.cpo"
   ],
-  "patch_sha256": "1c9df643d034fcf9b6a91bb3b2d6a766bc9ebad58138b76f30fe90d1242dad43",
+  "patch_sha256": "959913b60034328fdb6d7ba5da86721d27c9c2ceb6380cebfbf0eb8ff126383c",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first"
