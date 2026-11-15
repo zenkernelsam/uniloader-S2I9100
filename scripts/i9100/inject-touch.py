@@ -33,7 +33,9 @@ def main():
     gestures.add_argument('--swipe',type=int,nargs=4,metavar=('X0','Y0','X1','Y1'))
     gestures.add_argument('--home',action='store_true')
     p.add_argument('--ms',type=int)
+    p.add_argument('--wake-first',action='store_true',help='One Home press followed by this gesture on the same handle')
     a=p.parse_args()
+    if a.wake_first and a.home:p.error('--wake-first requires a touch gesture')
     points=([0,0,0,0] if a.home else a.swipe if a.swipe else a.tap+a.tap)
     ms=a.ms if a.ms is not None else (200 if a.home else 400 if a.swipe else 100)
     command=('hid-home '+format(ms,'x') if a.home else 'hid-swipe '+' '.join(format(n,'x') for n in [*points,ms]))
@@ -56,21 +58,30 @@ def main():
                 session=f.Session(transport,symbols.tag,record,capture,timeout=20,allow_input_test=True)
                 session.handshake();kernel=m.Kernel(session,symbols)
                 address=symbols['_i9100_input_test']
-                before=struct.unpack('<16I',kernel.read(address,64))
-                o.require(before[0]==1 and before[14 if a.home else 12]==1 and before[1] in (1,4,5),'Input disabled or reader not ready; no command sent')
-                reply,_=session.command(command)
-                o.require(reply=='OK input-queued','Input request was not accepted')
-                deadline=time.monotonic()+5
-                samples=[]
-                while True:
-                    state=struct.unpack('<16I',kernel.read(address,64));samples.append(list(state))
-                    o.require(list(state[3:8])==[*points,ms] and state[2]==before[2]+1 and state[13]==int(a.home),'Mailbox ownership changed')
-                    if state[1]==4:break
-                    o.require(state[1]!=5,'Input canceled for physical input or closed reader')
-                    o.require(time.monotonic()<deadline,'Input queue completion timeout; no resend')
-                    time.sleep(.1)
+                steps=([(True,[0,0,0,0],200,'hid-home c8')] if a.wake_first else [])+[(a.home,points,ms,command)]
+                completed=[]
+                for home,step_points,step_ms,step_command in steps:
+                    before=struct.unpack('<16I',kernel.read(address,64))
+                    o.require(before[0]==1 and before[14 if home else 12]==1 and before[1] in (1,4,5),'Input disabled or reader not ready; no command sent')
+                    f.validate_command(step_command,allow_input_test=True)
+                    reply,_=session.command(step_command)
+                    o.require(reply=='OK input-queued','Input request was not accepted')
+                    deadline=time.monotonic()+5;samples=[]
+                    while True:
+                        state=struct.unpack('<16I',kernel.read(address,64));samples.append(list(state))
+                        o.require(list(state[3:8])==[*step_points,step_ms] and state[2]==before[2]+1 and state[13]==int(home),'Mailbox ownership changed')
+                        if state[1]==4:break
+                        o.require(state[1]!=5,'Input canceled for physical input or closed reader')
+                        o.require(time.monotonic()<deadline,'Input queue completion timeout; no resend')
+                        time.sleep(.1)
+                    step=dict(command=step_command,sequence=state[2],enqueued=state[8],samples=samples)
+                    if '_i9100_hid_execution_diag' in symbols.values:
+                        raw=kernel.read(symbols['_i9100_hid_execution_diag'],96);diag=struct.unpack('<24I',raw)
+                        step['hid_counts']=dict(callback=diag[16],digitizer=diag[17],gs=diag[18],sequence=diag[19])
+                    completed.append(step)
+                    if a.wake_first and home:time.sleep(.5)
                 result=dict(tag=symbols.tag,device=device,command=command,sequence=state[2],
-                    enqueued=state[8],phase=state[1],queue_completed=True,ui_delivery_verified=False,samples=samples)
+                    enqueued=state[8],phase=state[1],queue_completed=True,ui_delivery_verified=False,samples=samples,steps=completed,wake_first=a.wake_first)
                 (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
                 print(json.dumps(result,indent=2),flush=True);record('DONE',queue_only=True)
             except BaseException as exc:record('STOP',error=str(exc),retry=False);raise
