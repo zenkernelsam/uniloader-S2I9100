@@ -32,6 +32,7 @@
     "iokit/i9100_audio_power.o",
     "iokit/i9100_irq_router.o",
     "iokit/i9100_pcm_ring.o",
+    "iokit/i9100_bcm_chip.o",
     "iokit/i9100_dma_native.cpo",
     "iokit/i9100_peripheral_native.cpo",
     "iokit/IOS7I9100EMMC.cpo",
@@ -40,7 +41,7 @@
     "iokit/i9100_audio_board_native.cpo",
     "iokit/i9100_audio_worker.cpo"
   ],
-  "patch_sha256": "b5f530bff3da4c62455e4c5925ac4d4c1d16b1a4fd4dcf37add08f078bc90b11",
+  "patch_sha256": "0c0b55b1aa12871e22738c0fbcb6ae9293af48f21e721585ebfaa9493016f4d8",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first"
