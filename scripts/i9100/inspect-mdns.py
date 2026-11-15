@@ -93,6 +93,7 @@ ABORT_SYMBOLS.update({'_i9100_hid_execution_diag','_i9100_hid_execution_rows'})
 ABORT_SYMBOLS.add('_i9100_ui_sounds_unavailable_diag')
 ABORT_SYMBOLS.update({'_i9100_slab_publication_diag','_i9100_slab_publication_rows','_i9100_slab_failure_mapping_diag'})
 ABORT_SYMBOLS.update({'_pmap_asid_ncpus','_pmap_asid_disabled','_processor_avail_count','_real_ncpus'})
+ABORT_SYMBOLS.update({'_i9100_hid_fixed_cadence_diag','_i9100_touch_sender_identity'})
 LS_SYMBOLS = {'_i9100_ls_publish_wire_diag','_i9100_ls_bootstrap_diag',
               '_i9100_ls_store_reply_diag','_i9100_ls_fault_stack',
               '_i9100_process_exit','_i9100_backboard_exit','_i9100_ls_ui_diag','_i9100_ls_delivery_diag',
@@ -148,6 +149,18 @@ def capture_ui_observations(kernel, symbols, out):
     for key in ('_pmap_asid_ncpus','_pmap_asid_disabled','_processor_avail_count','_real_ncpus'):
         if key in symbols.values:mmu[key.lstrip('_')]=kernel.u32(symbols[key])
     if mmu:result['mmu_configuration']=dict(mmu,snapshot='non-atomic configuration globals; no hardware PAR capture')
+    key='_i9100_hid_fixed_cadence_diag'
+    if key in symbols.values:
+        raw=kernel.read(symbols[key],64);(out/'hid-fixed-cadence.bin').write_bytes(raw)
+        w=struct.unpack('<16I',raw)
+        if w[0]!=1 or w[1]>1 or w[3]+w[4]+w[5]+w[6]>w[2]:raise ValueError('Unknown fixed-cadence observation')
+        result['hid_fixed_cadence']=dict(zip(('version','observed','calls','cleared','already_clear','copy_errors','rejected',
+            'pid','task','idversion','service','previous_capability','sender_low','sender_high','reserved','last_error'),w))
+    key='_i9100_touch_sender_identity'
+    if key in symbols.values:
+        w=struct.unpack('<4I',kernel.read(symbols[key],16))
+        if w[0]!=1 or w[1]>1:raise ValueError('Unknown touch sender identity')
+        result['touch_sender_identity']=dict(version=w[0],valid=w[1],sender_low=w[2],sender_high=w[3])
     if all(key in symbols.values for key in ('_i9100_slab_publication_diag','_i9100_slab_publication_rows','_i9100_slab_failure_mapping_diag')):
         blobs=[]
         for key,size,name in (('_i9100_slab_publication_diag',128,'slab-publication-diag.bin'),

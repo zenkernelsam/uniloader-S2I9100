@@ -18,6 +18,7 @@ parser.add_argument('--audio-property-lock',action='store_true')
 parser.add_argument('--launchd-listener-guard',action='store_true')
 parser.add_argument('--quiet-charge-feedback',action='store_true')
 parser.add_argument('--hid-execution-trace',action='store_true')
+parser.add_argument('--hid-fixed-cadence',action='store_true')
 parser.add_argument('--slab-publication-trace',action='store_true')
 parser.add_argument('--system-sounds-unavailable',action='store_true')
 parser.add_argument('--xpc-diag', action='store_true')
@@ -42,6 +43,8 @@ if args.quiet_charge_feedback and (not args.xpc_diag or not args.ios6_hid):
     parser.error('--quiet-charge-feedback requires --xpc-diag and --ios6-hid')
 if args.hid_execution_trace and (not args.xpc_diag or not args.ios6_hid):
     parser.error('--hid-execution-trace requires --xpc-diag and --ios6-hid')
+if args.hid_fixed_cadence and not args.hid_execution_trace:
+    parser.error('--hid-fixed-cadence requires --hid-execution-trace')
 if args.slab_publication_trace and (not args.xpc_diag or not args.ios6_hid):
     parser.error('--slab-publication-trace requires --xpc-diag and --ios6-hid')
 if args.system_sounds_unavailable and (not args.xpc_diag or not args.ios6_hid):
@@ -74,6 +77,7 @@ subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--ke
                 *(['--launchd-listener-guard'] if args.launchd_listener_guard else []),
                 *(['--quiet-charge-feedback'] if args.quiet_charge_feedback else []),
                 *(['--hid-execution-trace'] if args.hid_execution_trace else []),
+                *(['--hid-fixed-cadence'] if args.hid_fixed_cadence else []),
                 *(['--slab-publication-trace'] if args.slab_publication_trace else []),
                 *(['--system-sounds-unavailable'] if args.system_sounds_unavailable else []),
                 *(['--xpc-diag'] if args.xpc_diag else []),

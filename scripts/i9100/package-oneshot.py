@@ -42,6 +42,7 @@ def main():
     parser.add_argument('--launchd-listener-guard',action='store_true',help='Reject a NULL listener-port job using the newer launchd error return')
     parser.add_argument('--quiet-charge-feedback',action='store_true',help='Diagnostic: silence only SpringBoard charging feedback 1106')
     parser.add_argument('--hid-execution-trace',action='store_true',help='Observe actual Backboard callback/digitizer/GS execution')
+    parser.add_argument('--hid-fixed-cadence',action='store_true',help='Restore the no-rate-control capability only for the verified S2 touch sender')
     parser.add_argument('--slab-publication-trace',action='store_true',help='Diagnostic: retain the original iOS6 slab header before list publication')
     parser.add_argument('--system-sounds-unavailable',action='store_true',help='Development: only SpringBoard system-sound status APIs return -1500 and playback is muted')
     parser.add_argument('--xpc-diag', action='store_true', help='Retain XPC boundary metadata in kernel RAM')
@@ -70,6 +71,8 @@ def main():
         parser.error('--quiet-charge-feedback requires --control, --xpc-diag and --ios6-hid')
     if args.hid_execution_trace and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--hid-execution-trace requires --control, --xpc-diag and --ios6-hid')
+    if args.hid_fixed_cadence and not args.hid_execution_trace:
+        parser.error('--hid-fixed-cadence requires --hid-execution-trace')
     if args.slab_publication_trace and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--slab-publication-trace requires --control, --xpc-diag and --ios6-hid')
     if args.system_sounds_unavailable and (not args.control or not args.xpc_diag or not args.ios6_hid):
@@ -128,6 +131,8 @@ def main():
         raise RuntimeError('Kernel lacks the explicit charging feedback diagnostic')
     if args.hid_execution_trace and b'i9100hidtrace\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit HID execution diagnostic')
+    if args.hid_fixed_cadence and b'i9100hidcadence\0' not in raw_data:
+        raise RuntimeError('Kernel lacks the explicit fixed-cadence capability restoration')
     if args.slab_publication_trace and b'i9100slabtrace\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit slab publication diagnostic')
     if args.system_sounds_unavailable and b'i9100nosound\0' not in raw_data:
@@ -165,6 +170,7 @@ def main():
         *(['--launchd-listener-guard'] if args.launchd_listener_guard else []),
         *(['--quiet-charge-feedback'] if args.quiet_charge_feedback else []),
         *(['--hid-execution-trace'] if args.hid_execution_trace else []),
+        *(['--hid-fixed-cadence'] if args.hid_fixed_cadence else []),
         *(['--slab-publication-trace'] if args.slab_publication_trace else []),
         *(['--system-sounds-unavailable'] if args.system_sounds_unavailable else []),
         *(['--xpc-diag'] if args.xpc_diag else []),
@@ -216,6 +222,7 @@ def main():
     assert (b'i9100launchdguard=1' in data) == args.launchd_listener_guard
     assert (b'i9100quietcharge=1' in data) == args.quiet_charge_feedback
     assert (b'i9100hidtrace=1' in data) == args.hid_execution_trace
+    assert (b'i9100hidcadence=1' in data) == args.hid_fixed_cadence
     assert (b'i9100slabtrace=1' in data) == args.slab_publication_trace
     assert (b'i9100nosound=1' in data) == args.system_sounds_unavailable
     assert 'S2I9100-OS6'.encode('utf-16le') in data
@@ -256,6 +263,7 @@ def main():
         'launchd_listener_guard': args.launchd_listener_guard,
         'quiet_charge_feedback': args.quiet_charge_feedback,
         'hid_execution_trace': args.hid_execution_trace,
+        'hid_fixed_cadence': args.hid_fixed_cadence,
         'slab_publication_trace': args.slab_publication_trace,
         'system_sounds_unavailable': args.system_sounds_unavailable,
         'xpc_diag': args.xpc_diag,
