@@ -14,6 +14,11 @@ def capture(session,kernel,symbols,layout,out,record):
     rows=[dict(zip(FIELDS,struct.unpack_from('<20I',raw,n*80))) for n in range(3)]
     result=dict(tag=symbols.tag,installation=dict(zip(('backboardd','SpringBoard','Setup'),rows)),
                 processes={},power={},sequential=True,physical_touch_verified=False)
+    if '_i9100_ui_density_execution' in symbols.values:
+        raw_execution=kernel.read(symbols['_i9100_ui_density_execution'],144);(out/'density-execution.bin').write_bytes(raw_execution)
+        names=('version','pid','idversion','before_count','after_count','init_count','copy_error','last_phase','caller_lr','stack','scale_bits','reserved')
+        result['execution']=dict(zip(('backboardd','SpringBoard','Setup'),
+            [dict(zip(names,struct.unpack_from('<12I',raw_execution,n*48))) for n in range(3)]))
     def save(): (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
     for name in ('valid','percent','mv','connected','charging','temp','reason','revision_value'):
         raw=kernel.read(symbols['_i9100_power_'+name],4)
@@ -35,14 +40,19 @@ def capture(session,kernel,symbols,layout,out,record):
         (target/'gs-scale.bin').write_bytes(scale_raw);(target/'gs-pixels.bin').write_bytes(pixels_raw)
         scale=struct.unpack('<f',scale_raw)[0];pixels=list(struct.unpack('<2I',pixels_raw))
         entry=dict(pid=pid,task=hex(task),slide=hex(slide),gs_scale=scale,gs_scale_bits=scale_raw.hex(),gs_pixels=pixels,present=True)
-        producer=2 if result['installation'][name]['version']>=2 else 1
+        schema=result['installation'][name]['version'];producer=2 if schema>=2 else 1
         entry['producer_schema']=producer
         site=(0x34c34d44 if producer==2 else 0x3867f554)+slide
         site_raw=user.read(site,8);(target/'density-site.bin').write_bytes(site_raw)
         entry['density_site']=dict(address=hex(site),physical=hex(user.translate(site)),bytes=site_raw.hex())
+        first=struct.unpack_from('<I',user.l1,(site>>20)*4)[0];mapping=dict(l1=hex(first))
+        if first&3==1:
+            second=struct.unpack_from('<I',user.l2[first&~1023],((site>>12)&255)*4)[0]
+            mapping.update(l2=hex(second),ng=bool(second&0x800),xn=bool(second&1))
+        entry['density_site']['mapping']=mapping
         if site_raw[:4]==bytes.fromhex('dff800f0'):
             code=struct.unpack_from('<I',site_raw,4)[0]&~1
-            length=36 if producer==2 else 24
+            length=192 if schema>=3 else 36 if producer==2 else 24
             b.o.require(4096<=code<=0x40000000-length,'Invalid private density code target')
             raw_code=user.read(code,length);(target/'density-code.bin').write_bytes(raw_code);entry['density_site']['code']=hex(code);entry['density_site']['code_bytes']=raw_code.hex()
         if producer==2:
@@ -108,7 +118,7 @@ def main():
                         expected=4/3 if a.require_installed==1333 else 1.5
                         for name,installation in result['installation'].items():
                             process=result['processes'][name]
-                            b.o.require(installation['version']==2 and installation['state']==2 and installation['option']==a.require_installed and
+                            b.o.require(installation['version'] in (2,3) and installation['state']==2 and installation['option']==a.require_installed and
                                 installation['installed']>0 and process['present'] and installation['pid']==process['pid'] and
                                 installation['task']==int(process['task'],16),'Current '+name+' density not installed')
                             b.o.require(process['density_site'].get('code')==hex(installation['code']),'Current '+name+' calibration code differs')
