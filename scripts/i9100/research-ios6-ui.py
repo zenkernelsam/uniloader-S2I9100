@@ -33,6 +33,7 @@ def main():
     p.add_argument('--native',action='append',default=[],help='Disassemble original Class:selector (up to 4096 bytes)')
     p.add_argument('--only-native',action='store_true',help='Omit the default disassembly set')
     p.add_argument('--executable',type=Path,help='UUID-matched original Setup for its classes and callbacks')
+    p.add_argument('--executable-uuid',default='580dfd1edbd53d33844bca6635c0b3cd',help='Explicit UUID for another original executable; Setup remains the default')
     p.add_argument('--class-methods',action='store_true',help='Read original Objective-C metaclass methods and their ABI encodings')
     p.add_argument('--native-class',action='append',default=[],help='Disassemble original Class:classSelector')
     p.add_argument('--native-address',action='append',default=[],help='Disassemble an original mapped address in the selected cache or executable')
@@ -50,7 +51,8 @@ def main():
                 if not refpath.is_relative_to(root):raise ValueError('Original reference outside project')
                 spec=importlib.util.spec_from_file_location('ui_reference',here/'objc-image.py')
                 ref=importlib.util.module_from_spec(spec);spec.loader.exec_module(ref)
-                executable=ref.MachImage(refpath,'580dfd1edbd53d33844bca6635c0b3cd')
+                if not re.fullmatch(r'[0-9a-f]{32}',a.executable_uuid):raise ValueError('Expected an exact original executable UUID')
+                executable=ref.MachImage(refpath,a.executable_uuid)
             def read(v,n):
                 if executable and v<0x30000000:return executable.read(v,n)
                 return data[c.offset(v,n):c.offset(v,n)+n]
