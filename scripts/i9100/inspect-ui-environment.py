@@ -88,6 +88,10 @@ def main():
                 result=dict(tag=symbols.tag,processes=[])
                 with b.open_session(dev,symbols.tag,out,record,300) as session:
                     kernel=b.m.Kernel(session,symbols)
+                    if '_i9100_setup_native_layout_diag' in symbols.values:
+                        diag=struct.unpack('<16I',kernel.read(symbols['_i9100_setup_native_layout_diag'],64))
+                        b.o.require(diag[0]==1,'Unknown native Setup diagnostic schema')
+                        result['native_layout']=dict(zip(('schema','matched','classic_entries','changed','missing','already_native','other_value','invalid_workspace','duplicate_keys'),diag[:9]))
                     for name in a.process:
                         result['processes'].append(capture(session,kernel,symbols,name,reference,out))
                         (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
