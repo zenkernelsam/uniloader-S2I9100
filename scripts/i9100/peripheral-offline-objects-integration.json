@@ -36,15 +36,17 @@
     "iokit/i9100_bcm_firmware.o",
     "iokit/i9100_bcm_firmware_crypto.o",
     "iokit/i9100_bcm_core_download.o",
+    "iokit/i9100_radio_power.o",
     "iokit/i9100_dma_native.cpo",
     "iokit/i9100_peripheral_native.cpo",
     "iokit/IOS7I9100EMMC.cpo",
     "iokit/IOS7I9100GPT.cpo",
     "iokit/i9100_audio_native.cpo",
     "iokit/i9100_audio_board_native.cpo",
-    "iokit/i9100_audio_worker.cpo"
+    "iokit/i9100_audio_worker.cpo",
+    "iokit/i9100_radio_native.cpo"
   ],
-  "patch_sha256": "4c08dd93104c27e41953bd0e2483549ad38fbf5396618ddb9b740613fb7a3b8e",
+  "patch_sha256": "e2024793c0ffede6270a5fe37acc68b267529ba3623603ee1a6feb8f793d4c0c",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first"
