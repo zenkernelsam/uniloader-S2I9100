@@ -36,6 +36,7 @@ def main():
     p.add_argument('--class-methods',action='store_true',help='Read original Objective-C metaclass methods and their ABI encodings')
     p.add_argument('--native-class',action='append',default=[],help='Disassemble original Class:classSelector')
     p.add_argument('--native-address',action='append',default=[],help='Disassemble an original mapped address in the selected cache or executable')
+    p.add_argument('--native-symbol',action='append',default=[],help='Disassemble an exported original UIKit function (up to 12288 bytes)')
     a=p.parse_args()
     out=a.output.resolve()
     if not out.is_relative_to(root/'research') or out.exists():p.error('Fresh project research directory required')
@@ -120,11 +121,15 @@ def main():
                    '_GSEventGetHIDEvent','_GSEventGetTimestamp','_GSEventCreateWithEventRecord','_GSSendEvent','_GSEventGetWindow'}
             getters=[dict(name=n,address=hex(v)) for v,n in gs if n in names]
             _,usymbols,_=c.image_symbols(base)
+            exports={sn:v for v,sn in usymbols}
             globals=[dict(name=sn,address=hex(v)) for v,sn in usymbols if sn in ('_UIApp','_UIApplicationInstance','_UIApplicationHandleEvent') or 'sharedApplication' in sn]
             (out/'handlers.json').write_text(json.dumps(dict(uikit=name,classes=classes,graphicsservices=getters,globals=globals),indent=2)+'\n')
             md=Cs(CS_ARCH_ARM,CS_MODE_THUMB);md.detail=False
             targets=[] if a.only_native else [(x['name'],int(x['address'],16),256) for x in getters]
             targets.extend(('original-address-'+v,int(v,0),4096) for v in a.native_address)
+            for symbol in a.native_symbol:
+                if symbol not in exports:raise ValueError('Original UIKit symbol absent: '+symbol)
+                targets.append((symbol,exports[symbol],12288))
             found_native=set()
             for cn,obj in classes.items():
                 if isinstance(obj,dict):
