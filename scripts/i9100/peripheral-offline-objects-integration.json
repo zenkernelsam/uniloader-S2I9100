@@ -1,5 +1,5 @@
 {
-  "source_sha256": "b74f1cc13099933d868eb82477087fa2e2ddf779640b1df5b9c1dd2b000e01ab",
+  "source_sha256": "4e6fee626029badeb5abc2f2bdf2aa6a688bed8c8c1bc090d8b4a5beb7c92bf9",
   "new_objects": [
     "iokit/i9100_gpio_broker.o",
     "iokit/i9100_i2c_gpio.o",
@@ -44,7 +44,7 @@
     "iokit/i9100_audio_board_native.cpo",
     "iokit/i9100_audio_worker.cpo"
   ],
-  "patch_sha256": "42f06ef2bf3b9bb21f1316840ed4113c6e1bc9ab7f4cb3ad818547c8716cae6b",
+  "patch_sha256": "4c08dd93104c27e41953bd0e2483549ad38fbf5396618ddb9b740613fb7a3b8e",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first"

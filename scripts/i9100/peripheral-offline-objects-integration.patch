@@ -1,6 +1,6 @@
 --- a/scripts/i9100/prepare-automation.py
 +++ b/scripts/i9100/prepare-automation.py
-@@ -34,6 +34,8 @@
+@@ -35,6 +35,8 @@
  parser.add_argument('--ios6-hid', action=argparse.BooleanOptionalAction, default=True)
  parser.add_argument('--input-test', action='store_true')
  parser.add_argument('--aks-development', action='store_true')
@@ -9,7 +9,7 @@
  args = parser.parse_args()
  if args.ls_ui_timeout and not args.xpc_diag:
      parser.error('--ls-ui-timeout requires --xpc-diag')
-@@ -73,6 +75,9 @@
+@@ -76,6 +78,9 @@
             'iokit/IOS7LeoHIDTouch.cpo',
             'iokit/i9100_power.o', 'iokit/i9100_power_bus.o', 'iokit/IOS7I9100Power.cpo',
             'osfmk/vm_map.o', 'osfmk/vm_user.o', 'osfmk/mach_kernelrpc.o', 'bsd/kern_exit.o', 'osfmk/pmap.o']
