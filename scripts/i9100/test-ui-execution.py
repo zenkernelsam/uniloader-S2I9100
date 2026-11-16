@@ -14,4 +14,14 @@ for kind,at,v in (('diag',0,3),('rows',4,3),('rows',12,64),('rows',(4+11*96+4)*4
     try:m.decode_ui_execution(bytes(blob) if kind=='diag' else diag,bytes(blob) if kind=='rows' else rows)
     except ValueError:pass
     else:raise AssertionError('Invalid native framing accepted')
+if modern:
+    bg=bytearray(diag);struct.pack_into('<I',bg,26*4,1);struct.pack_into('<I',bg,28*4,1)
+    header=struct.unpack_from('<I',bg,4*4)[0];struct.pack_into('<I',bg,29*4,header+0x22b4)
+    decoded=m.decode_ui_execution(bytes(bg),rows)['diagnostic']
+    assert decoded['background_fit_enabled']==1 and decoded['background_fit_site']==header+0x22b4
+    for at,value in ((26*4,0),(28*4,2),(29*4,0x9999)):
+        bad=bytearray(bg);struct.pack_into('<I',bad,at,value)
+        try:m.decode_ui_execution(bytes(bad),rows)
+        except ValueError:pass
+        else:raise AssertionError('Invalid background scope accepted')
 print('PASS production Setup UI ring bytes, wrap/identity binding and malformed schema/site rejection')
