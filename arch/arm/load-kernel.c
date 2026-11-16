@@ -190,7 +190,11 @@ void uart_puts(const char *s);
 #endif
 #ifdef I9100_UI_EXECUTION_TRACE_BUILD
 #ifdef I9100_UI_RETINA_ASSETS_BUILD
+#ifdef I9100_UI_KEEP_AWAKE_BUILD
+#define I9100_UI_EXECUTION_TRACE_CMDLINE " i9100uitrace=1 i9100uiretina=1 i9100uikeepawake=1"
+#else
 #define I9100_UI_EXECUTION_TRACE_CMDLINE " i9100uitrace=1 i9100uiretina=1"
+#endif
 #else
 #define I9100_UI_EXECUTION_TRACE_CMDLINE " i9100uitrace=1"
 #endif

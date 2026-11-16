@@ -86,7 +86,7 @@ def main():
                         for k in range(count):
                             sel,types,imp=words(ml+8+k*step,3);sn=string(sel)
                             if cn in a.classes or cn+':'+sn in native or any(x in sn.lower() for x in ('event','touch','hit','window','location','coordinate','select','gesture','phase')):
-                                methods.append(dict(selector=sn,address=hex(imp&~1),thumb=bool(imp&1)))
+                                methods.append(dict(selector=sn,selector_address=hex(sel),types=string(types),address=hex(imp&~1),thumb=bool(imp&1)))
                     ivars=[];iv=w[7]
                     if iv:
                         step,count=words(iv,2)
