@@ -40,6 +40,7 @@
     "iokit/i9100_bcm_boot.o",
     "iokit/i9100_wlan_control.o",
     "iokit/i9100_bcm_pump.o",
+    "iokit/i9100_radio_survey.o",
     "iokit/i9100_dma_native.cpo",
     "iokit/i9100_peripheral_native.cpo",
     "iokit/IOS7I9100EMMC.cpo",
@@ -52,7 +53,7 @@
     "iokit/i9100_bcm_irq.cpo",
     "iokit/i9100_power_shared.cpo"
   ],
-  "patch_sha256": "df339ecbec891866f8f21f0fb7f0fde3fdf1fbf5aef271bcb4fbb1da1ed433ba",
+  "patch_sha256": "ea7943eec947a4282e8567d57895f8e67730d023e9a8c620535655cfdfe88501",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first"
