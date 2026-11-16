@@ -45,6 +45,7 @@ def main():
     p.add_argument('--trace',action='store_true',help='Retain current HID/GS execution immediately after the gesture on the same handle')
     p.add_argument('--awake-check-layout',type=Path,help='Require native SpringBoard interaction flags after Home on this same handle')
     p.add_argument('--frame',action='store_true',help='Save the real scanout after this input on the same handle')
+    p.add_argument('--swipe-count',type=int,choices=(1,2,3,4),default=1,help='Explicit bounded consecutive swipes, each with a fresh sequence')
     a=p.parse_args()
     if a.wake_first and a.home:p.error('--wake-first requires a touch gesture')
     if a.follow_tap and not a.swipe:p.error('--follow-tap requires --swipe')
@@ -52,6 +53,7 @@ def main():
     if a.ui_layout and not a.wait_language:p.error('--ui-layout requires --wait-language')
     if a.require_ui_trace and not a.wait_language:p.error('--require-ui-trace requires --wait-language')
     if a.awake_check_layout and not a.wake_first:p.error('--awake-check-layout requires --wake-first')
+    if a.swipe_count!=1 and (not a.swipe or a.follow_tap):p.error('--swipe-count requires swipe without follow-up')
     points=([0,0,0,0] if a.home else a.swipe if a.swipe else a.tap+a.tap)
     ms=a.ms if a.ms is not None else (200 if a.home else 400 if a.swipe else 100)
     command=('hid-home '+format(ms,'x') if a.home else 'hid-swipe '+' '.join(format(n,'x') for n in [*points,ms]))
@@ -79,7 +81,7 @@ def main():
                     o.require(probe[0]==2 and probe[1]==2 and probe[10]>0 and probe[24]==probe[10] and probe[26]>=1,
                               'HID observer did not install/self-test; no input command sent')
                 address=symbols['_i9100_input_test']
-                steps=([(True,[0,0,0,0],200,'hid-home c8')] if a.wake_first else [])+[(a.home,points,ms,command)]
+                steps=([(True,[0,0,0,0],200,'hid-home c8')] if a.wake_first else [])+[(a.home,points,ms,command)]*a.swipe_count
                 if a.follow_tap:
                     follow=a.follow_tap+a.follow_tap
                     follow_command='hid-swipe '+' '.join(format(n,'x') for n in [*follow,a.follow_ms])
