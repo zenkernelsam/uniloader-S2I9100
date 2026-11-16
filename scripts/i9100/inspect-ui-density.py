@@ -35,6 +35,40 @@ def capture(session,kernel,symbols,layout,out,record):
         (target/'gs-scale.bin').write_bytes(scale_raw);(target/'gs-pixels.bin').write_bytes(pixels_raw)
         scale=struct.unpack('<f',scale_raw)[0];pixels=list(struct.unpack('<2I',pixels_raw))
         entry=dict(pid=pid,task=hex(task),slide=hex(slide),gs_scale=scale,gs_scale_bits=scale_raw.hex(),gs_pixels=pixels,present=True)
+        producer=2 if result['installation'][name]['version']>=2 else 1
+        entry['producer_schema']=producer
+        site=(0x34c34d44 if producer==2 else 0x3867f554)+slide
+        site_raw=user.read(site,8);(target/'density-site.bin').write_bytes(site_raw)
+        entry['density_site']=dict(address=hex(site),physical=hex(user.translate(site)),bytes=site_raw.hex())
+        if site_raw[:4]==bytes.fromhex('dff800f0'):
+            code=struct.unpack_from('<I',site_raw,4)[0]&~1
+            length=36 if producer==2 else 24
+            b.o.require(4096<=code<=0x40000000-length,'Invalid private density code target')
+            raw_code=user.read(code,length);(target/'density-code.bin').write_bytes(raw_code);entry['density_site']['code']=hex(code);entry['density_site']['code_bytes']=raw_code.hex()
+        if producer==2:
+            entry['gs_initial_scale_bits']=hex(result['installation'][name]['factory_before'])
+            entry['installed_via']=result['installation'][name]['reserved1'];dictionary=0
+        else:
+            entry['mg_export_bytes']=user.read(0x3867ab00+slide,12).hex()
+            cache=user.read(0x3acd7d4c+slide,8);dictionary,once=struct.unpack('<2I',cache)
+            entry['mg_factory']=dict(dictionary=hex(dictionary),once=hex(once))
+        if dictionary:
+            header=user.read(dictionary,36);(target/'mg-dictionary.bin').write_bytes(header)
+            index=header[11];sizes=(0,3,7,13,23,41,71,127)
+            b.o.require(((header[8]>>3)&1)==1 and 0<index<len(sizes),'Unknown original MG dictionary geometry')
+            count=sizes[index];values,keys=struct.unpack_from('<2I',header,28)
+            value_raw=user.read(values,count*4);key_raw=user.read(keys,count*4)
+            (target/'mg-values.bin').write_bytes(value_raw);(target/'mg-keys.bin').write_bytes(key_raw)
+            entries=[]
+            for key,value in zip(struct.unpack('<'+'I'*count,key_raw),struct.unpack('<'+'I'*count,value_raw)):
+                if value in (0,0xffffffff):continue
+                item=dict(key=hex(key),value=hex(value))
+                if key==0x3acd6288+slide:
+                    number=user.read(value,24);(target/'mg-scale-number.bin').write_bytes(number);item['scale_number_hex']=number.hex()
+                entries.append(item)
+            b.o.require(user.read(dictionary,36)==header and user.read(values,count*4)==value_raw and user.read(keys,count*4)==key_raw,'Original MG dictionary changed')
+            entry['mg_factory']['entries']=entries
+        result['processes'][name]=entry;save()
         entry['gs_initialized']=0<scale<=4 and all(0<n<=2048 for n in pixels)
         if name!='backboardd':
             uidir=target/'UIKit';uidir.mkdir()
@@ -74,10 +108,13 @@ def main():
                         expected=4/3 if a.require_installed==1333 else 1.5
                         for name,installation in result['installation'].items():
                             process=result['processes'][name]
-                            b.o.require(installation['version']==1 and installation['state']==2 and installation['option']==a.require_installed and
+                            b.o.require(installation['version']==2 and installation['state']==2 and installation['option']==a.require_installed and
                                 installation['installed']>0 and process['present'] and installation['pid']==process['pid'] and
                                 installation['task']==int(process['task'],16),'Current '+name+' density not installed')
-                            b.o.require(process['gs_pixels']==[480,800] and abs(process['gs_scale']-expected)<0.00001,'Original '+name+' GS density differs')
+                            b.o.require(process['density_site'].get('code')==hex(installation['code']),'Current '+name+' calibration code differs')
+                            if process['gs_initialized']:
+                                b.o.require(process['gs_pixels']==[480,800] and abs(process['gs_scale']-expected)<0.00001,'Original '+name+' GS density differs')
+                            else:b.o.require(name=='backboardd','Original '+name+' GS metrics not initialized')
                             if 'screen' in process:
                                 screen=process['screen'];bounds=screen['bounds']
                                 b.o.require(abs(screen['scale']-expected)<0.00001 and abs(bounds[2]*expected-480)<0.01 and abs(bounds[3]*expected-800)<0.01,'Original '+name+' UIKit geometry differs')
