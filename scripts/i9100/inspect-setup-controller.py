@@ -59,6 +59,15 @@ def capture(session,kernel,symbols,main,layout,out):
         c=word(c+4)
     result=dict(tag=symbols.tag,pid=pid,task=hex(task),header=hex(header),slide=hex(slide),singleton=hex(singleton),
         navigation=hex(nav),navigation_chain=chain,controllers=[hex(v) for v in values],top=hex(top),top_class=name,fields=fields,live_offsets=live_offsets,live_instance_size=info[2],objects={},sequential=True)
+    result['setup_state']=dict(buddy_ui_finished=root[47],buddy_done=root[48],early_exit_allowed=root[50],network_reachable=root[56],appleid_configured=root[69])
+    owner=fields.get('_delegate',0)
+    if isinstance(owner,int) and owner and word(owner)==int(main['classes']['BuddyTCController']['class_address'],16)+bias:
+        raw_owner=read(owner,24);(out/'tc-owner.bin').write_bytes(raw_owner)
+        result['tc_owner']=dict(address=hex(owner),setup_delegate=hex(struct.unpack_from('<I',raw_owner,4)[0]),object_model=hex(struct.unpack_from('<I',raw_owner,8)[0]),
+            ios_controller=hex(struct.unpack_from('<I',raw_owner,12)[0]),warranty_controller=hex(struct.unpack_from('<I',raw_owner,16)[0]),confirmation_alert=hex(struct.unpack_from('<I',raw_owner,20)[0]))
+        alert=struct.unpack_from('<I',raw_owner,20)[0]
+        if alert:
+            data=read(alert,512);(out/'agreement-alert.bin').write_bytes(data);result['agreement_alert']=dict(address=hex(alert),isa=hex(struct.unpack_from('<I',data)[0]),bytes=len(data))
     def view(v,label):
         raw=read(v,96);(out/(label+'.bin')).write_bytes(raw);layer=struct.unpack_from('<I',raw,4)[0]
         entry=dict(address=hex(v),isa=hex(struct.unpack_from('<I',raw)[0]),layer=hex(layer),words=[hex(x) for x in struct.unpack('<24I',raw)])

@@ -39,6 +39,7 @@ def main():
     p.add_argument('--native-class',action='append',default=[],help='Disassemble original Class:classSelector')
     p.add_argument('--native-address',action='append',default=[],help='Disassemble an original mapped address in the selected cache or executable')
     p.add_argument('--native-symbol',action='append',default=[],help='Disassemble an exported original UIKit function (up to 12288 bytes)')
+    p.add_argument('--symbol-image',default='UIKit',help='Exact selected cache image leaf for exported native symbols')
     a=p.parse_args()
     out=a.output.resolve()
     if not out.is_relative_to(root/'research') or out.exists():p.error('Fresh project research directory required')
@@ -124,7 +125,9 @@ def main():
                    '_GSEventGetHIDEvent','_GSEventGetTimestamp','_GSEventCreateWithEventRecord','_GSSendEvent','_GSEventGetWindow'}
             getters=[dict(name=n,address=hex(v)) for v,n in gs if n in names]
             _,usymbols,_=c.image_symbols(base)
-            exports={sn:v for v,sn in usymbols}
+            symbolbase=next(v for v,n in c.images if n.rsplit('/',1)[-1]==a.symbol_image)
+            _,export_symbols,_=c.image_symbols(symbolbase)
+            exports={sn:v for v,sn in export_symbols}
             globals=[dict(name=sn,address=hex(v)) for v,sn in usymbols if sn in ('_UIApp','_UIApplicationInstance','_UIApplicationHandleEvent') or 'sharedApplication' in sn]
             (out/'handlers.json').write_text(json.dumps(dict(uikit=name,classes=classes,graphicsservices=getters,globals=globals),indent=2)+'\n')
             md=Cs(CS_ARCH_ARM,CS_MODE_THUMB);md.detail=False

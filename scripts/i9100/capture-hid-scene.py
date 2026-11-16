@@ -24,6 +24,7 @@ def main():
     names.update({'_i9100_power_'+n for n in ('valid','percent','mv','connected','charging','temp','reason','revision_value')})
     names.update({'_i9100_hid_fixed_cadence_diag','_i9100_touch_sender_identity'})
     names.update({'_i9100_ui_execution_diag','_i9100_ui_execution_rows'})
+    names.add('_i9100_previous_boot')
     selected=b.observations.ObservationSymbols(symbols,names)
     profile=json.loads((b.o.OUT/'inventory-20261106-211114-download-profile.json').read_text())
     with b.o.host_lock():
