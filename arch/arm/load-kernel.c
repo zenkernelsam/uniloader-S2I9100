@@ -202,7 +202,11 @@ void uart_puts(const char *s);
 #define I9100_UI_EXECUTION_TRACE_CMDLINE ""
 #endif
 #ifdef I9100_SETUP_NATIVE_LAYOUT_BUILD
+#ifdef I9100_SETUP_BACKGROUND_FIT_BUILD
+#define I9100_SETUP_NATIVE_LAYOUT_CMDLINE " i9100setupnative=1 i9100setupbg=1"
+#else
 #define I9100_SETUP_NATIVE_LAYOUT_CMDLINE " i9100setupnative=1"
+#endif
 #else
 #define I9100_SETUP_NATIVE_LAYOUT_CMDLINE ""
 #endif

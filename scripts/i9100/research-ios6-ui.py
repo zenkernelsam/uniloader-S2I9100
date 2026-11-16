@@ -29,6 +29,7 @@ def flag_fields(encoding):
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--classes',nargs='*',default=[],help='Additional original Objective-C classes')
+    p.add_argument('--all-classes',action='store_true',help='Read all original classes in the explicitly selected images')
     p.add_argument('--images',nargs='+',default=['UIKit'],help='Cache image leaf names containing the requested classes')
     p.add_argument('--native',action='append',default=[],help='Disassemble original Class:selector (up to 4096 bytes)')
     p.add_argument('--only-native',action='store_true',help='Omit the default disassembly set')
@@ -81,14 +82,14 @@ def main():
             for v,imagename in classlist:
                 try:
                     ro=words(v,5)[4]&~3;w=words(ro,10);cn=string(w[4])
-                    if cn not in wanted:continue
+                    if cn not in wanted and not a.all_classes:continue
                     methods=[];ml=w[5]
                     if ml:
                         flags,count=words(ml,2);step=flags&0xffff;step&=~3
                         if not 12<=step<=32 or count>4096:raise ValueError('Unknown method list')
                         for k in range(count):
                             sel,types,imp=words(ml+8+k*step,3);sn=string(sel)
-                            if cn in a.classes or cn+':'+sn in native or any(x in sn.lower() for x in ('event','touch','hit','window','location','coordinate','select','gesture','phase')):
+                            if a.all_classes or cn in a.classes or cn+':'+sn in native or any(x in sn.lower() for x in ('event','touch','hit','window','location','coordinate','select','gesture','phase')):
                                 methods.append(dict(selector=sn,selector_address=hex(sel),types=string(types),address=hex(imp&~1),thumb=bool(imp&1)))
                     ivars=[];iv=w[7]
                     if iv:
@@ -172,6 +173,12 @@ def main():
                             address=(literals.pop(reg)+ins.address+4)&0xffffffff
                             try:
                                 value=words(address,1)[0];note=f' ; original[{address:08x}]={value:08x}'
+                                for candidate in (address,value):
+                                    try:
+                                        cf=words(candidate,4)
+                                        if cf[1]==0x7c8 and 0<cf[3]<=128:
+                                            note+=' CFString '+repr(read(cf[2],cf[3]).decode('utf-8','strict'))
+                                    except (ValueError,UnicodeError,struct.error):pass
                                 try:
                                     st=string(value)
                                     if 0<len(st)<160 and all(x.isprintable() for x in st):note+=' '+repr(st)

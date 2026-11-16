@@ -155,6 +155,9 @@ def decode_ui_execution(diag,data):
         table_select_count=d[23],gesture_state_count=d[24],language_select_count=d[25])
     if d[0]==2:probe['retina_assets_enabled']=d[26]
     if d[0]==2:probe['keep_awake_enabled']=d[27]
+    if d[0]==2:
+        if d[28]>1 or d[28]>d[26] or (d[28] and d[29] and d[29]!=d[4]+0x22b4):raise ValueError('Unknown native background preference')
+        probe.update(background_fit_enabled=d[28],background_fit_site=d[29])
     seq,version,capacity,stride=struct.unpack_from('<4I',data)
     if len(data)!=(4+cap*96)*4 or (seq and (version,capacity,stride)!=(d[0],cap,96)):raise ValueError('Unknown UI execution ring')
     rows=[]
