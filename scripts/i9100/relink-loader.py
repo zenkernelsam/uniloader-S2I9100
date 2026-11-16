@@ -38,6 +38,7 @@ def main():
     parser.add_argument('--ui-execution-trace',action='store_true')
     parser.add_argument('--ui-retina-assets',action='store_true')
     parser.add_argument('--ui-keep-awake',action='store_true')
+    parser.add_argument('--setup-native-layout',action='store_true')
     parser.add_argument('--system-sounds-unavailable',action='store_true')
     parser.add_argument('--xpc-diag', action='store_true')
     parser.add_argument('--reboot-download-fallback', action='store_true')
@@ -69,6 +70,8 @@ def main():
         parser.error('--ui-retina-assets requires --ui-execution-trace')
     if args.ui_keep_awake and not args.ui_retina_assets:
         parser.error('--ui-keep-awake requires --ui-retina-assets')
+    if args.setup_native_layout and not args.ui_retina_assets:
+        parser.error('--setup-native-layout requires the verified --ui-retina-assets baseline')
     if args.system_sounds_unavailable and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--system-sounds-unavailable requires --control, --xpc-diag and --ios6-hid')
     if args.ls_ui_timeout and (not args.control or not args.xpc_diag):
@@ -163,6 +166,8 @@ def main():
                 command.append('-DI9100_UI_RETINA_ASSETS_BUILD=1')
             if args.ui_keep_awake:
                 command.append('-DI9100_UI_KEEP_AWAKE_BUILD=1')
+            if args.setup_native_layout:
+                command.append('-DI9100_SETUP_NATIVE_LAYOUT_BUILD=1')
             if args.system_sounds_unavailable:
                 command.append('-DI9100_SYSTEM_SOUNDS_UNAVAILABLE_BUILD=1')
             if args.xpc_diag:

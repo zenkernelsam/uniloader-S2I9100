@@ -47,6 +47,7 @@ def main():
     parser.add_argument('--ui-execution-trace',action='store_true',help='Observe actual original Setup UIKit handlers without changing their results')
     parser.add_argument('--ui-retina-assets',action='store_true',help='Use original UIImage 2x shared-asset preference for the exact Setup Next image')
     parser.add_argument('--ui-keep-awake',action='store_true',help='Development: only Setup uses the original idleTimerDisabled API')
+    parser.add_argument('--setup-native-layout',action='store_true',help='Platform preference: only UUID-matched iOS6 Setup launches with CLASSIC=0')
     parser.add_argument('--system-sounds-unavailable',action='store_true',help='Development: only SpringBoard system-sound status APIs return -1500 and playback is muted')
     parser.add_argument('--xpc-diag', action='store_true', help='Retain XPC boundary metadata in kernel RAM')
     parser.add_argument('--reboot-download-fallback', action='store_true',
@@ -84,6 +85,8 @@ def main():
         parser.error('--ui-retina-assets requires --ui-execution-trace')
     if args.ui_keep_awake and not args.ui_retina_assets:
         parser.error('--ui-keep-awake requires --ui-retina-assets')
+    if args.setup_native_layout and not args.ui_retina_assets:
+        parser.error('--setup-native-layout requires the verified --ui-retina-assets baseline')
     if args.system_sounds_unavailable and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--system-sounds-unavailable requires --control, --xpc-diag and --ios6-hid')
     if args.ls_ui_timeout and (not args.control or not args.xpc_diag):
@@ -150,6 +153,8 @@ def main():
         raise RuntimeError('Kernel lacks the explicit Setup shared-asset preference')
     if args.ui_keep_awake and b'i9100uikeepawake'+bytes([0]) not in raw_data:
         raise RuntimeError('Kernel lacks the explicit Setup awake preference')
+    if args.setup_native_layout and b'i9100setupnative'+bytes([0]) not in raw_data:
+        raise RuntimeError('Kernel lacks the explicit native Setup launch preference')
     if args.system_sounds_unavailable and b'i9100nosound\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit system-sound unavailability capability')
     if args.reboot_download_fallback and b'i9100rebootdownload\0' not in raw_data:
@@ -190,6 +195,7 @@ def main():
         *(['--ui-execution-trace'] if args.ui_execution_trace else []),
         *(['--ui-retina-assets'] if args.ui_retina_assets else []),
         *(['--ui-keep-awake'] if args.ui_keep_awake else []),
+        *(['--setup-native-layout'] if args.setup_native_layout else []),
         *(['--system-sounds-unavailable'] if args.system_sounds_unavailable else []),
         *(['--xpc-diag'] if args.xpc_diag else []),
         *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
@@ -245,6 +251,7 @@ def main():
     assert (b'i9100uitrace=1' in data) == args.ui_execution_trace
     assert (b'i9100uiretina=1' in data) == args.ui_retina_assets
     assert (b'i9100uikeepawake=1' in data) == args.ui_keep_awake
+    assert (b'i9100setupnative=1' in data) == args.setup_native_layout
     assert (b'i9100nosound=1' in data) == args.system_sounds_unavailable
     assert 'S2I9100-OS6'.encode('utf-16le') in data
     symbols = subprocess.check_output(['arm-none-eabi-nm','-n',str(build/'uniLoader.o')],text=True)
@@ -289,6 +296,7 @@ def main():
         'ui_execution_trace': args.ui_execution_trace,
         'ui_retina_assets': args.ui_retina_assets,
         'ui_keep_awake': args.ui_keep_awake,
+        'setup_native_layout': args.setup_native_layout,
         'system_sounds_unavailable': args.system_sounds_unavailable,
         'xpc_diag': args.xpc_diag,
         'reboot_download_fallback': args.reboot_download_fallback,
