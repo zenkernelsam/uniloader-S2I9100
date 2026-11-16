@@ -36,6 +36,7 @@ def main():
     parser.add_argument('--hid-fixed-cadence',action='store_true')
     parser.add_argument('--slab-publication-trace',action='store_true')
     parser.add_argument('--ui-execution-trace',action='store_true')
+    parser.add_argument('--ui-retina-assets',action='store_true')
     parser.add_argument('--system-sounds-unavailable',action='store_true')
     parser.add_argument('--xpc-diag', action='store_true')
     parser.add_argument('--reboot-download-fallback', action='store_true')
@@ -63,6 +64,8 @@ def main():
         parser.error('--slab-publication-trace requires --control, --xpc-diag and --ios6-hid')
     if args.ui_execution_trace and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--ui-execution-trace requires --control, --xpc-diag and --ios6-hid')
+    if args.ui_retina_assets and not args.ui_execution_trace:
+        parser.error('--ui-retina-assets requires --ui-execution-trace')
     if args.system_sounds_unavailable and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--system-sounds-unavailable requires --control, --xpc-diag and --ios6-hid')
     if args.ls_ui_timeout and (not args.control or not args.xpc_diag):
@@ -153,6 +156,8 @@ def main():
                 command.append('-DI9100_SLAB_PUBLICATION_TRACE_BUILD=1')
             if args.ui_execution_trace:
                 command.append('-DI9100_UI_EXECUTION_TRACE_BUILD=1')
+            if args.ui_retina_assets:
+                command.append('-DI9100_UI_RETINA_ASSETS_BUILD=1')
             if args.system_sounds_unavailable:
                 command.append('-DI9100_SYSTEM_SOUNDS_UNAVAILABLE_BUILD=1')
             if args.xpc_diag:

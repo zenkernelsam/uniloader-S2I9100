@@ -10,7 +10,7 @@ def identity(raw):
     m=re.search(rb'proc\s+(\d+)\s+\S+.*?task=(0x[0-9a-f]+)',raw)
     b.o.require(m is not None,'Process missing')
     return int(m[1]),int(m[2],16)
-def capture(session,kernel,symbols,name,layout,out):
+def capture(session,kernel,symbols,name,layout,out,flags_only=False):
     _,raw=session.command('ports '+name);(out/'ports-before.txt').write_bytes(raw)
     pid,task=identity(raw);mapva=kernel.u32(task+0x18);pmap=kernel.u32(mapva+0x2c);user=kernel.user_pmap(pmap)
     ptr,size=struct.unpack('<2I',kernel.read(task+0x210,8))
@@ -38,6 +38,10 @@ def capture(session,kernel,symbols,name,layout,out):
         fields[x['name']]=(flags>>x['bit'])&((1<<x['width'])-1)
     result=dict(tag=symbols.tag,process=name,pid=pid,task=hex(task),map=hex(mapva),pmap=hex(pmap),slide=hex(slide),application=hex(app),
                 class_chain=chain,ivars=ivars,flags=fields,flags_hex=obj[88:101].hex(),snapshot='read-only sequential state')
+    if flags_only:
+        _,after=session.command('ports '+name);(out/'ports-after.txt').write_bytes(after)
+        b.o.require(identity(after)==(pid,task) and kernel.u32(task+0x18)==mapva and struct.unpack('<I',user.read(gl,4))[0]==app,'Application identity changed')
+        (out/'result.json').write_text(json.dumps(result,indent=2)+'\n');return result
     for key in ('_event','_touchesEvent','_touchMap'):
         address=ivars[key]
         if 4096<=address<=0x3fffff80:
@@ -89,7 +93,8 @@ def capture(session,kernel,symbols,name,layout,out):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--kernel',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--process',default='Setup');p.add_argument('--layout',type=Path,required=True);a=p.parse_args()
+    p.add_argument('--process',default='Setup');p.add_argument('--layout',type=Path,required=True)
+    p.add_argument('--flags-only',action='store_true',help='Read only identity and native interaction flags');a=p.parse_args()
     b.f.validate_command('ports '+a.process);sy=b.m.Symbols(b.o.confined(a.kernel,b.f.REPO/'out'));layout=json.loads(a.layout.read_text())
     out=b.o.confined(a.output,b.f.REPO/'out');b.o.require(not out.exists(),'Fresh output required')
     profile=json.loads((b.o.OUT/'inventory-20261106-211114-download-profile.json').read_text())
@@ -102,7 +107,7 @@ def main():
                 if phase in ('OPEN_OK','DTR_OK','CLOSED','STOP','DONE'):print(json.dumps(row),flush=True)
             try:
                 with b.open_session(dev,sy.tag,out,record,180) as session:
-                    result=capture(session,b.m.Kernel(session,sy),sy,a.process,layout,out)
+                    result=capture(session,b.m.Kernel(session,sy),sy,a.process,layout,out,flags_only=a.flags_only)
                     print(json.dumps(result,indent=2),flush=True)
                 record('DONE')
             except BaseException as e:record('STOP',error=str(e),retry=False);raise

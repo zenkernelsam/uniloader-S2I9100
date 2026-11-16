@@ -28,13 +28,14 @@ class OriginalStrings:
             if command==27:matched=self.data[at+8:at+24].hex()=='ad8b3ad23f413187a178179db39cfa6b'
             at+=size
         b.o.require(matched,'Original UIKit UUID differs');return self
-    def offset(self,address):
+    def offset(self,address,length=1):
         for va,size,off,_,_ in self.maps:
-            if va<=address<va+size:return off+address-va
+            if length>0 and va<=address and address+length<=va+size and off+address-va+length<=len(self.data):return off+address-va
         raise ValueError('String outside original cache')
     def string(self,address):
-        off=self.offset(address);end=self.data.find(b'\0',off,min(off+512,len(self.data)))
-        b.o.require(end>=off,'Unterminated original selector');return self.data[off:end].decode('utf-8','strict')
+        off=self.offset(address);end=self.data.find(b'\0',off,min(off+16384,len(self.data)))
+        b.o.require(end>=off,'Unterminated original selector');self.offset(address,end-off+1)
+        return self.data[off:end].decode('utf-8','strict')
     def __exit__(self,*args):self.data.close();self.file.close()
 
 

@@ -32,6 +32,10 @@ def main():
     p.add_argument('--images',nargs='+',default=['UIKit'],help='Cache image leaf names containing the requested classes')
     p.add_argument('--native',action='append',default=[],help='Disassemble original Class:selector (up to 4096 bytes)')
     p.add_argument('--only-native',action='store_true',help='Omit the default disassembly set')
+    p.add_argument('--executable',type=Path,help='UUID-matched original Setup for its classes and callbacks')
+    p.add_argument('--class-methods',action='store_true',help='Read original Objective-C metaclass methods and their ABI encodings')
+    p.add_argument('--native-class',action='append',default=[],help='Disassemble original Class:classSelector')
+    p.add_argument('--native-address',action='append',default=[],help='Disassemble an original mapped address in the selected cache or executable')
     a=p.parse_args()
     out=a.output.resolve()
     if not out.is_relative_to(root/'research') or out.exists():p.error('Fresh project research directory required')
@@ -39,12 +43,24 @@ def main():
     with (root/'assets/ios6-extract/dyld_cache6_armv7').open('rb') as f:
         with mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ) as data:
             c=m.Cache(data)
-            def read(v,n):return data[c.offset(v,n):c.offset(v,n)+n]
+            executable=None
+            if a.executable:
+                refpath=a.executable.resolve()
+                if not refpath.is_relative_to(root):raise ValueError('Original reference outside project')
+                spec=importlib.util.spec_from_file_location('ui_reference',here/'objc-image.py')
+                ref=importlib.util.module_from_spec(spec);spec.loader.exec_module(ref)
+                executable=ref.MachImage(refpath,'580dfd1edbd53d33844bca6635c0b3cd')
+            def read(v,n):
+                if executable and v<0x30000000:return executable.read(v,n)
+                return data[c.offset(v,n):c.offset(v,n)+n]
             def words(v,n):return struct.unpack('<'+'I'*n,read(v,n*4))
-            def string(v):return c.string(c.offset(v),min(len(data),c.offset(v)+16384))
+            def string(v):
+                if executable and v<0x30000000:return executable.string(v)
+                return c.string(c.offset(v),min(len(data),c.offset(v)+16384))
             base,name=next((v,n) for v,n in c.images if n.endswith('/UIKit'))
             classlist=[]
-            for imagebase,imagename in c.images:
+            image_sources=c.images+([(executable.base,str(executable.path))] if executable else [])
+            for imagebase,imagename in image_sources:
                 if imagename.rsplit('/',1)[-1] not in a.images:continue
                 mh=words(imagebase,7);at=imagebase+28
                 for _ in range(mh[4]):
@@ -87,6 +103,15 @@ def main():
                             if parts and max(x['bit']+x['width'] for x in parts)>ivar['size']*8:raise ValueError('Original flags exceed original ivar')
                             bitfields[ivar['name']]=parts
                     classes[cn]=dict(class_address=hex(v),superclass=hex(words(v,2)[1]),image=imagename,instance_size=w[2],methods=methods,ivars=ivars,bitfields=bitfields)
+                    if a.class_methods or a.native_class:
+                        meta=words(v,1)[0];mro=words(meta,5)[4]&~3;mw=words(mro,10);ml=mw[5];mm=[]
+                        if ml:
+                            flags,count=words(ml,2);step=(flags&0xffff)&~3
+                            if not 12<=step<=32 or count>4096:raise ValueError('Unknown metaclass method list')
+                            for k in range(count):
+                                sel,types,imp=words(ml+8+k*step,3)
+                                mm.append(dict(selector=string(sel),selector_address=hex(sel),address=hex(imp&~1),thumb=bool(imp&1),types=string(types)))
+                        classes[cn]['class_methods']=mm
                 except ValueError as e:
                     classes['error-'+hex(v)]=str(e)
             gsbase,gsname=next((v,n) for v,n in c.images if '/GraphicsServices.framework/' in n)
@@ -99,9 +124,15 @@ def main():
             (out/'handlers.json').write_text(json.dumps(dict(uikit=name,classes=classes,graphicsservices=getters,globals=globals),indent=2)+'\n')
             md=Cs(CS_ARCH_ARM,CS_MODE_THUMB);md.detail=False
             targets=[] if a.only_native else [(x['name'],int(x['address'],16),256) for x in getters]
+            targets.extend(('original-address-'+v,int(v,0),4096) for v in a.native_address)
             found_native=set()
             for cn,obj in classes.items():
                 if isinstance(obj,dict):
+                    for x in obj.get('class_methods',[]):
+                        key=cn+':'+x['selector']
+                        if key in a.native_class:
+                            targets.append(('+'+key,int(x['address'],16),4096))
+                            found_native.add(key)
                     for x in obj['methods']:
                         if cn+':'+x['selector'] in native:
                             targets.append((cn+':'+x['selector'],int(x['address'],16),4096))
@@ -118,7 +149,8 @@ def main():
                         if cn=='UITouch' and x['selector'] in ('setPhase:','_setPhase:','_setLocationInWindow:resetPrevious:'):
                             targets.append((cn+':'+x['selector'],int(x['address'],16),256))
             lines=[]
-            if native-found_native:raise ValueError('Original selectors absent: '+', '.join(sorted(native-found_native)))
+            requested=native|set(a.native_class)
+            if requested-found_native:raise ValueError('Original selectors absent: '+', '.join(sorted(requested-found_native)))
             for label,v,n in targets:
                 lines.append('FUNCTION '+label+' '+hex(v))
                 literals={}

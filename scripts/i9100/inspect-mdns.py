@@ -147,11 +147,13 @@ def decode_ui_execution(diag,data):
     d=struct.unpack('<32I',diag)
     if d[0] not in (1,2) or d[1]>3 or d[6]>8 or d[10]>d[6] or d[11]>4:raise ValueError('Unknown Setup UI probe schema')
     cap,sites=(32,3) if d[0]==1 else (64,9)
+    if d[0]==2 and d[26]>1:raise ValueError('Unknown Setup asset preference state')
     probe=dict(version=d[0],state=d[1],pid=d[2],task=d[3],header=d[4],code=d[5],attempts=d[6],vm_result=d[7],
                copy_error=d[8],restore_error=d[9],installed=d[10],stage=d[11],idversion=d[12],
                handler_count=d[16],touch_phase_count=d[17],window_send_count=d[18],sequence=d[19],cache_slide=d[31])
     if d[0]==2:probe.update(send_touches_count=d[20],table_began_count=d[21],table_ended_count=d[22],
         table_select_count=d[23],gesture_state_count=d[24],language_select_count=d[25])
+    if d[0]==2:probe['retina_assets_enabled']=d[26]
     seq,version,capacity,stride=struct.unpack_from('<4I',data)
     if len(data)!=(4+cap*96)*4 or (seq and (version,capacity,stride)!=(d[0],cap,96)):raise ValueError('Unknown UI execution ring')
     rows=[]

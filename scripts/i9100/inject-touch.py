@@ -43,12 +43,15 @@ def main():
     p.add_argument('--ui-layout',type=Path,help='Read Setup application state on this same awake handle before the follow-up')
     p.add_argument('--require-ui-trace',action='store_true',help='Before the follow-up require the actual Setup observer installation')
     p.add_argument('--trace',action='store_true',help='Retain current HID/GS execution immediately after the gesture on the same handle')
+    p.add_argument('--awake-check-layout',type=Path,help='Require native SpringBoard interaction flags after Home on this same handle')
+    p.add_argument('--frame',action='store_true',help='Save the real scanout after this input on the same handle')
     a=p.parse_args()
     if a.wake_first and a.home:p.error('--wake-first requires a touch gesture')
     if a.follow_tap and not a.swipe:p.error('--follow-tap requires --swipe')
     if a.wait_language and not a.follow_tap:p.error('--wait-language requires --follow-tap')
     if a.ui_layout and not a.wait_language:p.error('--ui-layout requires --wait-language')
     if a.require_ui_trace and not a.wait_language:p.error('--require-ui-trace requires --wait-language')
+    if a.awake_check_layout and not a.wake_first:p.error('--awake-check-layout requires --wake-first')
     points=([0,0,0,0] if a.home else a.swipe if a.swipe else a.tap+a.tap)
     ms=a.ms if a.ms is not None else (200 if a.home else 400 if a.swipe else 100)
     command=('hid-home '+format(ms,'x') if a.home else 'hid-swipe '+' '.join(format(n,'x') for n in [*points,ms]))
@@ -82,7 +85,7 @@ def main():
                     follow_command='hid-swipe '+' '.join(format(n,'x') for n in [*follow,a.follow_ms])
                     f.validate_command(follow_command,allow_input_test=True)
                     steps.append((False,follow,a.follow_ms,follow_command))
-                completed=[]
+                completed=[];gate_failure=None
                 for home,step_points,step_ms,step_command in steps:
                     before=struct.unpack('<16I',kernel.read(address,64))
                     o.require(before[0]==1 and before[14 if home else 12]==1 and before[1] in (1,4,5),'Input disabled or reader not ready; no command sent')
@@ -106,7 +109,14 @@ def main():
                         ui=module('input_ui_state','inspect-ui-app.py');target=out/'after-tap-ui';target.mkdir()
                         result_ui=ui.capture(session,kernel,symbols,'Setup',json.loads(a.ui_layout.read_text()),target)
                         step['setup_state_after']=result_ui['flags']
-                    if a.wake_first and home:time.sleep(.5)
+                    if a.wake_first and home:
+                        time.sleep(.5)
+                        if a.awake_check_layout:
+                            ui=module('awake_ui','inspect-ui-app.py');target=out/'awake-springboard';target.mkdir()
+                            app=ui.capture(session,kernel,symbols,'SpringBoard',json.loads(a.awake_check_layout.read_text()),target,flags_only=True)
+                            step['native_awake_flags']=app['flags']
+                            o.require(all(app['flags'][name]==0 for name in ('isSuspended','isSuspendedEventsOnly','blockInteractionEvents')),
+                                'Native SpringBoard still blocks interaction; swipe not sent')
                     if a.follow_tap and not home and step_command==command:
                         if a.wait_language:
                             physical=kernel.u32(symbols['_i9100_fb_physical'])
@@ -117,9 +127,12 @@ def main():
                                 ready=min(pixels[0])>200 and 40<min(pixels[1])<=max(pixels[1])<200 and max(pixels[2])<20
                                 samples.append(dict(pixels=pixels,ready=ready))
                                 if ready:break
+                                if a.frame and time.monotonic()>=deadline:
+                                    gate_failure='Language card not observed; follow-up not sent';break
                                 o.require(time.monotonic()<deadline,'Language card not observed; follow-up not sent')
                                 time.sleep(.2)
-                            (out/'language-ready.json').write_text(json.dumps(dict(samples=samples,observed=True),indent=2)+'\n')
+                            (out/'language-ready.json').write_text(json.dumps(dict(samples=samples,observed=ready),indent=2)+'\n')
+                            if gate_failure:break
                             if a.require_ui_trace:
                                 u=struct.unpack('<32I',kernel.read(symbols['_i9100_ui_execution_diag'],128))
                                 o.require(u[0] in (1,2) and u[1]==2 and u[10]>0 and u[11]==4,'Setup observer not installed; follow-up not sent')
@@ -131,6 +144,7 @@ def main():
                         else:time.sleep(.5)
                 result=dict(tag=symbols.tag,device=device,command=command,sequence=state[2],
                     enqueued=state[8],phase=state[1],queue_completed=True,ui_delivery_verified=False,samples=samples,steps=completed,wake_first=a.wake_first)
+                if gate_failure:result['stopped_before_follow_up']=gate_failure
                 if a.trace:
                     observed=module('input_observed','inspect-mdns.py')
                     names={'_i9100_hid_execution_diag','_i9100_hid_execution_rows','_i9100_touch_observation','_i9100_input_test','_i9100_process_exit','_i9100_graphics_seq','_i9100_ui_sounds_unavailable_diag'}
@@ -140,8 +154,13 @@ def main():
                     names.update({'_i9100_ui_execution_diag','_i9100_ui_execution_rows'})
                     target=out/'after-input';target.mkdir()
                     result['observations']=observed.capture_ui_observations(kernel,observed.ObservationSymbols(symbols,names),target)
+                if a.frame:
+                    frame=module('input_frame','capture-framebuffer.py');target=out/'frame';target.mkdir()
+                    result['frame']=frame.capture_frame(kernel,symbols,target,device,32768,record)
                 (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
-                print(json.dumps(result,indent=2),flush=True);record('DONE',queue_only=True)
+                print(json.dumps(result,indent=2),flush=True)
+                if gate_failure:raise ValueError(gate_failure)
+                record('DONE',queue_only=True)
             except BaseException as exc:record('STOP',error=str(exc),retry=False);raise
             finally:
                 if transport is not None:transport.close()
