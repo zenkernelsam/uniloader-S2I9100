@@ -49,6 +49,7 @@ def main():
     parser.add_argument('--ui-keep-awake',action='store_true',help='Development: only Setup uses the original idleTimerDisabled API')
     parser.add_argument('--setup-native-layout',action='store_true',help='Platform preference: only UUID-matched iOS6 Setup launches with CLASSIC=0')
     parser.add_argument('--setup-background-fit',action='store_true',help='Fit only the original Setup Linen UIImageView through native view APIs')
+    parser.add_argument('--ui-density',type=int,choices=(1333,1500),help='Default-off density qualification for original iOS6 BB/SB/Setup')
     parser.add_argument('--system-sounds-unavailable',action='store_true',help='Development: only SpringBoard system-sound status APIs return -1500 and playback is muted')
     parser.add_argument('--xpc-diag', action='store_true', help='Retain XPC boundary metadata in kernel RAM')
     parser.add_argument('--reboot-download-fallback', action='store_true',
@@ -90,6 +91,8 @@ def main():
         parser.error('--setup-native-layout requires the verified --ui-retina-assets baseline')
     if args.setup_background_fit and not args.setup_native_layout:
         parser.error('--setup-background-fit requires --setup-native-layout')
+    if args.ui_density and not args.setup_native_layout:
+        parser.error('--ui-density requires --setup-native-layout')
     if args.system_sounds_unavailable and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--system-sounds-unavailable requires --control, --xpc-diag and --ios6-hid')
     if args.ls_ui_timeout and (not args.control or not args.xpc_diag):
@@ -160,6 +163,8 @@ def main():
         raise RuntimeError('Kernel lacks the explicit native Setup launch preference')
     if args.setup_background_fit and b'i9100setupbg'+bytes([0]) not in raw_data:
         raise RuntimeError('Kernel lacks the explicit native Setup background preference')
+    if args.ui_density and b'i9100uidensity'+bytes([0]) not in raw_data:
+        raise RuntimeError('Kernel lacks the explicit native density capability')
     if args.system_sounds_unavailable and b'i9100nosound\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit system-sound unavailability capability')
     if args.reboot_download_fallback and b'i9100rebootdownload\0' not in raw_data:
@@ -202,6 +207,7 @@ def main():
         *(['--ui-keep-awake'] if args.ui_keep_awake else []),
         *(['--setup-native-layout'] if args.setup_native_layout else []),
         *(['--setup-background-fit'] if args.setup_background_fit else []),
+        *(['--ui-density',str(args.ui_density)] if args.ui_density else []),
         *(['--system-sounds-unavailable'] if args.system_sounds_unavailable else []),
         *(['--xpc-diag'] if args.xpc_diag else []),
         *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
@@ -259,6 +265,8 @@ def main():
     assert (b'i9100uikeepawake=1' in data) == args.ui_keep_awake
     assert (b'i9100setupnative=1' in data) == args.setup_native_layout
     assert (b'i9100setupbg=1' in data) == args.setup_background_fit
+    for density in (1333,1500):
+        assert (f'i9100uidensity={density}'.encode() in data) == (args.ui_density==density)
     assert (b'i9100nosound=1' in data) == args.system_sounds_unavailable
     assert 'S2I9100-OS6'.encode('utf-16le') in data
     symbols = subprocess.check_output(['arm-none-eabi-nm','-n',str(build/'uniLoader.o')],text=True)
@@ -305,6 +313,7 @@ def main():
         'ui_keep_awake': args.ui_keep_awake,
         'setup_native_layout': args.setup_native_layout,
         'setup_background_fit': args.setup_background_fit,
+        'ui_density': args.ui_density,
         'system_sounds_unavailable': args.system_sounds_unavailable,
         'xpc_diag': args.xpc_diag,
         'reboot_download_fallback': args.reboot_download_fallback,

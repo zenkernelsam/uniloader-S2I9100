@@ -60,6 +60,46 @@ def capture(session,kernel,symbols,main,layout,out):
     result=dict(tag=symbols.tag,pid=pid,task=hex(task),header=hex(header),slide=hex(slide),singleton=hex(singleton),
         navigation=hex(nav),navigation_chain=chain,controllers=[hex(v) for v in values],top=hex(top),top_class=name,fields=fields,live_offsets=live_offsets,live_instance_size=info[2],objects={},sequential=True)
     result['setup_state']=dict(buddy_ui_finished=root[47],buddy_done=root[48],early_exit_allowed=root[50],network_reachable=root[56],appleid_configured=root[69])
+    def runtime_fields(address,expected,label,wanted):
+        """Use realized offsets for a retained original choice/alert object."""
+        isa=word(address);base=expected;chain=[];c=isa;meta_pages={}
+        for _ in range(12):
+            chain.append(hex(c))
+            if c==base:break
+            c=word(c+4)
+        else:raise ValueError('Retained '+label+' has a different original class')
+        cd=word(isa+16)&~3;rw=struct.unpack('<3I',read(cd,12));ro=rw[2] if rw[0]&0x80000000 else cd
+        info=struct.unpack('<10I',read(ro,40));b.o.require(4<=info[2]<=1024,'Unbounded retained instance')
+        data=read(address,info[2]);(out/(label+'.bin')).write_bytes(data)
+        values={};offsets={};c=isa
+        with b.module('alert_strings','inspect-ui-hierarchy.py').OriginalStrings() as strings:
+            for _ in range(12):
+                cd=word(c+16)&~3;rw=struct.unpack('<3I',read(cd,12));ro=rw[2] if rw[0]&0x80000000 else cd
+                info=struct.unpack('<10I',read(ro,40))
+                if info[7]:
+                    step,count=struct.unpack('<2I',read(info[7],8));b.o.require(step==20 and count<=96,'Unknown retained ivar list')
+                    ivars=read(info[7]+8,step*count)
+                    for n in range(count):
+                        ptr,nm,_,_,size=struct.unpack_from('<5I',ivars,n*20)
+                        name=reference.string(nm-bias) if nm<0x30000000 else strings.string(nm-slide)
+                        if name not in wanted:continue
+                        page=ptr&~4095
+                        if page not in meta_pages:
+                            meta_pages[page]=read(page,4096);(out/f'{label}-offsets-{page:08x}.bin').write_bytes(meta_pages[page])
+                        offset=struct.unpack_from('<I',meta_pages[page],ptr&4095)[0]
+                        b.o.require(0<size<=64 and offset+size<=len(data),'Retained ivar exceeds actual object')
+                        values[name]=int.from_bytes(data[offset:offset+size],'little') if size<=4 else data[offset:offset+size].hex();offsets[name]=offset
+                if c==base:break
+                c=word(c+4)
+        b.o.require(word(address)==isa,'Retained object changed during capture')
+        return dict(address=hex(address),isa=hex(isa),class_chain=chain,fields=values,live_offsets=offsets,bytes=len(data),sequential=True)
+    alert_candidates={}
+    selected=fields.get('_selectedChoice',0)
+    if selected:
+        choice=runtime_fields(selected,int(main['classes']['SetupChoice']['class_address'],16)+bias,'selected-choice',
+            {'_localizedTitle','_nextController','_identifier','_owner','_nextControllerClass','_condition','_alertView','_alertAction'})
+        result['selected_choice']=choice
+        if choice['fields'].get('_alertView'):alert_candidates['choice-alert']=choice['fields']['_alertView']
     owner=fields.get('_delegate',0)
     if isinstance(owner,int) and owner and word(owner)==int(main['classes']['BuddyTCController']['class_address'],16)+bias:
         raw_owner=read(owner,24);(out/'tc-owner.bin').write_bytes(raw_owner)
@@ -68,6 +108,15 @@ def capture(session,kernel,symbols,main,layout,out):
         alert=struct.unpack_from('<I',raw_owner,20)[0]
         if alert:
             data=read(alert,512);(out/'agreement-alert.bin').write_bytes(data);result['agreement_alert']=dict(address=hex(alert),isa=hex(struct.unpack_from('<I',data)[0]),bytes=len(data))
+            alert_candidates['agreement-alert-state']=alert
+    for label,address in alert_candidates.items():
+        alert=runtime_fields(address,int(layout['classes']['UIAlertView']['class_address'],16)+slide,label,
+            {'_delegate','_context','_cancelButton','_defaultButton','_firstOtherButton','_originalWindow','_dimWindow',
+             '_suspendTag','_dismissButtonIndex','_buttons','_modalViewFlags'})
+        bits=int.from_bytes(bytes.fromhex(alert['fields']['_modalViewFlags']),'little')
+        alert['flags']={x['name']:(bits>>x['bit'])&((1<<x['width'])-1) for x in layout['classes']['UIAlertView']['bitfields']['_modalViewFlags']}
+        result[label]=alert
+    (out/'partial.json').write_text(json.dumps(result,indent=2)+'\n')
     def view(v,label):
         raw=read(v,96);(out/(label+'.bin')).write_bytes(raw);layer=struct.unpack_from('<I',raw,4)[0]
         entry=dict(address=hex(v),isa=hex(struct.unpack_from('<I',raw)[0]),layer=hex(layer),words=[hex(x) for x in struct.unpack('<24I',raw)])
@@ -123,6 +172,9 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--kernel',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--main-layout',type=Path,required=True);p.add_argument('--layout',type=Path,required=True);a=p.parse_args()
     symbols=b.m.Symbols(b.o.confined(a.kernel,b.f.REPO/'out'));out=b.o.confined(a.output,b.f.REPO/'out');b.o.require(not out.exists(),'Fresh evidence required')
     main=json.loads(a.main_layout.read_text());layout=json.loads(a.layout.read_text())
+    needed={'UINavigationController','UIViewController','__NSArrayI','__NSArrayM','UIAlertView'}
+    b.o.require(needed<=set(layout['classes']),'UIKit layout is missing: '+', '.join(sorted(needed-set(layout['classes']))))
+    b.o.require('SetupChoice' in main['classes'],'Original SetupChoice metadata missing')
     profile=json.loads((b.o.OUT/'inventory-20261106-211114-download-profile.json').read_text())
     with b.o.host_lock():
         dev=b.o.cdc(b.o.Host().inventory());b.o.require(dev and b.o.normalize_location(dev['location'])==profile['location'],'Approved CDC absent');out.mkdir(parents=True)

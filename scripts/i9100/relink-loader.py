@@ -40,6 +40,7 @@ def main():
     parser.add_argument('--ui-keep-awake',action='store_true')
     parser.add_argument('--setup-native-layout',action='store_true')
     parser.add_argument('--setup-background-fit',action='store_true')
+    parser.add_argument('--ui-density',type=int,choices=(1333,1500))
     parser.add_argument('--system-sounds-unavailable',action='store_true')
     parser.add_argument('--xpc-diag', action='store_true')
     parser.add_argument('--reboot-download-fallback', action='store_true')
@@ -75,6 +76,8 @@ def main():
         parser.error('--setup-native-layout requires the verified --ui-retina-assets baseline')
     if args.setup_background_fit and not args.setup_native_layout:
         parser.error('--setup-background-fit requires --setup-native-layout')
+    if args.ui_density and not args.setup_native_layout:
+        parser.error('--ui-density requires --setup-native-layout')
     if args.system_sounds_unavailable and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--system-sounds-unavailable requires --control, --xpc-diag and --ios6-hid')
     if args.ls_ui_timeout and (not args.control or not args.xpc_diag):
@@ -173,6 +176,8 @@ def main():
                 command.append('-DI9100_SETUP_NATIVE_LAYOUT_BUILD=1')
             if args.setup_background_fit:
                 command.append('-DI9100_SETUP_BACKGROUND_FIT_BUILD=1')
+            if args.ui_density:
+                command.append('-DI9100_UI_DENSITY_BUILD='+str(args.ui_density))
             if args.system_sounds_unavailable:
                 command.append('-DI9100_SYSTEM_SOUNDS_UNAVAILABLE_BUILD=1')
             if args.xpc_diag:

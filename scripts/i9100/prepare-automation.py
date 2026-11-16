@@ -25,6 +25,7 @@ parser.add_argument('--ui-retina-assets',action='store_true')
 parser.add_argument('--ui-keep-awake',action='store_true')
 parser.add_argument('--setup-native-layout',action='store_true')
 parser.add_argument('--setup-background-fit',action='store_true')
+parser.add_argument('--ui-density',type=int,choices=(1333,1500),help='Qualify native iOS6 UI density before screen initialization')
 parser.add_argument('--system-sounds-unavailable',action='store_true')
 parser.add_argument('--xpc-diag', action='store_true')
 parser.add_argument('--reboot-download-fallback', action='store_true')
@@ -62,6 +63,8 @@ if args.setup_native_layout and not args.ui_retina_assets:
     parser.error('--setup-native-layout requires the verified --ui-retina-assets baseline')
 if args.setup_background_fit and not args.setup_native_layout:
     parser.error('--setup-background-fit requires --setup-native-layout')
+if args.ui_density and not args.setup_native_layout:
+    parser.error('--ui-density requires --setup-native-layout')
 if args.system_sounds_unavailable and (not args.xpc_diag or not args.ios6_hid):
     parser.error('--system-sounds-unavailable requires --xpc-diag and --ios6-hid')
 if args.input_test and not args.ios6_hid:
@@ -99,6 +102,7 @@ subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--ke
                 *(['--ui-keep-awake'] if args.ui_keep_awake else []),
                 *(['--setup-native-layout'] if args.setup_native_layout else []),
                 *(['--setup-background-fit'] if args.setup_background_fit else []),
+                *(['--ui-density',str(args.ui_density)] if args.ui_density else []),
                 *(['--system-sounds-unavailable'] if args.system_sounds_unavailable else []),
                 *(['--xpc-diag'] if args.xpc_diag else []),
                 *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
