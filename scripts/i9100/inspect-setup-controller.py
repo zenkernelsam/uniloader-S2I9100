@@ -38,18 +38,25 @@ def capture(session,kernel,symbols,main,layout,out):
         data=read(pointer,capacity*4);values=[struct.unpack_from('<I',data,((offset+i)%capacity)*4)[0] for i in range(count)]
     else:raise ValueError('Unknown navigation array class')
     top=values[-1];topclass=word(top);names={int(v['class_address'],16)+bias:k for k,v in main['classes'].items() if isinstance(v,dict)}
-    name=names.get(topclass);b.o.require(name=='BuddyAppleIDChoiceController','Current page differs from Apple ID choice')
+    name=names.get(topclass);b.o.require(name is not None,'Current page is not a known original Setup class')
     reference=b.module('controller_reference','objc-image.py').MachImage(b.o.ROOT/'research/ios6-setup-original-20261116-0724/Setup','580dfd1edbd53d33844bca6635c0b3cd')
     classdata=word(topclass+16)&~3;rw=struct.unpack('<3I',read(classdata,12));ro=rw[2] if rw[0]&0x80000000 else classdata
     info=struct.unpack('<10I',read(ro,40));b.o.require(4<=info[2]<=2048,'Unbounded live instance size')
     topdata=read(top,info[2]);(out/'appleid-controller.bin').write_bytes(topdata)
-    step,number=struct.unpack('<2I',read(info[7],8));b.o.require(step==20 and number<=64,'Unknown live ivar list')
     fields={};live_offsets={}
-    for n in range(number):
-        offset,nameptr,typeptr,_,size=struct.unpack('<5I',read(info[7]+8+n*step,20))
-        nm=reference.string(nameptr-bias);offset=word(offset)
-        b.o.require(0<size<=4 and offset+size<=len(topdata),'Live ivar outside actual instance')
-        fields[nm]=int.from_bytes(topdata[offset:offset+size],'little');live_offsets[nm]=offset
+    c=topclass
+    for depth in range(12):
+        if c>=0x30000000:break
+        cd=word(c+16)&~3;crw=struct.unpack('<3I',read(cd,12));cro=crw[2] if crw[0]&0x80000000 else cd
+        ci=struct.unpack('<10I',read(cro,40))
+        if ci[7]:
+            step,number=struct.unpack('<2I',read(ci[7],8));b.o.require(step==20 and number<=64,'Unknown live ivar list')
+            for n in range(number):
+                offset,nameptr,typeptr,_,size=struct.unpack('<5I',read(ci[7]+8+n*step,20))
+                nm=reference.string(nameptr-bias);offset=word(offset)
+                b.o.require(0<size<=64 and offset+size<=len(topdata),'Live ivar outside actual instance')
+                fields[nm]=int.from_bytes(topdata[offset:offset+size],'little') if size<=4 else topdata[offset:offset+size].hex();live_offsets[nm]=offset
+        c=word(c+4)
     result=dict(tag=symbols.tag,pid=pid,task=hex(task),header=hex(header),slide=hex(slide),singleton=hex(singleton),
         navigation=hex(nav),navigation_chain=chain,controllers=[hex(v) for v in values],top=hex(top),top_class=name,fields=fields,live_offsets=live_offsets,live_instance_size=info[2],objects={},sequential=True)
     def view(v,label):
@@ -62,10 +69,10 @@ def capture(session,kernel,symbols,main,layout,out):
                 data=read(internal,192);(out/(label+'-internal.bin')).write_bytes(data);entry['internal_words']=[hex(x) for x in struct.unpack('<48I',data)]
         result['objects'][label]=entry
         (out/'partial.json').write_text(json.dumps(result,indent=2)+'\n')
-    for label,v in (('window',window),('window-view',windowview),('navigation-view',word(nav+4)),('page-view',word(top+4)),('skip',fields['_skipButton']),('what-is',fields['_whatIsButton'])):
+    for label,v in (('window',window),('window-view',windowview),('navigation-view',word(nav+4)),('page-view',word(top+4)),('skip',fields.get('_skipButton',0)),('what-is',fields.get('_whatIsButton',0)),('toolbar',fields.get('_toolbar',0)),('web-view',fields.get('_webView',0))):
         if v:view(v,label)
     inset=read(header+0x662e0,32);(out/'runtime-insets.bin').write_bytes(inset);result['runtime_insets']=list(struct.unpack('<8f',inset))
-    parents=[];cursor=int(result['objects']['skip']['internal'],16);seen=set()
+    parents=[];cursor=int(result['objects'].get('skip',{}).get('internal','0'),16);seen=set()
     while cursor and len(parents)<16:
         b.o.require(cursor not in seen,'Layer parent cycle');seen.add(cursor)
         data=read(cursor,128);(out/f'parent-{cursor:08x}.bin').write_bytes(data)
@@ -73,6 +80,30 @@ def capture(session,kernel,symbols,main,layout,out):
         parents.append(dict(internal=hex(cursor),parent=hex(parent),position=pos,bounds=bounds,flags=hex(struct.unpack_from('<I',data,96)[0])))
         cursor=parent
     b.o.require(not cursor,'Layer hierarchy exceeds diagnostic bound');result['skip_layer_chain']=parents
+    if fields.get('_toolbar'):
+        toolbar=fields['_toolbar'];items=word(toolbar+88);ah=read(items,24);icls,icount=struct.unpack_from('<2I',ah)
+        b.o.require(0<=icount<=12,'Unbounded toolbar items')
+        if icls==int(layout['classes']['__NSArrayI']['class_address'],16)+slide:
+            ivals=list(struct.unpack('<'+'I'*icount,read(items+8,icount*4))) if icount else []
+        elif icls==int(layout['classes']['__NSArrayM']['class_address'],16)+slide:
+            cap,off=struct.unpack_from('<2I',ah,8);cap>>=2;off>>=2;ptr=struct.unpack_from('<I',ah,20)[0]
+            b.o.require(icount<=cap<=128 and (not cap or off<cap),'Unknown toolbar item array')
+            ar=read(ptr,cap*4) if cap else b'';ivals=[struct.unpack_from('<I',ar,((off+i)%cap)*4)[0] for i in range(icount)]
+        else:raise ValueError('Unknown toolbar array class')
+        entries=[]
+        with b.module('toolbar_strings','inspect-ui-hierarchy.py').OriginalStrings() as strings:
+            for index,item in enumerate(ivals):
+                data=read(item,104);(out/f'toolbar-item-{index}.bin').write_bytes(data)
+                title,action,target,v=struct.unpack_from('<I',data,8)[0],struct.unpack_from('<I',data,16)[0],struct.unpack_from('<I',data,20)[0],struct.unpack_from('<I',data,68)[0]
+                action_name=None
+                if action:
+                    try:action_name=reference.string(action-bias)
+                    except ValueError:
+                        try:action_name=strings.string(action-slide)
+                        except ValueError:action_name=read(action,64).split(b'\0')[0].decode('utf-8','strict')
+                entries.append(dict(item=hex(item),title=hex(title),action=action_name,target=hex(target),view=hex(v),flags=data[80:83].hex()))
+                if v:view(v,f'toolbar-button-{index}')
+        result['toolbar_items']=entries
     _,after=session.command('ports Setup');(out/'ports-after.txt').write_bytes(after)
     current=re.search(rb'proc\s+(\d+)\s+Setup.*?task=(0x[0-9a-f]+)',after)
     b.o.require(current and (int(current[1]),int(current[2],16))==(pid,task) and kernel.u32(task+0x18)==mapva and
