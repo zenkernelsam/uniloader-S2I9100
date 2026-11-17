@@ -49,12 +49,13 @@
     "iokit/i9100_audio_board_native.cpo",
     "iokit/i9100_audio_worker.cpo",
     "iokit/i9100_sensor_worker.cpo",
+    "iokit/i9100_haptic_worker.cpo",
     "iokit/i9100_radio_native.cpo",
     "iokit/i9100_bcm_worker.cpo",
     "iokit/i9100_bcm_irq.cpo",
     "iokit/i9100_power_shared.cpo"
   ],
-  "patch_sha256": "d030e2103494f6ef16dceab7765f9c2dcc2e5c48fe28b9d58ce9af871ced1a54",
+  "patch_sha256": "942ac2d1cc4e8583b5034d1ac6d87601813d2b5b4cefe96ccacc188740121f5c",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first"
