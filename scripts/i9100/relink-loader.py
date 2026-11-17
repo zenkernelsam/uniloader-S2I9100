@@ -43,6 +43,7 @@ def main():
     parser.add_argument('--ui-density',type=int,choices=(1333,1500))
     parser.add_argument('--system-sounds-unavailable',action='store_true')
     parser.add_argument('--xpc-diag', action='store_true')
+    parser.add_argument('--charge-diag', action='store_true')
     parser.add_argument('--reboot-download-fallback', action='store_true')
     parser.add_argument('--tcc-development', action='store_true')
     parser.add_argument('--mdns-development', action='store_true')
@@ -89,6 +90,8 @@ def main():
         parser.error('--ls-bootstrap requires --control')
     if args.xpc_diag and not args.control:
         parser.error('--xpc-diag requires --control')
+    if args.charge_diag and not args.control:
+        parser.error('--charge-diag requires --control')
     if args.reboot_download_fallback and not args.control:
         parser.error('--reboot-download-fallback requires --control')
     if args.tcc_development and not args.control:
@@ -182,6 +185,8 @@ def main():
                 command.append('-DI9100_SYSTEM_SOUNDS_UNAVAILABLE_BUILD=1')
             if args.xpc_diag:
                 command.append('-DI9100_XPC_DIAG_BUILD=1')
+            if args.charge_diag:
+                command.append('-DI9100_CHARGE_DIAG_BUILD=1')
             if args.reboot_download_fallback:
                 command.append('-DI9100_REBOOT_DOWNLOAD_BUILD=1')
             if args.tcc_development:

@@ -28,6 +28,7 @@ parser.add_argument('--setup-background-fit',action='store_true')
 parser.add_argument('--ui-density',type=int,choices=(1333,1500),help='Qualify native iOS6 UI density before screen initialization')
 parser.add_argument('--system-sounds-unavailable',action='store_true')
 parser.add_argument('--xpc-diag', action='store_true')
+parser.add_argument('--charge-diag', action='store_true')
 parser.add_argument('--reboot-download-fallback', action='store_true')
 parser.add_argument('--tcc-development', action='store_true')
 parser.add_argument('--mdns-development', action='store_true')
@@ -105,6 +106,7 @@ subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--ke
                 *(['--ui-density',str(args.ui_density)] if args.ui_density else []),
                 *(['--system-sounds-unavailable'] if args.system_sounds_unavailable else []),
                 *(['--xpc-diag'] if args.xpc_diag else []),
+                *(['--charge-diag'] if args.charge_diag else []),
                 *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
                 *(['--tcc-development'] if args.tcc_development else []),
                 *(['--mdns-development'] if args.mdns_development else []),

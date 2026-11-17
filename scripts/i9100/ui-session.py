@@ -16,7 +16,7 @@ def validate(task):
     if not isinstance(task,dict) or set(task)-{'id','action','xy','ms','frame','process','thread_limit'}:raise ValueError('Unknown task fields')
     if not re.fullmatch(r'[0-9]{4}',str(task.get('id',''))):raise ValueError('Four-digit task id required')
     action=task.get('action')
-    if action not in ('status','frame','tap','swipe','home','setup','app','stacks','close','reboot-download'):raise ValueError('Unknown task action')
+    if action not in ('status','charge','frame','tap','swipe','home','setup','app','stacks','close','reboot-download'):raise ValueError('Unknown task action')
     if 'frame' in task and type(task['frame']) is not bool:raise ValueError('frame must be boolean')
     if action in ('tap','swipe','home'):
         xy=task.get('xy',[]);size=2 if action=='tap' else 4 if action=='swipe' else 0
@@ -99,6 +99,7 @@ def serve(a):
                     else:
                         kernel=b.m.Kernel(session,symbols)
                         if action in ('tap','swipe','home'):result['input']=input_task(session,kernel,symbols,task)
+                        elif action=='charge':result['charge']=b.module('owner_charge','inspect-charge-health.py').capture(kernel,symbols,target)
                         elif action=='setup':result['setup']=b.module('owner_setup','inspect-setup-controller.py').capture(session,kernel,symbols,main,layout,target)
                         elif action=='app':result['app']=b.module('owner_app','inspect-ui-app.py').capture(session,kernel,symbols,task.get('process','Setup'),layout,target,flags_only=True,geometry=True)
                         elif action=='stacks':result['stack']=b.stack.capture_process(session,kernel,task.get('process','Setup'),target,b.m,True,task.get('thread_limit',1),True)
