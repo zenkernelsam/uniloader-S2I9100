@@ -41,6 +41,7 @@ def main():
     parser.add_argument('--setup-native-layout',action='store_true')
     parser.add_argument('--setup-background-fit',action='store_true')
     parser.add_argument('--ui-density',type=int,choices=(1333,1500))
+    parser.add_argument('--ui-density-metrics',action='store_true')
     parser.add_argument('--system-sounds-unavailable',action='store_true')
     parser.add_argument('--xpc-diag', action='store_true')
     parser.add_argument('--charge-diag', action='store_true')
@@ -82,6 +83,8 @@ def main():
         parser.error('--setup-background-fit requires --setup-native-layout')
     if args.ui_density and not args.setup_native_layout:
         parser.error('--ui-density requires --setup-native-layout')
+    if args.ui_density_metrics and not args.ui_density:
+        parser.error('--ui-density-metrics requires --ui-density')
     if args.system_sounds_unavailable and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--system-sounds-unavailable requires --control, --xpc-diag and --ios6-hid')
     if args.ls_ui_timeout and (not args.control or not args.xpc_diag):
@@ -192,6 +195,8 @@ def main():
                 command.append('-DI9100_SETUP_BACKGROUND_FIT_BUILD=1')
             if args.ui_density:
                 command.append('-DI9100_UI_DENSITY_BUILD='+str(args.ui_density))
+            if args.ui_density_metrics:
+                command.append('-DI9100_UI_DENSITY_METRICS_BUILD=1')
             if args.system_sounds_unavailable:
                 command.append('-DI9100_SYSTEM_SOUNDS_UNAVAILABLE_BUILD=1')
             if args.xpc_diag:

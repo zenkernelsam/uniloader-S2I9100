@@ -50,6 +50,7 @@ def main():
     parser.add_argument('--setup-native-layout',action='store_true',help='Platform preference: only UUID-matched iOS6 Setup launches with CLASSIC=0')
     parser.add_argument('--setup-background-fit',action='store_true',help='Fit only the original Setup Linen UIImageView through native view APIs')
     parser.add_argument('--ui-density',type=int,choices=(1333,1500),help='Default-off density qualification for original iOS6 BB/SB/Setup')
+    parser.add_argument('--ui-density-metrics',action='store_true',help='Experimental original UIKit metrics publication calibration')
     parser.add_argument('--system-sounds-unavailable',action='store_true',help='Development: only SpringBoard system-sound status APIs return -1500 and playback is muted')
     parser.add_argument('--xpc-diag', action='store_true', help='Retain XPC boundary metadata in kernel RAM')
     parser.add_argument('--charge-diag', action='store_true', help='Read fixed charger/gauge registers on the existing Power workloop')
@@ -97,6 +98,8 @@ def main():
         parser.error('--setup-background-fit requires --setup-native-layout')
     if args.ui_density and not args.setup_native_layout:
         parser.error('--ui-density requires --setup-native-layout')
+    if args.ui_density_metrics and not args.ui_density:
+        parser.error('--ui-density-metrics requires --ui-density')
     if args.system_sounds_unavailable and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--system-sounds-unavailable requires --control, --xpc-diag and --ios6-hid')
     if args.ls_ui_timeout and (not args.control or not args.xpc_diag):
@@ -222,6 +225,7 @@ def main():
         *(['--setup-native-layout'] if args.setup_native_layout else []),
         *(['--setup-background-fit'] if args.setup_background_fit else []),
         *(['--ui-density',str(args.ui_density)] if args.ui_density else []),
+        *(['--ui-density-metrics'] if args.ui_density_metrics else []),
         *(['--system-sounds-unavailable'] if args.system_sounds_unavailable else []),
         *(['--xpc-diag'] if args.xpc_diag else []),
         *(['--charge-diag'] if args.charge_diag else []),
@@ -286,6 +290,7 @@ def main():
     assert (b'i9100setupbg=1' in data) == args.setup_background_fit
     for density in (1333,1500):
         assert (f'i9100uidensity={density}'.encode() in data) == (args.ui_density==density)
+    assert (b'i9100uidensitymetrics=1' in data) == args.ui_density_metrics
     assert (b'i9100nosound=1' in data) == args.system_sounds_unavailable
     assert 'S2I9100-OS6'.encode('utf-16le') in data
     symbols = subprocess.check_output(['arm-none-eabi-nm','-n',str(build/'uniLoader.o')],text=True)
@@ -333,6 +338,7 @@ def main():
         'setup_native_layout': args.setup_native_layout,
         'setup_background_fit': args.setup_background_fit,
         'ui_density': args.ui_density,
+        'ui_density_metrics': args.ui_density_metrics,
         'system_sounds_unavailable': args.system_sounds_unavailable,
         'xpc_diag': args.xpc_diag,
         'charge_diag': args.charge_diag,

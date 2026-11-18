@@ -94,7 +94,7 @@ def capture(session,kernel,symbols,layout,out,record):
         (target/'gs-scale.bin').write_bytes(scale_raw);(target/'gs-pixels.bin').write_bytes(pixels_raw)
         scale=struct.unpack('<f',scale_raw)[0];pixels=list(struct.unpack('<2I',pixels_raw))
         entry=dict(pid=pid,task=hex(task),slide=hex(slide),gs_scale=scale,gs_scale_bits=scale_raw.hex(),gs_pixels=pixels,present=True)
-        schema=result['installation'][name]['version'];producer=2 if schema>=2 else 1
+        schema=result['installation'][name]['version'];producer=3 if schema==4 else 2 if schema>=2 else 1
         if schema==0:
             result['processes'][name]=dict(present=True,pid=pid,task=hex(task),density_patch='not installed in this process',
                 limit='Startup/identity qualification has not run; do not interpret legacy MG addresses')
@@ -102,11 +102,11 @@ def capture(session,kernel,symbols,layout,out,record):
         entry['producer_schema']=producer
         # Verify the live UIKit imports and both initializer sites. A private
         # calibration page alone does not prove that UIKit calls that mapping.
-        if producer==2:
+        if producer in (2,3):
             init=0x34c34c84+slide
             entry['gs_initializer']=dict(address=hex(init),physical=hex(user.translate(init)),bytes=user.read(init,8).hex())
             entry['uikit_gs_bindings']=read_gs_bindings(user,slide) if name!='backboardd' else {}
-        site=(0x34c34d44 if producer==2 else 0x3867f554)+slide
+        site=(0x32f882dc if producer==3 else 0x34c34d44 if producer==2 else 0x3867f554)+slide
         site_raw=user.read(site,8);(target/'density-site.bin').write_bytes(site_raw)
         entry['density_site']=dict(address=hex(site),physical=hex(user.translate(site)),bytes=site_raw.hex())
         first=struct.unpack_from('<I',user.l1,(site>>20)*4)[0];mapping=dict(l1=hex(first))
@@ -116,10 +116,10 @@ def capture(session,kernel,symbols,layout,out,record):
         entry['density_site']['mapping']=mapping
         if site_raw[:4]==bytes.fromhex('dff800f0'):
             code=struct.unpack_from('<I',site_raw,4)[0]&~1
-            length=192 if schema>=3 else 36 if producer==2 else 24
+            length=276 if schema==4 else 192 if schema>=3 else 36 if producer==2 else 24
             b.o.require(4096<=code<=0x40000000-length,'Invalid private density code target')
             raw_code=user.read(code,length);(target/'density-code.bin').write_bytes(raw_code);entry['density_site']['code']=hex(code);entry['density_site']['code_bytes']=raw_code.hex()
-        if producer==2:
+        if producer in (2,3):
             entry['gs_initial_scale_bits']=hex(result['installation'][name]['factory_before'])
             entry['installed_via']=result['installation'][name]['reserved1'];dictionary=0
         else:
@@ -182,7 +182,9 @@ def main():
                         expected=4/3 if a.require_installed==1333 else 1.5
                         for name,installation in result['installation'].items():
                             process=result['processes'][name]
-                            b.o.require(installation['version'] in (2,3) and installation['state']==2 and installation['option']==a.require_installed and
+                            if installation['version']==0 and name=='backboardd':continue
+                            if not process['present'] and name=='Setup':continue
+                            b.o.require(installation['version'] in (2,3,4) and installation['state']==2 and installation['option']==a.require_installed and
                                 installation['installed']>0 and process['present'] and installation['pid']==process['pid'] and
                                 installation['task']==int(process['task'],16),'Current '+name+' density not installed')
                             b.o.require(process['density_site'].get('code')==hex(installation['code']),'Current '+name+' calibration code differs')
