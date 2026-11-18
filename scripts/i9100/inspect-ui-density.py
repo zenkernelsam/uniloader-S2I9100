@@ -8,6 +8,33 @@ s=importlib.util.spec_from_file_location('density_boot',HERE/'capture-boot-snaps
 b=importlib.util.module_from_spec(s);s.loader.exec_module(b)
 FIELDS=('version','state','pid','task','header','code','attempts','vm_result','reason','restore_error',
         'installed','stage','idversion','option','slide','site','factory_before','once_before','reserved0','reserved1')
+ADMISSION_FIELDS=('version','sequence_begin','pid','idversion','syscall_entries','private_entries','reject_flags',
+    'last_pc','last_sp','last_phase','preemption_level','context_flags','current_task','current_map',
+    'native_slot','diag_task_matches','reserved0','reserved1','slot_busy_losses','sequence_end')
+REJECTIONS=('owner_name_uuid','current_task','current_map','interrupt_context','interrupts_disabled',
+    'preemption_nonzero','installation_state','pid','idversion','expected_pc_phase','stack_range_alignment')
+
+def decode_admission(raw):
+    if len(raw)!=3*20*4:raise ValueError('Density admission table size differs')
+    result={}
+    for slot,name in enumerate(('backboardd','SpringBoard','Setup')):
+        row=dict(zip(ADMISSION_FIELDS,struct.unpack_from('<20I',raw,slot*80)))
+        if row['version'] not in (0,1):
+            raise ValueError('Unknown density admission schema')
+        row['consistent']=row['version']==1 and row['sequence_begin']==row['sequence_end'] and not row['sequence_begin']&1
+        if not row['consistent']:
+            result[name]=dict(consistent=False,version=row['version'],sequence_begin=row['sequence_begin'],
+                sequence_end=row['sequence_end'],slot_busy_losses=row['slot_busy_losses'],
+                state='inactive or publication in progress; counts and predicates not interpreted')
+            continue
+        if row['reject_flags']&~2047:raise ValueError('Unknown density admission rejection bits')
+        for key in ('native_slot','preemption_level'):
+            if row[key]&0x80000000:row[key]-=1<<32
+        row['initial_gate_rejections']=[name for n,name in enumerate(REJECTIONS) if row['reject_flags']&(1<<n)]
+        row['private_context_available']=bool(row['private_entries'])
+        row['limit']='Initial predicate evidence only; final copy/publication can fail. Zero arrivals with slot busy losses do not prove no execution.'
+        result[name]=row
+    return result
 
 def capture(session,kernel,symbols,layout,out,record):
     raw=kernel.read(symbols['_i9100_ui_density_diag'],240);(out/'density-diag.bin').write_bytes(raw)
@@ -19,6 +46,10 @@ def capture(session,kernel,symbols,layout,out,record):
         names=('version','pid','idversion','before_count','after_count','init_count','copy_error','last_phase','caller_lr','stack','scale_bits','reserved')
         result['execution']=dict(zip(('backboardd','SpringBoard','Setup'),
             [dict(zip(names,struct.unpack_from('<12I',raw_execution,n*48))) for n in range(3)]))
+    if '_i9100_ui_density_admission' in symbols.values:
+        admission=kernel.read(symbols['_i9100_ui_density_admission'],240)
+        (out/'density-admission.bin').write_bytes(admission)
+        result['admission']=decode_admission(admission)
     def save(): (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
     for name in ('valid','percent','mv','connected','charging','temp','reason','revision_value'):
         raw=kernel.read(symbols['_i9100_power_'+name],4)
