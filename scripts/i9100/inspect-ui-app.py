@@ -62,6 +62,23 @@ def capture(session,kernel,symbols,name,layout,out,flags_only=False,geometry=Fal
         (out/'main-screen.bin').write_bytes(data)
         result['main_screen']=dict(address=hex(screen),array=hex(address),bounds=bounds,scale=scale,horizontal_scale=horizontal,
             display=hex(struct.unpack_from('<I',data,4)[0]),flags=data[32])
+        display=struct.unpack_from('<I',data,4)[0]
+        if display:
+            display_bytes=user.read(display,8)
+            b.o.require(struct.unpack_from('<I',display_bytes)[0]==0x397074a8+slide,
+                'Original CADisplay class differs')
+            # Original QuartzCore displayId/isExternal use the realized _impl
+            # offset at 3970d968. External state may be pending an API refresh.
+            impl_offset=struct.unpack('<I',user.read(0x3970d968+slide,4))[0]
+            b.o.require(impl_offset==4,'Original CADisplay impl offset differs')
+            impl=struct.unpack_from('<I',display_bytes,4)[0]
+            b.o.require(4096<=impl<=0x3fffff9c and not impl&3,'CADisplay impl outside user range')
+            native=user.read(impl,100)
+            (out/'cadisplay.bin').write_bytes(display_bytes)
+            (out/'cadisplay-impl.bin').write_bytes(native)
+            result['main_screen']['cadisplay']=dict(impl=hex(impl),display_id=struct.unpack_from('<I',native,16)[0],
+                cached_external=bool(native[77]&1),external_query_needs_refresh=bool(native[96]&1),
+                bounds=list(struct.unpack_from('<4i',native,44)),sequential=True)
     if flags_only:
         _,after=session.command('ports '+name);(out/'ports-after.txt').write_bytes(after)
         b.o.require(identity(after)==(pid,task) and kernel.u32(task+0x18)==mapva and struct.unpack('<I',user.read(gl,4))[0]==app,'Application identity changed')

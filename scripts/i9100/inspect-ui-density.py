@@ -14,6 +14,25 @@ ADMISSION_FIELDS=('version','sequence_begin','pid','idversion','syscall_entries'
 REJECTIONS=('owner_name_uuid','current_task','current_map','interrupt_context','interrupts_disabled',
     'preemption_nonzero','installation_state','pid','idversion','expected_pc_phase','stack_range_alignment')
 
+def read_gs_bindings(user,slide):
+    bindings={}
+    for label,original_stub in (('scale',0x3339f094),('points',0x3339f084)):
+        stub=original_stub+slide
+        try:
+            body=user.read(stub,16)
+            b.o.require(body[:12]==bytes.fromhex('04c09fe50cc08fe000f09ce5'),'Original UIKit GS import stub differs')
+            slot=stub+12+struct.unpack_from('<I',body,12)[0]
+            b.o.require(4096<=slot<=0x3ffffffc and not slot&3,'UIKit GS binding slot outside user range')
+            pointer=struct.unpack('<I',user.read(slot,4))[0];address=pointer&~1
+            b.o.require(4096<=address<=0x3fffffe0,'UIKit GS binding target outside user range')
+            bindings[label]=dict(available=True,stub=hex(stub),slot=hex(slot),target=hex(pointer),
+                physical=hex(user.translate(address)),bytes=user.read(address,32).hex())
+        except b.m.MappingError as error:
+            if not re.fullmatch(r'Unmapped L[12] VA [0-9a-f]{8}',str(error)):raise
+            bindings[label]=dict(available=False,stub=hex(stub),error=str(error),
+                limit='Current nonresidency alone does not prove this import was never called')
+    return bindings
+
 def decode_admission(raw):
     if len(raw)!=3*20*4:raise ValueError('Density admission table size differs')
     result={}
@@ -73,6 +92,12 @@ def capture(session,kernel,symbols,layout,out,record):
         entry=dict(pid=pid,task=hex(task),slide=hex(slide),gs_scale=scale,gs_scale_bits=scale_raw.hex(),gs_pixels=pixels,present=True)
         schema=result['installation'][name]['version'];producer=2 if schema>=2 else 1
         entry['producer_schema']=producer
+        # Verify the live UIKit imports and both initializer sites. A private
+        # calibration page alone does not prove that UIKit calls that mapping.
+        if producer==2:
+            init=0x34c34c84+slide
+            entry['gs_initializer']=dict(address=hex(init),physical=hex(user.translate(init)),bytes=user.read(init,8).hex())
+            entry['uikit_gs_bindings']=read_gs_bindings(user,slide) if name!='backboardd' else {}
         site=(0x34c34d44 if producer==2 else 0x3867f554)+slide
         site_raw=user.read(site,8);(target/'density-site.bin').write_bytes(site_raw)
         entry['density_site']=dict(address=hex(site),physical=hex(user.translate(site)),bytes=site_raw.hex())

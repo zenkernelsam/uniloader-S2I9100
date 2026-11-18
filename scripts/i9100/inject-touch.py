@@ -5,6 +5,7 @@ No physical GPIO writes, no command retry. Queue completion is not proof that
 the UI accepted a gesture; capture the real framebuffer afterwards.
 """
 import argparse
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 import importlib.util
 import json
@@ -45,6 +46,7 @@ def main():
     p.add_argument('--trace',action='store_true',help='Retain current HID/GS execution immediately after the gesture on the same handle')
     p.add_argument('--awake-check-layout',type=Path,help='Require native SpringBoard interaction flags after Home on this same handle')
     p.add_argument('--frame',action='store_true',help='Save the real scanout after this input on the same handle')
+    p.add_argument('--verbose',action='store_true',help='Print the complete retained result; default console output is compact')
     p.add_argument('--swipe-count',type=int,choices=(1,2,3,4),default=1,help='Explicit bounded consecutive swipes, each with a fresh sequence')
     a=p.parse_args()
     if a.wake_first and a.home:p.error('--wake-first requires a touch gesture')
@@ -155,12 +157,20 @@ def main():
                     names.update({'_i9100_hid_fixed_cadence_diag','_i9100_touch_sender_identity'})
                     names.update({'_i9100_ui_execution_diag','_i9100_ui_execution_rows'})
                     target=out/'after-input';target.mkdir()
-                    result['observations']=observed.capture_ui_observations(kernel,observed.ObservationSymbols(symbols,names),target)
+                    with (target/'decoder-stdout.txt').open('x',encoding='utf-8') as saved_stdout,redirect_stdout(saved_stdout):
+                        result['observations']=observed.capture_ui_observations(kernel,observed.ObservationSymbols(symbols,names),target)
                 if a.frame:
                     frame=module('input_frame','capture-framebuffer.py');target=out/'frame';target.mkdir()
                     result['frame']=frame.capture_frame(kernel,symbols,target,device,32768,record)
                 (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
-                print(json.dumps(result,indent=2),flush=True)
+                if a.verbose:print(json.dumps(result,indent=2),flush=True)
+                else:
+                    summary={k:result[k] for k in ('tag','command','sequence','enqueued','phase','queue_completed','ui_delivery_verified')}
+                    summary['evidence']=str(out/'result.json')
+                    summary['steps']=[{k:v for k,v in step.items() if k in ('command','sequence','enqueued','hid_counts')} for step in completed]
+                    if 'frame' in result:summary['frame']={k:v for k,v in result['frame'].items() if k in ('coherent','sequence_before','sequence_after','png_sha256')}
+                    if gate_failure:summary['stopped_before_follow_up']=gate_failure
+                    print(json.dumps(summary,indent=2),flush=True)
                 if gate_failure:raise ValueError(gate_failure)
                 record('DONE',queue_only=True)
             except BaseException as exc:record('STOP',error=str(exc),retry=False);raise
