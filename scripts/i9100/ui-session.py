@@ -64,6 +64,7 @@ def input_task(session,kernel,symbols,task):
     return dict(command=verb,sequence=state[2],enqueued=state[8],queue_completed=True,ui_acceptance_verified=False)
 
 def serve(a):
+    b.o.require(not a.poweroff_on_ready or a.allow_poweroff_charge,'Automatic charging shutdown requires its explicit allow flag')
     out=b.o.confined(a.output,b.f.REPO/'out');b.o.require(not out.exists(),'Fresh owner output required')
     symbols=b.m.Symbols(b.o.confined(a.kernel,b.f.REPO/'out'))
     layout=json.loads((b.o.ROOT/'research/ios6-alert-dismiss-20261117-0200/ui-runtime-layout.json').read_text())
@@ -86,6 +87,9 @@ def serve(a):
                 if a.charge_on_ready:
                     first=queue/'0000.part';first.write_text(json.dumps(dict(id='0000',action='charge',frame=False))+'\n')
                     os.replace(first,queue/'0000.json')
+                if a.poweroff_on_ready:
+                    first=queue/'0001.part';first.write_text(json.dumps(dict(id='0001',action='poweroff-charge',frame=False))+'\n')
+                    os.replace(first,queue/'0001.json')
                 while time.monotonic()<session.deadline:
                     pending=sorted(p for p in queue.glob('*.json') if p.name not in processed)
                     if not pending:
@@ -103,6 +107,14 @@ def serve(a):
                             b.o.require(a.allow_poweroff_charge,'Charging shutdown was not enabled')
                             b.o.require('_i9100_lpm_poweroff_ready' in symbols.values and kernel.u32(symbols['_i9100_lpm_poweroff_ready'])==1,'Current kernel lacks a ready charging shutdown worker')
                         answer,_=session.command(action);result['reply']=answer
+                        if action=='poweroff-charge':
+                            end=min(session.deadline,time.monotonic()+180);disconnected=False
+                            while time.monotonic()<end:
+                                try:chunk=transport.read()
+                                except OSError as error:
+                                    result['shutdown_disconnect']=str(error);disconnected=True;break
+                                if chunk:capture.write(chunk);capture.flush()
+                            result['shutdown_disconnect_observed']=disconnected
                     else:
                         kernel=b.m.Kernel(session,symbols)
                         if action in ('tap','swipe','home'):result['input']=input_task(session,kernel,symbols,task)
@@ -131,7 +143,7 @@ def serve(a):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='mode',required=True)
-    s=sub.add_parser('serve');s.add_argument('--kernel',type=Path,required=True);s.add_argument('--output',type=Path,required=True);s.add_argument('--seconds',type=int,choices=range(60,1801),default=1200);s.add_argument('--allow-reboot-download',action='store_true');s.add_argument('--allow-poweroff-charge',action='store_true');s.add_argument('--charge-on-ready',action='store_true',help='Save native charge evidence immediately after the verified handshake')
+    s=sub.add_parser('serve');s.add_argument('--kernel',type=Path,required=True);s.add_argument('--output',type=Path,required=True);s.add_argument('--seconds',type=int,choices=range(60,1801),default=1200);s.add_argument('--allow-reboot-download',action='store_true');s.add_argument('--allow-poweroff-charge',action='store_true');s.add_argument('--charge-on-ready',action='store_true',help='Save native charge evidence immediately after the verified handshake');s.add_argument('--poweroff-on-ready',action='store_true',help='Queue one authorized charging shutdown on this verified owner')
     q=sub.add_parser('request');q.add_argument('--owner',type=Path,required=True);q.add_argument('--id',required=True);q.add_argument('--action',required=True);q.add_argument('--xy',type=int,nargs='+');q.add_argument('--ms',type=int);q.add_argument('--process');q.add_argument('--thread-limit',type=int);q.add_argument('--no-frame',action='store_true')
     a=p.parse_args()
     if a.mode=='serve':return serve(a)
