@@ -82,7 +82,29 @@ static uint32_t parse_atag_fb(void)
 }
 
 #include <main/i9100-previous-boot.h>
+#include <main/i9100-boot-source.h>
 struct I9100PreviousBoot i9100_previous_boot;
+struct I9100BootSource i9100_boot_source;
+void i9100_capture_boot_source(void)
+{
+ static const uint32_t original[8]={0xe92d4800U,0xe28db004U,0xe24dd008U,0xe50b0008U,
+  0xe59f3020U,0xe51b2008U,0xe5832000U,0xe59f3018U};
+ memset(&i9100_boot_source,0,sizeof(i9100_boot_source));
+ i9100_boot_source.magic=I9100_BOOT_SOURCE_MAGIC;i9100_boot_source.version=1;
+ i9100_boot_source.r1=boot_reg_r1;i9100_boot_source.r2=boot_reg_r2;
+ i9100_boot_source.sboot_mode=0xffffffffU;
+ if(!i9100_is_real_hardware())return;
+ i9100_boot_source.inform2=readl((void*)0x10020808U);
+ i9100_boot_source.inform3=readl((void*)0x1002080cU);
+ i9100_boot_source.flags=1;
+ /* Read the original RAM data only after its exact defining SBL2 code and
+  * literal match. Do not call firmware or change PMU state here. */
+ for(unsigned n=0;n<8;n++)
+  if(readl((void*)(0x4d412b04U+n*4))!=original[n])return;
+ if(readl((void*)0x4d412b3cU)!=0x4d5ed924U)return;
+ i9100_boot_source.sboot_mode=readl((void*)0x4d5ed924U);
+ i9100_boot_source.flags|=2;
+}
 int i9100_init(void)
 {
 	volatile uint32_t *trace = (volatile uint32_t *)0x10020818;
@@ -101,6 +123,9 @@ int i9100_init(void)
 	i9100_previous_boot.inform6=previous;i9100_previous_boot.inform7=reason;
 	i9100_previous_boot.stage=ddr_stage;i9100_previous_boot.reason=ddr_reason;
 	i9100_previous_boot.pc=pc;
+	printk(KERN_INFO,"i9100: boot-source flags=%x inform2=%08x inform3=%08x sbmode=%08x\n",
+	 i9100_boot_source.flags,i9100_boot_source.inform2,
+	 i9100_boot_source.inform3,i9100_boot_source.sboot_mode);
 	if (ddr_valid) {
 		i9100_previous_boot.lr=cell[4];i9100_previous_boot.far=cell[5];
 		i9100_previous_boot.fsr=cell[6];

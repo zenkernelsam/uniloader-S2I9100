@@ -26,7 +26,8 @@ def device_tree():
     chosen = node([('name', b'chosen\0'), ('firmware-version', b'uniLoader-i9100\0'),
                    ('debug-enabled', b'\1'), ('display-scale', struct.pack('<I', 1)),
                    ('display-rotation', struct.pack('<I', 0)),
-                   ('i9100-prev-boot', bytes(64))])
+                   ('i9100-prev-boot', bytes(64)),
+                   ('i9100-boot-source', bytes(32))])
     # NOTE: software-behavior intentionally absent — an all-zero blob made
     # SpringBoard SIGABRT after reading it on-device.
     # backboardd reads region-info on the machine node for MobileGestalt.

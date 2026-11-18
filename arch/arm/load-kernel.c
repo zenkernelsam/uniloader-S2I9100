@@ -344,6 +344,7 @@ static unsigned int j1_xnu_entry_offset(unsigned int load_pa,
 
 #ifdef CONFIG_SAMSUNG_I9100
 #include <main/i9100-previous-boot.h>
+#include <main/i9100-boot-source.h>
 #endif
 void arch_load_kernel_xnu(void *kernel, void *dt, void *ramdisk)
 {
@@ -931,6 +932,8 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 	printk(KERN_INFO,"i9100: previous boot DT=%u flags=%x reason=%08x pc=%08x\n",
 	    i9100_previous_boot_patch((void *)dt_pa,dtsize,&i9100_previous_boot),
 	    i9100_previous_boot.valid,i9100_previous_boot.inform7,i9100_previous_boot.pc);
+	printk(KERN_INFO,"i9100: boot-source DT=%u\n",
+	 i9100_boot_source_patch((void*)dt_pa,dtsize,&i9100_boot_source));
 #endif
 
 	/* Keep the proven one-copy bootargs path; compose opt-ins at compile time. */

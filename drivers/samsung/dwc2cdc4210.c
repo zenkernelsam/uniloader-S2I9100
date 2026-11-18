@@ -192,7 +192,7 @@ static const uint8_t dev_desc[] = {
 };
 
 static uint8_t cfg_desc[] = {
-	9, 2, 67, 0, 2, 1, 0, 0x80, 250 >> 1,	/* cfg hdr, 2 ifaces, bus-pow 500mA? (fa=125*2) */
+	9, 2, 67, 0, 2, 1, 0, 0x80, 250,	/* bMaxPower uses 2mA units: match kernel's 500mA USB budget. */
 	/* iface0: CDC comm */
 	9, 4, 0, 0, 1, 2, 2, 1, 0,
 	/* header functional */

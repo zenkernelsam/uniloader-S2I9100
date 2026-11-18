@@ -47,6 +47,13 @@ def capture(kernel,symbols,out):
     result=decode(raw)
     if '_do_power_save' in symbols.values:
         result['do_power_save']=kernel.u32(symbols['_do_power_save'])
+    if '_i9100_display_power_diag' in symbols.values:
+        words=struct.unpack('<12I',kernel.read(symbols['_i9100_display_power_diag'],48))
+        result['display_power']=dict(zip(('version','requests','requested_state','result',
+            'winmap_before','winmap_after','blanked','saved_winmap','reserved0','reserved1','reserved2','reserved3'),words))
+    if '_i9100_boot_source' in symbols.values:
+        words=struct.unpack('<8I',kernel.read(symbols['_i9100_boot_source'],32))
+        result['boot_source']=dict(zip(('magic','version','flags','inform2','inform3','sboot_mode','r1','r2'),words))
     header=kernel.read(address,16)
     if header!=raw[:16]:raise ValueError('Charge snapshot changed during read; retained, not retried')
     (out/'charge-diag.json').write_text(json.dumps(result,indent=2)+'\n')

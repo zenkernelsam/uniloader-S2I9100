@@ -29,6 +29,10 @@ extern void fb_mark_asm(unsigned int byte_off, unsigned int color);
 
 void main(void* dt, void* kernel, void* ramdisk)
 {
+#if defined(CONFIG_SAMSUNG_I9100)
+	extern void i9100_capture_boot_source(void);
+	i9100_capture_boot_source();
+#endif
 	early_console_init();
 
 	INITCALL(board_ops.ops.early_init);
