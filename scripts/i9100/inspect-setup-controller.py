@@ -10,7 +10,11 @@ b=importlib.util.module_from_spec(s);s.loader.exec_module(b)
 def capture(session,kernel,symbols,main,layout,out):
     _,raw=session.command('ports Setup');(out/'ports-before.txt').write_bytes(raw)
     match=re.search(rb'proc\s+(\d+)\s+Setup.*?task=(0x[0-9a-f]+)',raw)
-    b.o.require(match is not None,'Current Setup missing');pid,task=int(match[1]),int(match[2],16)
+    if match is None:
+        result=dict(tag=symbols.tag,present=False,sequential=True,
+            limit='Setup absence alone does not prove setup completion')
+        (out/'result.json').write_text(json.dumps(result,indent=2)+'\n');return result
+    pid,task=int(match[1]),int(match[2],16)
     diag=struct.unpack('<32I',kernel.read(symbols['_i9100_ui_execution_diag'],128))
     b.o.require(diag[1]==2 and (diag[2],diag[3])==(pid,task),'Setup observer identity differs')
     header,slide=diag[4],diag[31];bias=header-0x1000
@@ -22,6 +26,18 @@ def capture(session,kernel,symbols,main,layout,out):
     b.o.require(word(singleton)==int(main['classes']['SetupController']['class_address'],16)+bias,'Original Setup singleton class differs')
     root=read(singleton,104);(out/'setup-controller.bin').write_bytes(root)
     window,windowview=struct.unpack_from('<2I',root,4);nav=struct.unpack_from('<I',root,36)[0]
+    if not nav:
+        _,after=session.command('ports Setup');(out/'ports-after.txt').write_bytes(after)
+        current=re.search(rb'proc\s+(\d+)\s+Setup.*?task=(0x[0-9a-f]+)',after)
+        b.o.require(current and (int(current[1]),int(current[2],16))==(pid,task) and
+            kernel.u32(task+0x18)==mapva and word(header+0x66260)==singleton,
+            'Setup identity changed while reading pre-navigation state')
+        result=dict(tag=symbols.tag,present=True,pid=pid,task=hex(task),header=hex(header),
+            singleton=hex(singleton),navigation=None,window=hex(window),window_view=hex(windowview),
+            setup_state=dict(buddy_ui_finished=root[47],buddy_done=root[48],early_exit_allowed=root[50],
+                network_reachable=root[56],appleid_configured=root[69]),
+            limit='Native navigation has not been created; no completion inferred',sequential=True)
+        (out/'result.json').write_text(json.dumps(result,indent=2)+'\n');return result
     chain=[];isa=word(nav);expected=int(layout['classes']['UINavigationController']['class_address'],16)+slide
     for _ in range(12):
         chain.append(hex(isa))
