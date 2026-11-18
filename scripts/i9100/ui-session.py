@@ -173,7 +173,7 @@ def serve(a):
                         elif action=='app':result['app']=b.module('owner_app','inspect-ui-app.py').capture(session,kernel,symbols,task.get('process','Setup'),layout,target,flags_only=True,geometry=True)
                         elif action=='stacks':result['stack']=b.stack.capture_process(session,kernel,task.get('process','Setup'),target,b.m,True,task.get('thread_limit',1),True)
                         result['status']=status(session,kernel,symbols)
-                        if action=='frame' or task.get('frame',action in ('tap','swipe','home')):
+                        if action=='frame' or task.get('frame',action in ('tap','swipe','home','power')):
                             image=target/'frame';image.mkdir();result['frame']=b.frame.capture_frame(kernel,symbols,image,device,32768,record)
                     (target/'result.json').write_text(json.dumps(result,indent=2)+'\n')
                     record('TASK_DONE',id=task['id'],action=action,frame='frame' in result,power=result.get('status',{}).get('power'))

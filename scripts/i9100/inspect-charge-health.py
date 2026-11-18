@@ -135,12 +135,12 @@ def capture(kernel,symbols,out):
         words=struct.unpack('<8I',kernel.read(symbols['_i9100_boot_source'],32))
         result['boot_source']=dict(zip(('magic','version','flags','inform2','inform3','sboot_mode','r1','r2'),words))
     if '_i9100_setup_dev_finish_diag' in symbols.values:
-        address=symbols['_i9100_setup_dev_finish_diag']
-        words=struct.unpack('<12I',kernel.read(address,48))
+        finish_address=symbols['_i9100_setup_dev_finish_diag']
+        words=struct.unpack('<12I',kernel.read(finish_address,48))
         result['setup_development_finish']=dict(zip(('version','state','pid','header','idversion',
             'reason','vm_result','copy_error','restore_error','restore_rx','site','target'),words))
         if words[0]==2:
-            extra=struct.unpack('<4I',kernel.read(address+48,16))
+            extra=struct.unpack('<4I',kernel.read(finish_address+48,16))
             result['setup_development_finish'].update(zip(('code','code_bytes','perform_selector_ref','finish_selector_ref'),extra))
     if '_i9100_power_key_observation' in symbols.values:
         words=struct.unpack('<7I',kernel.read(symbols['_i9100_power_key_observation'],28))
