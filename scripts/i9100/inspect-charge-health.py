@@ -12,6 +12,85 @@ FIELDS=('sequence','polls','time_lo','time_hi','revision','sub_charger',
     'muic_ctrl2','muic_status2','gpl2con','gpl2dat','gpl2pud',
     'charge_current_adc','probe_phase','probe_result','reserved')
 
+CPU_FIELDS=('sequence','time_lo','time_hi','polls','api_valid','api_result',
+    'returned_count','available_cpus','user_ticks','system_ticks','idle_ticks',
+    'nice_ticks','tick_interval','precise_user_kernel_time','master_processor',
+    'graphics_known','latest_graphics_client','graphics_send_calls',
+    'graphics_send_success','latest_graphics_flags')
+CLIENT_FIELDS=('sequence','time_lo','time_hi','requested_state','hardware_result',
+    'client','owner_pid','vsync_requested','vsync_enabled','closed','port_present',
+    'callback_present','generation_lo','generation_hi','send_count_lo','send_count_hi',
+    'diag_enabled','reserved','graphics_diagnostic_losses','graphics_diagnostic_unknown')
+
+
+def decode_budget(raw,kind):
+    if kind not in ('cpu','display_clients') or len(raw)!=4*(4+16*20):
+        raise ValueError('Power budget type/size differs')
+    version,count,stride,capacity=struct.unpack_from('<4I',raw)
+    if (version,stride,capacity)!=(1,20,16):raise ValueError('Unknown power budget schema')
+    fields=CPU_FIELDS if kind=='cpu' else CLIENT_FIELDS
+    samples=[]
+    for slot in range(capacity):
+        values=struct.unpack_from('<20I',raw,16+slot*80)
+        if not values[0]:continue
+        if not count or ((count-values[0])&0xffffffff)>=16 or ((values[0]-1)&15)!=slot:
+            raise ValueError('Incomplete/foreign power budget record')
+        row=dict(zip(fields,values))
+        row['time_ns']=(row['time_hi']<<32)|row['time_lo']
+        if kind=='cpu':
+            if row['api_valid'] not in (0,1) or row['graphics_known'] not in (0,1) or row['precise_user_kernel_time'] not in (0,1):
+                raise ValueError('Corrupt native accounting validity')
+            if row['api_valid'] and (row['api_result'] or row['returned_count']!=4 or not row['tick_interval'] or
+                    not row['master_processor'] or not 1<=row['available_cpus']<=32):
+                raise ValueError('Native API success signature differs')
+        else:
+            row['generation']=(row['generation_hi']<<32)|row['generation_lo']
+            row['send_count']=(row['send_count_hi']<<32)|row['send_count_lo']
+        samples.append(row)
+    samples.sort(key=lambda row:((count-row['sequence'])&0xffffffff),reverse=True)
+    result=dict(version=version,count=count,samples=samples)
+    if kind=='display_clients':
+        result['identity_limit']='These are actual power-request callers; a caller snapshot does not prove ownership of every display client.'
+        return result
+    intervals=[]
+    for before,after in zip(samples,samples[1:]):
+        interval=dict(first_sequence=before['sequence'],last_sequence=after['sequence'],usable=False)
+        elapsed=after['time_ns']-before['time_ns']
+        same=all(after[key]==before[key] for key in ('master_processor','tick_interval','available_cpus','precise_user_kernel_time'))
+        if not before['api_valid'] or not after['api_valid'] or not same or elapsed<=0 or elapsed>3600*1000000000:
+            interval['reason']='Failed native sample, changed CPU/clock identity, or invalid time window'
+        else:
+            deltas={key:(after[key]-before[key])&0xffffffff for key in ('user_ticks','system_ticks','idle_ticks','nice_ticks')}
+            total=sum(deltas.values());expected=elapsed/after['tick_interval']
+            interval.update(elapsed_ns=elapsed,deltas=deltas,total_ticks=total,
+                tick_coverage=total/expected if expected else None)
+            # Reject stale/inconsistent timer data instead of reporting false idle.
+            if total and abs(total-expected)<=max(4,expected*0.2):
+                interval.update(usable=True,idle_percent=100*deltas['idle_ticks']/total,
+                    busy_percent=100*(total-deltas['idle_ticks'])/total,
+                    user_kernel_split_valid=bool(after['precise_user_kernel_time']))
+            else:interval['reason']='Native CPU ticks do not cover the observed clock window'
+            if before['graphics_known'] and after['graphics_known']:
+                for key in ('graphics_send_calls','graphics_send_success'):
+                    if before[key]!=0xffffffff and after[key]>=before[key] and after[key]!=0xffffffff:
+                        interval[key+'_delta']=after[key]-before[key]
+        intervals.append(interval)
+    result.update(scope='Native master-CPU accounting; not aggregate load or a current measurement',intervals=intervals,
+        graphics_counter_limit='Shared try-guard diagnostic counters can drop updates. A positive delta witnesses activity; zero does not prove refresh stopped. Latest client/flags are historical.')
+    return result
+
+
+def capture_budget(kernel,address,out,kind):
+    raw=kernel.read(address,4*(4+16*20))
+    (out/('power-budget-'+kind+'.bin')).write_bytes(raw)
+    result=decode_budget(raw,kind)
+    header=struct.unpack('<4I',kernel.read(address,16))
+    if (header[0],header[2],header[3])!=(1,20,16):
+        raise ValueError('Power budget schema changed during read; retained, not retried')
+    result['producer_count_after']=header[1]
+    (out/('power-budget-'+kind+'.json')).write_text(json.dumps(result,indent=2)+'\n')
+    return result
+
 def decode(raw):
     if len(raw)<16:raise ValueError('Native charger table size differs')
     version,count,stride,capacity=struct.unpack_from('<4I',raw)
@@ -55,6 +134,9 @@ def capture(kernel,symbols,out):
     if '_i9100_boot_source' in symbols.values:
         words=struct.unpack('<8I',kernel.read(symbols['_i9100_boot_source'],32))
         result['boot_source']=dict(zip(('magic','version','flags','inform2','inform3','sboot_mode','r1','r2'),words))
+    for symbol,kind in (('_i9100_cpu_load_diag','cpu'),('_i9100_display_client_power_diag','display_clients')):
+        if symbol in symbols.values:
+            result[kind]=capture_budget(kernel,symbols[symbol],out,kind)
     header=kernel.read(address,16)
     after_version,after_count,after_stride,after_capacity=struct.unpack('<4I',header)
     if (after_version,after_stride,after_capacity)!=(version,stride,capacity):
