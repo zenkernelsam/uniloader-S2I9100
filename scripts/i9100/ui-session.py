@@ -8,6 +8,7 @@ original handle; queued work never starts after a failed/uncertain request.
 import argparse,importlib.util,json,os,re,struct,time
 from datetime import datetime,timezone
 from pathlib import Path
+from contextlib import redirect_stdout
 HERE=Path(__file__).resolve().parent
 s=importlib.util.spec_from_file_location('ui_owner_boot',HERE/'capture-boot-snapshot.py')
 b=importlib.util.module_from_spec(s);s.loader.exec_module(b)
@@ -56,7 +57,7 @@ def validate(task):
     if not isinstance(task,dict) or set(task)-{'id','action','xy','ms','frame','process','thread_limit'}:raise ValueError('Unknown task fields')
     if not re.fullmatch(r'[0-9]{4}',str(task.get('id',''))):raise ValueError('Four-digit task id required')
     action=task.get('action')
-    if action not in ('status','charge','density','frame','tap','swipe','home','power','setup','app','stacks','close','reboot-download','poweroff-charge'):raise ValueError('Unknown task action')
+    if action not in ('status','charge','density','diagnostics','frame','tap','swipe','home','power','setup','app','stacks','close','reboot-download','poweroff-charge'):raise ValueError('Unknown task action')
     if 'frame' in task and type(task['frame']) is not bool:raise ValueError('frame must be boolean')
     if action in ('tap','swipe','home','power'):
         xy=task.get('xy',[]);size=2 if action=='tap' else 4 if action=='swipe' else 0
@@ -169,6 +170,10 @@ def serve(a):
                         if action in ('tap','swipe','home','power'):result['input']=input_task(session,kernel,symbols,task)
                         elif action=='charge':result['charge']=b.module('owner_charge','inspect-charge-health.py').capture(kernel,symbols,target)
                         elif action=='density':result['density']=b.module('owner_density','inspect-ui-density.py').capture(session,kernel,symbols,layout,target,record)
+                        elif action=='diagnostics':
+                            names=b.observations.ABORT_SYMBOLS|{key for key in symbols.values if key.endswith('leo_graphics_state')}
+                            with (target/'decoder-stdout.txt').open('x',encoding='utf-8') as saved_stdout,redirect_stdout(saved_stdout):
+                                result['diagnostics']=b.observations.capture_ui_observations(kernel,b.observations.ObservationSymbols(symbols,names),target)
                         elif action=='setup':result['setup']=b.module('owner_setup','inspect-setup-controller.py').capture(session,kernel,symbols,main,layout,target)
                         elif action=='app':result['app']=b.module('owner_app','inspect-ui-app.py').capture(session,kernel,symbols,task.get('process','Setup'),layout,target,flags_only=True,geometry=True)
                         elif action=='stacks':result['stack']=b.stack.capture_process(session,kernel,task.get('process','Setup'),target,b.m,True,task.get('thread_limit',1),True)
@@ -194,7 +199,7 @@ def serve(a):
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='mode',required=True)
     s=sub.add_parser('serve');s.add_argument('--kernel',type=Path,required=True);s.add_argument('--output',type=Path,required=True);s.add_argument('--seconds',type=int,choices=range(60,1801),default=1200);s.add_argument('--allow-reboot-download',action='store_true');s.add_argument('--allow-poweroff-charge',action='store_true');s.add_argument('--charge-on-ready',action='store_true',help='Save native charge evidence immediately after the verified handshake');s.add_argument('--poweroff-on-ready',action='store_true',help='Queue one authorized charging shutdown on this verified owner')
-    s.add_argument('--on-ready',action='append',choices=('status','charge','density','frame','setup','app'),default=[],help='Queue these read-only tasks immediately after the verified handshake')
+    s.add_argument('--on-ready',action='append',choices=('status','charge','density','diagnostics','frame','setup','app'),default=[],help='Queue these read-only tasks immediately after the verified handshake')
     q=sub.add_parser('request');q.add_argument('--owner',type=Path,required=True);q.add_argument('--id',required=True);q.add_argument('--action',required=True);q.add_argument('--xy',type=int,nargs='+');q.add_argument('--ms',type=int);q.add_argument('--process');q.add_argument('--thread-limit',type=int);q.add_argument('--no-frame',action='store_true')
     a=p.parse_args()
     if a.mode=='serve':return serve(a)
