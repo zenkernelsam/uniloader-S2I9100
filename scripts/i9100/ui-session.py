@@ -83,6 +83,9 @@ def serve(a):
                 session.handshake();kernel=b.m.Kernel(session,symbols)
                 (out/'owner.json').write_text(json.dumps(dict(pid=os.getpid(),tag=symbols.tag,seconds=a.seconds),indent=2)+'\n')
                 record('READY',pid=os.getpid(),tag=symbols.tag)
+                if a.charge_on_ready:
+                    first=queue/'0000.part';first.write_text(json.dumps(dict(id='0000',action='charge',frame=False))+'\n')
+                    os.replace(first,queue/'0000.json')
                 while time.monotonic()<session.deadline:
                     pending=sorted(p for p in queue.glob('*.json') if p.name not in processed)
                     if not pending:
@@ -124,7 +127,7 @@ def serve(a):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='mode',required=True)
-    s=sub.add_parser('serve');s.add_argument('--kernel',type=Path,required=True);s.add_argument('--output',type=Path,required=True);s.add_argument('--seconds',type=int,choices=range(60,1801),default=1200);s.add_argument('--allow-reboot-download',action='store_true')
+    s=sub.add_parser('serve');s.add_argument('--kernel',type=Path,required=True);s.add_argument('--output',type=Path,required=True);s.add_argument('--seconds',type=int,choices=range(60,1801),default=1200);s.add_argument('--allow-reboot-download',action='store_true');s.add_argument('--charge-on-ready',action='store_true',help='Save native charge evidence immediately after the verified handshake')
     q=sub.add_parser('request');q.add_argument('--owner',type=Path,required=True);q.add_argument('--id',required=True);q.add_argument('--action',required=True);q.add_argument('--xy',type=int,nargs='+');q.add_argument('--ms',type=int);q.add_argument('--process');q.add_argument('--thread-limit',type=int);q.add_argument('--no-frame',action='store_true')
     a=p.parse_args()
     if a.mode=='serve':return serve(a)

@@ -159,7 +159,11 @@ void uart_puts(const char *s);
 #define I9100_XPC_DIAG_CMDLINE ""
 #endif
 #ifdef I9100_CHARGE_DIAG_BUILD
+#ifdef I9100_CHARGE_PROBE_BUILD
+#define I9100_CHARGE_DIAG_CMDLINE " i9100chargediag=1 i9100chargeprobe=1"
+#else
 #define I9100_CHARGE_DIAG_CMDLINE " i9100chargediag=1"
+#endif
 #else
 #define I9100_CHARGE_DIAG_CMDLINE ""
 #endif
