@@ -41,6 +41,7 @@ parser.add_argument('--home-test', action='store_true')
 parser.add_argument('--ios6-hid', action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument('--input-test', action='store_true')
 parser.add_argument('--aks-development', action='store_true')
+parser.add_argument('--setup-dev-finish',action='store_true')
 args = parser.parse_args()
 if args.ls_ui_timeout and not args.xpc_diag:
     parser.error('--ls-ui-timeout requires --xpc-diag')
@@ -119,5 +120,6 @@ subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--ke
                 *(['--home-test'] if args.home_test else []),
                 *(['--ios6-hid'] if args.ios6_hid else []),
                 *(['--input-test'] if args.input_test else []),
-                *(['--aks-development'] if args.aks_development else [])], check=True)
+                *(['--aks-development'] if args.aks_development else []),
+                *(['--setup-dev-finish'] if args.setup_dev_finish else [])], check=True)
 print('OFFLINE READY:', package, flush=True)

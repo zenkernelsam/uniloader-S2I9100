@@ -32,7 +32,7 @@ def validate_command(verb, allow_reboot_download=False, allow_panic_test=False, 
     if verb in ('ping', 'status', 'root-status', 'panic-status', 'panic-log'):
         return None
     if allow_input_test:
-        match = re.fullmatch(r'hid-home ([0-9a-f]{1,4})', verb)
+        match = re.fullmatch(r'hid-(?:home|power) ([0-9a-f]{1,4})', verb)
         if match and 80<=int(match.group(1),16)<=1500:
             return None
         match = re.fullmatch(r'hid-swipe ([0-9a-f]{1,4}) ([0-9a-f]{1,4}) ([0-9a-f]{1,4}) ([0-9a-f]{1,4}) ([0-9a-f]{1,4})', verb)
@@ -112,7 +112,7 @@ class Receiver:
                 raise ProtocolError('DATA address/length does not match request')
             if self.verb == 'panic-log' and (addr != 0 or not 64 <= size <= 64+28672):
                 raise ProtocolError('Invalid panic-log DATA envelope')
-            if self.verb in ('ping', 'status', 'root-status', 'reboot-download', 'panic-status', 'panic-test') or self.verb.startswith(('hid-home ','hid-swipe ')):
+            if self.verb in ('ping', 'status', 'root-status', 'reboot-download', 'panic-status', 'panic-test') or self.verb.startswith(('hid-home ','hid-power ','hid-swipe ')):
                 raise ProtocolError('Unexpected DATA for scalar query')
             self.remaining = size
             self.complete = size == 0
@@ -126,7 +126,7 @@ class Receiver:
             self.complete=True
         elif self.verb == 'panic-test' and answer == 'OK panic-test':
             self.complete = True
-        elif self.allow_input_test and self.verb.startswith(('hid-home ','hid-swipe ')) and answer == 'OK input-queued':
+        elif self.allow_input_test and self.verb.startswith(('hid-home ','hid-power ','hid-swipe ')) and answer == 'OK input-queued':
             self.complete = True
         elif self.verb == 'panic-status' and re.fullmatch(r'OK panic=[01] seconds=[0-9a-f]{8}', answer):
             mode, seconds = int(answer[9]), int(answer[19:], 16)
@@ -190,7 +190,7 @@ class Session:
     def command(self, verb):
         if self.reboot_requested:
             raise ProtocolError('Terminal action already requested on this handle; no further command')
-        if (verb in ('reboot-download', 'panic-test','poweroff-charge') or verb.startswith(('hid-swipe ','hid-home '))) and not (self.receiver.ready and self.receiver.tag_seen):
+        if (verb in ('reboot-download', 'panic-test','poweroff-charge') or verb.startswith(('hid-swipe ','hid-home ','hid-power '))) and not (self.receiver.ready and self.receiver.tag_seen):
             raise ProtocolError('State-changing command needs the verified READY/BUILD handshake')
         validate_command(verb, self.receiver.allow_reboot_download, self.receiver.allow_panic_test, self.receiver.allow_input_test,self.receiver.allow_poweroff_charge)
         # A host ReadFile completion can precede the kernel's next 10ms poll

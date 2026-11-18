@@ -55,6 +55,7 @@ def main():
     parser.add_argument('--ios6-hid', action='store_true')
     parser.add_argument('--input-test', action='store_true')
     parser.add_argument('--aks-development', action='store_true')
+    parser.add_argument('--setup-dev-finish',action='store_true')
     parser.add_argument('sources', nargs='*')
     args = parser.parse_args()
     if args.audio_property_lock and (not args.control or not args.xpc_diag or not args.ios6_hid):
@@ -118,6 +119,8 @@ def main():
         parser.error('Use requested input tests or the automatic Home test, not both')
     if args.aks_development and not args.control:
         parser.error('--aks-development requires --control')
+    if args.setup_dev_finish and (not args.control or not args.aks_development or not args.ios6_hid):
+        parser.error('--setup-dev-finish requires control, iOS6 and the explicit AKS development state')
     output = args.output.resolve()
     if not output.is_relative_to(repo / 'out'):
         parser.error('Output must be inside the loader out directory')
@@ -151,6 +154,8 @@ def main():
         if args.control and source_name == 'arch/arm/load-kernel.c':
             if args.aks_development:
                 command.append('-DI9100_AKS_DEVELOPMENT_BUILD=1')
+            if args.setup_dev_finish:
+                command.append('-DI9100_SETUP_DEV_FINISH_BUILD=1')
             if args.input_test:
                 command.append('-DI9100_INPUT_TEST_BUILD=1')
             if args.ios6_hid:

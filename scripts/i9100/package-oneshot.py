@@ -69,6 +69,7 @@ def main():
     parser.add_argument('--ios6-hid', action='store_true',help='Use the verified iOS6 serialized input ABI')
     parser.add_argument('--input-test', action='store_true',help='Explicit bounded serial input tests; idle until requested')
     parser.add_argument('--aks-development', action='store_true',help='Explicit S2 no-passcode state; no secure keys')
+    parser.add_argument('--setup-dev-finish',action='store_true',help='Only matched iOS6 Setup uses its native completion/notification path')
     parser.add_argument('--control-bootargs-only', action='store_true',
                         help='Diagnostic: control loader bootargs with a baseline kernel; no command capability claim')
     args = parser.parse_args()
@@ -130,6 +131,8 @@ def main():
         parser.error('Use requested input tests or the automatic Home test, not both')
     if args.aks_development and not args.control:
         parser.error('--aks-development requires --control')
+    if args.setup_dev_finish and (not args.control or not args.aks_development or not args.ios6_hid):
+        parser.error('--setup-dev-finish requires control, iOS6 and explicit AKS development state')
     if args.control_bootargs_only and not args.control:
         parser.error('--control-bootargs-only requires --control')
     output = args.output.resolve()
@@ -194,6 +197,8 @@ def main():
         raise RuntimeError('Kernel lacks the explicit UI receive deadline')
     if args.aks_development and b'i9100aksdev\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit AKS development state')
+    if args.setup_dev_finish and b'i9100setupdevfinish\0' not in raw_data:
+        raise RuntimeError('Kernel lacks the explicit native Setup completion capability')
     blob = output/'Image.lz4'
     blob.write_bytes(lz4.block.compress(raw_data, store_size=False))
     assert lz4.block.decompress(blob.read_bytes(), uncompressed_size=len(raw_data)) == raw_data
@@ -231,6 +236,7 @@ def main():
         *(['--ios6-hid'] if args.ios6_hid else []),
         *(['--input-test'] if args.input_test else []),
         *(['--aks-development'] if args.aks_development else []),
+        *(['--setup-dev-finish'] if args.setup_dev_finish else []),
         '--kernel-blob', blob, '--dtb-blob', dt_blob, 'arch/arm/start.S', 'arch/arm/load-kernel.c',
         'arch/arm/lz4dec.c', 'board/samsung/board-i9100.c',
         'drivers/samsung/dwc2cdc4210.c', 'main/main.c'], loader, output/'loader-build.log')
@@ -265,6 +271,7 @@ def main():
     assert (b'i9100hidabi=6' in data) == args.ios6_hid
     assert (b'i9100inputtest=1' in data) == args.input_test
     assert (b'i9100aksdev=1' in data) == args.aks_development
+    assert (b'i9100setupdevfinish=1' in data) == args.setup_dev_finish
     assert (b'i9100lsuitimeout=1' in data) == args.ls_ui_timeout
     assert (b'i9100audiolock=1' in data) == args.audio_property_lock
     assert (b'i9100launchdguard=1' in data) == args.launchd_listener_guard
@@ -340,6 +347,7 @@ def main():
         'hid_wire_abi': 6 if args.ios6_hid else 7,
         'input_test_commands': args.input_test,
         'aks_development_state_only': args.aks_development,
+        'setup_development_finish': args.setup_dev_finish,
         'root_status_protocol': b'OK root=NO_ROOT' in raw_data,
         'diagnostic_control_bootargs_only': args.control_bootargs_only,
         'control_tag': sha(kernel)[:16] if args.control else None,
