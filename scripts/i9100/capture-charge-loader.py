@@ -31,7 +31,11 @@ def main():
     end=time.monotonic()+a.seconds
     while time.monotonic()<end:
      data=transport.read()
-     if data:capture.write(data);capture.flush()
+     if data:
+      capture.write(data);capture.flush()
+      # This is host receipt time, not the measurement time. The loader can
+      # retain earlier status lines while no host reader is attached.
+      record('CHARGER_RX',bytes=len(data),total=capture.tell())
     record('DONE',bytes=capture.tell(),writes=0)
    except BaseException as error:record('STOP',error=str(error),retry=False);raise
    finally:
