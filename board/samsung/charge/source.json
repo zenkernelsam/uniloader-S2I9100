@@ -1,0 +1,26 @@
+{
+  "commit": "c0197e3",
+  "purpose": "Portable U1 charging policy and bounded hardware IO; same thermal and deadline guards",
+  "files": [
+    {
+      "file": "i9100_power.h",
+      "source": "xnu-S2I9100/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_power.h",
+      "sha256": "9c3e53b6686d97fd43f2a6e85a8379f7cf48875ab67e4cc1f60a596817b6cc7b"
+    },
+    {
+      "file": "i9100_power.c",
+      "source": "xnu-S2I9100/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_power.c",
+      "sha256": "7edbdc896690e533514965fd674f227ca3969b137294d9b0b03b4cd460a550a5"
+    },
+    {
+      "file": "i9100_power_bus.c",
+      "source": "xnu-S2I9100/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_power_bus.c",
+      "sha256": "7aa03807ab6e31b73281921c67688875b9ac6ee09f6cbc6b822ef73cf05f26b5"
+    },
+    {
+      "file": "i9100_battery_temperature.h",
+      "source": "xnu-S2I9100/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_battery_temperature.h",
+      "sha256": "f10c74d11706d06e7175f47845dc50ac01f3ad8ff4e6b78c37f88f9d2fddd4ac"
+    }
+  ]
+}

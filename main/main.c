@@ -31,7 +31,9 @@ void main(void* dt, void* kernel, void* ramdisk)
 {
 #if defined(CONFIG_SAMSUNG_I9100)
 	extern void i9100_capture_boot_source(void);
+	extern void i9100_standalone_charge_gate(void);
 	i9100_capture_boot_source();
+	i9100_standalone_charge_gate();
 #endif
 	early_console_init();
 

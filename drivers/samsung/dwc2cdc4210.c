@@ -237,6 +237,10 @@ static const uint8_t str3[] = {
 	24, 3, 'S',0,'2',0,'I',0,'9',0,'1',0,'0',0,'0',0,'-',0,
 	'O',0,'S',0,'6',0
 };
+static const uint8_t str3_charge[] = {
+ 24,3,'S',0,'2',0,'I',0,'9',0,'1',0,'0',0,'0',0,'-',0,'C',0,'H',0,'G',0
+};
+static unsigned charge_identity;
 
 /* ---------------- state ---------------- */
 
@@ -480,7 +484,7 @@ static void ep0_setup(void)
 			case 0: ep0_reply(str0, sizeof(str0), wl); goto tail;
 			case 1: ep0_reply(str1, sizeof(str1), wl); goto tail;
 			case 2: ep0_reply(str2, sizeof(str2), wl); goto tail;
-			default: ep0_reply(str3, sizeof(str3), wl); goto tail;
+			default: ep0_reply(charge_identity?str3_charge:str3, sizeof(str3), wl); goto tail;
 			}
 		case 6: ep0_reply(qual_desc, sizeof(qual_desc), wl); goto tail;
 		case 7: {	/* OTHER_SPEED: same body, type byte 7 */
@@ -786,9 +790,32 @@ static void usbcon_write(int level, const char *prefix, const char *msg)
 static const struct console usbcon = {
 	.write = usbcon_write,
 };
+void usbcdc4210_charge_report(unsigned valid,unsigned soc,unsigned mv,int temp,
+                             unsigned charging,int reason)
+{
+ static const char *keys[6]={"valid=","soc=","mv=","temp=","charging=","reason="};
+ unsigned values[6]={valid,soc,mv,(unsigned)temp,charging,(unsigned)reason};
+ char line[160];unsigned at=0;memcpy(line,"I9CHG1 ",7);at=7;
+ for(unsigned n=0;n<6;n++){
+  for(const char *p=keys[n];*p;)line[at++]=*p++;
+  char digits[10];unsigned count=0,v=values[n];
+  do{digits[count++]='0'+v%10;v/=10;}while(v && count<10);
+  while(count)line[at++]=digits[--count];line[at++]=n==5?'\n':' ';
+ }
+ line[at]=0;usbcon_write(KERN_INFO,"",line);
+}
 
 /* ---------------- init ---------------- */
 
+void usbcdc4210_charge_identity(int enable)
+{
+ if(enable!=0 && enable!=1)return;
+ if(charge_identity!=(unsigned)enable && usb_ok){
+  DCTL|=DCTL_SFTDISCON;
+  usb_ok=0;enumerated=configured=host_open=0;
+ }
+ charge_identity=(unsigned)enable;
+}
 int usbcdc4210_init(void)
 {
 	uint32_t gate;
@@ -855,7 +882,7 @@ int usbcdc4210_init(void)
 	DCTL &= ~DCTL_SFTDISCON;
 
 	usb_ok = 1;
-	console_register(&usbcon);
+	if(!charge_identity)console_register(&usbcon);
 	printk(KERN_INFO, "usbcdc: dwc2 device up, gsnpsid=%08x\n", GSNPSID);
 	printk(KERN_INFO, "usbcdc: hw ahb=%08x ghw2=%08x ghw3=%08x ghw4=%08x dctl=%08x thr=%08x\n",
 	       GAHBCFG, GHWCFG2, GHWCFG3, GHWCFG4, DCTL, DTHRCTL);

@@ -22,7 +22,9 @@ class ProtocolError(RuntimeError):
     pass
 
 
-def validate_command(verb, allow_reboot_download=False, allow_panic_test=False, allow_input_test=False):
+def validate_command(verb, allow_reboot_download=False, allow_panic_test=False, allow_input_test=False, allow_poweroff_charge=False):
+    if verb=='poweroff-charge' and allow_poweroff_charge:
+        return None
     if verb == 'reboot-download' and allow_reboot_download:
         return None
     if verb == 'panic-test' and allow_panic_test:
@@ -50,13 +52,14 @@ def validate_command(verb, allow_reboot_download=False, allow_panic_test=False, 
 
 class Receiver:
     """Framing policy; payload bytes never pass through the text-line parser."""
-    def __init__(self, expected_tag, allow_reboot_download=False, allow_panic_test=False, allow_input_test=False):
+    def __init__(self, expected_tag, allow_reboot_download=False, allow_panic_test=False, allow_input_test=False, allow_poweroff_charge=False):
         if not re.fullmatch(r'[0-9a-f]{16}', expected_tag):
             raise ValueError('Expected a 16-hex kernel build tag')
         self.expected_tag = expected_tag
         self.allow_reboot_download = bool(allow_reboot_download)
         self.allow_panic_test = bool(allow_panic_test)
         self.allow_input_test = bool(allow_input_test)
+        self.allow_poweroff_charge = bool(allow_poweroff_charge)
         self.ready = self.tag_seen = False
         self.line = bytearray()
         self.drop = False
@@ -68,7 +71,7 @@ class Receiver:
         self.complete = False
 
     def start(self, seq, verb):
-        validate_command(verb, self.allow_reboot_download, self.allow_panic_test, self.allow_input_test)
+        validate_command(verb, self.allow_reboot_download, self.allow_panic_test, self.allow_input_test,self.allow_poweroff_charge)
         if not 0 < seq <= 0xffffffff:
             raise ValueError('Invalid sequence')
         self.seq, self.verb = seq, verb
@@ -104,7 +107,7 @@ class Receiver:
             addr, size = (int(x, 16) for x in data.groups())
             if size > MAX_DATA:
                 raise ProtocolError('DATA length exceeds staging buffer')
-            requested = validate_command(self.verb, self.allow_reboot_download, self.allow_panic_test, self.allow_input_test)
+            requested = validate_command(self.verb, self.allow_reboot_download, self.allow_panic_test, self.allow_input_test,self.allow_poweroff_charge)
             if requested is not None and (addr, size) != requested:
                 raise ProtocolError('DATA address/length does not match request')
             if self.verb == 'panic-log' and (addr != 0 or not 64 <= size <= 64+28672):
@@ -119,6 +122,8 @@ class Receiver:
             self.complete = True
         elif self.verb == 'reboot-download' and answer == 'OK reboot-download':
             self.complete = True
+        elif self.verb=='poweroff-charge' and self.allow_poweroff_charge and answer=='OK poweroff-charge':
+            self.complete=True
         elif self.verb == 'panic-test' and answer == 'OK panic-test':
             self.complete = True
         elif self.allow_input_test and self.verb.startswith(('hid-home ','hid-swipe ')) and answer == 'OK input-queued':
@@ -158,9 +163,9 @@ class Receiver:
 
 class Session:
     def __init__(self, transport, expected_tag, record, capture, timeout=15, clock=time.monotonic, sleep=time.sleep,
-                 allow_reboot_download=False, allow_panic_test=False, allow_input_test=False):
+                 allow_reboot_download=False, allow_panic_test=False, allow_input_test=False, allow_poweroff_charge=False):
         self.transport = transport
-        self.receiver = Receiver(expected_tag, allow_reboot_download, allow_panic_test, allow_input_test)
+        self.receiver = Receiver(expected_tag, allow_reboot_download, allow_panic_test, allow_input_test,allow_poweroff_charge)
         self.record, self.capture, self.timeout = record, capture, timeout
         self.clock, self.sleep = clock, sleep
         self.seq = 0
@@ -185,9 +190,9 @@ class Session:
     def command(self, verb):
         if self.reboot_requested:
             raise ProtocolError('Terminal action already requested on this handle; no further command')
-        if (verb in ('reboot-download', 'panic-test') or verb.startswith(('hid-swipe ','hid-home '))) and not (self.receiver.ready and self.receiver.tag_seen):
+        if (verb in ('reboot-download', 'panic-test','poweroff-charge') or verb.startswith(('hid-swipe ','hid-home '))) and not (self.receiver.ready and self.receiver.tag_seen):
             raise ProtocolError('State-changing command needs the verified READY/BUILD handshake')
-        validate_command(verb, self.receiver.allow_reboot_download, self.receiver.allow_panic_test, self.receiver.allow_input_test)
+        validate_command(verb, self.receiver.allow_reboot_download, self.receiver.allow_panic_test, self.receiver.allow_input_test,self.receiver.allow_poweroff_charge)
         # A host ReadFile completion can precede the kernel's next 10ms poll
         # that clears uctl_flight. Allow that completion before another write.
         self.sleep(0.075)
@@ -195,7 +200,7 @@ class Session:
         if not 0 < self.seq < 0xffffffff:
             raise ProtocolError('Sequence source wrapped; stop this session')
         wire = self.receiver.start(self.seq, verb)
-        if verb in ('reboot-download', 'panic-test'):
+        if verb in ('reboot-download', 'panic-test','poweroff-charge'):
             self.reboot_requested = True
         self.record('SEND', sequence=self.seq, command=verb, bytes=len(wire))
         self.transport.write(wire)

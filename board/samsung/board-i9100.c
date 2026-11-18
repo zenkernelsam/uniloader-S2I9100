@@ -105,6 +105,7 @@ void i9100_capture_boot_source(void)
  i9100_boot_source.sboot_mode=readl((void*)0x4d5ed924U);
  i9100_boot_source.flags|=2;
 }
+#include "i9100-lpm.h"
 int i9100_init(void)
 {
 	volatile uint32_t *trace = (volatile uint32_t *)0x10020818;

@@ -54,6 +54,7 @@ def main():
     parser.add_argument('--xpc-diag', action='store_true', help='Retain XPC boundary metadata in kernel RAM')
     parser.add_argument('--charge-diag', action='store_true', help='Read fixed charger/gauge registers on the existing Power workloop')
     parser.add_argument('--charge-probe', action='store_true', help='One guarded 1-second charger-disable contrast on the Power owner')
+    parser.add_argument('--standalone-charge', action='store_true', help='Keep the original charging picture and supervise U1 charging before XNU')
     parser.add_argument('--reboot-download-fallback', action='store_true',
                         help='Recover normal iOS reboot requests into Download after filesystem shutdown')
     parser.add_argument('--tcc-development', action='store_true',
@@ -107,6 +108,8 @@ def main():
         parser.error('--charge-diag requires --control')
     if args.charge_probe and not args.charge_diag:
         parser.error('--charge-probe requires --charge-diag')
+    if args.standalone_charge and not args.control:
+        parser.error('--standalone-charge requires --control')
     if args.reboot_download_fallback and not args.control:
         parser.error('--reboot-download-fallback requires --control')
     if args.tcc_development and not args.control:
@@ -218,6 +221,7 @@ def main():
         *(['--xpc-diag'] if args.xpc_diag else []),
         *(['--charge-diag'] if args.charge_diag else []),
         *(['--charge-probe'] if args.charge_probe else []),
+        *(['--standalone-charge'] if args.standalone_charge else []),
         *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
         *(['--tcc-development'] if args.tcc_development else []),
         *(['--mdns-development'] if args.mdns_development else []),
@@ -326,6 +330,7 @@ def main():
         'xpc_diag': args.xpc_diag,
         'charge_diag': args.charge_diag,
         'charge_probe': args.charge_probe,
+        'standalone_charge': args.standalone_charge,
         'reboot_download_fallback': args.reboot_download_fallback,
         'tcc_development_unconfined': args.tcc_development,
         'mdns_development_unconfined': args.mdns_development,

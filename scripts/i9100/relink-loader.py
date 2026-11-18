@@ -45,6 +45,7 @@ def main():
     parser.add_argument('--xpc-diag', action='store_true')
     parser.add_argument('--charge-diag', action='store_true')
     parser.add_argument('--charge-probe', action='store_true')
+    parser.add_argument('--standalone-charge', action='store_true')
     parser.add_argument('--reboot-download-fallback', action='store_true')
     parser.add_argument('--tcc-development', action='store_true')
     parser.add_argument('--mdns-development', action='store_true')
@@ -95,6 +96,8 @@ def main():
         parser.error('--charge-diag requires --control')
     if args.charge_probe and not args.charge_diag:
         parser.error('--charge-probe requires --charge-diag')
+    if args.standalone_charge and not args.control:
+        parser.error('--standalone-charge requires --control')
     if args.reboot_download_fallback and not args.control:
         parser.error('--reboot-download-fallback requires --control')
     if args.tcc_development and not args.control:
@@ -192,6 +195,8 @@ def main():
                 command.append('-DI9100_CHARGE_DIAG_BUILD=1')
             if args.charge_probe:
                 command.append('-DI9100_CHARGE_PROBE_BUILD=1')
+            if args.standalone_charge:
+                command.append('-DI9100_STANDALONE_CHARGE_BUILD=1')
             if args.reboot_download_fallback:
                 command.append('-DI9100_REBOOT_DOWNLOAD_BUILD=1')
             if args.tcc_development:
@@ -202,6 +207,8 @@ def main():
                 command.append('-DI9100_PANIC_RECOVERY_BUILD=1')
             if args.panic_test:
                 command.append('-DI9100_PANIC_TEST_BUILD=1')
+        if source_name == 'board/samsung/board-i9100.c' and args.standalone_charge:
+            command.append('-DI9100_STANDALONE_CHARGE_BUILD=1')
         if source_name == 'arch/arm/start.S' and args.kernel_blob:
             command.append('-DI9100_KERNEL_BLOB="' + str(blob) + '"')
         if source_name == 'arch/arm/start.S' and args.dtb_blob:

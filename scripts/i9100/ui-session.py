@@ -16,7 +16,7 @@ def validate(task):
     if not isinstance(task,dict) or set(task)-{'id','action','xy','ms','frame','process','thread_limit'}:raise ValueError('Unknown task fields')
     if not re.fullmatch(r'[0-9]{4}',str(task.get('id',''))):raise ValueError('Four-digit task id required')
     action=task.get('action')
-    if action not in ('status','charge','frame','tap','swipe','home','setup','app','stacks','close','reboot-download'):raise ValueError('Unknown task action')
+    if action not in ('status','charge','frame','tap','swipe','home','setup','app','stacks','close','reboot-download','poweroff-charge'):raise ValueError('Unknown task action')
     if 'frame' in task and type(task['frame']) is not bool:raise ValueError('frame must be boolean')
     if action in ('tap','swipe','home'):
         xy=task.get('xy',[]);size=2 if action=='tap' else 4 if action=='swipe' else 0
@@ -79,7 +79,7 @@ def serve(a):
                 if phase in ('OPEN_OK','DTR_OK','READY','TASK_BEGIN','TASK_DONE','DONE','STOP','CLOSED'):print(json.dumps(row),flush=True)
             try:
                 transport=b.f.WinTransport(device['port'],record)
-                session=OwnerSession(transport,symbols.tag,record,capture,timeout=20,seconds=a.seconds,allow_input_test=True,allow_reboot_download=a.allow_reboot_download)
+                session=OwnerSession(transport,symbols.tag,record,capture,timeout=20,seconds=a.seconds,allow_input_test=True,allow_reboot_download=a.allow_reboot_download,allow_poweroff_charge=a.allow_poweroff_charge)
                 session.handshake();kernel=b.m.Kernel(session,symbols)
                 (out/'owner.json').write_text(json.dumps(dict(pid=os.getpid(),tag=symbols.tag,seconds=a.seconds),indent=2)+'\n')
                 record('READY',pid=os.getpid(),tag=symbols.tag)
@@ -97,8 +97,12 @@ def serve(a):
                     target=out/('task-'+task['id']);target.mkdir();record('TASK_BEGIN',id=task['id'],action=task['action'])
                     action=task['action'];result=dict(task=task,tag=symbols.tag)
                     if action=='close':result['closed_by_request']=True
-                    elif action=='reboot-download':
-                        b.o.require(a.allow_reboot_download,'Download reboot was not enabled');answer,_=session.command('reboot-download');result['reply']=answer
+                    elif action in ('reboot-download','poweroff-charge'):
+                        if action=='reboot-download':b.o.require(a.allow_reboot_download,'Download reboot was not enabled')
+                        else:
+                            b.o.require(a.allow_poweroff_charge,'Charging shutdown was not enabled')
+                            b.o.require('_i9100_lpm_poweroff_ready' in symbols.values and kernel.u32(symbols['_i9100_lpm_poweroff_ready'])==1,'Current kernel lacks a ready charging shutdown worker')
+                        answer,_=session.command(action);result['reply']=answer
                     else:
                         kernel=b.m.Kernel(session,symbols)
                         if action in ('tap','swipe','home'):result['input']=input_task(session,kernel,symbols,task)
@@ -111,7 +115,7 @@ def serve(a):
                             image=target/'frame';image.mkdir();result['frame']=b.frame.capture_frame(kernel,symbols,image,device,32768,record)
                     (target/'result.json').write_text(json.dumps(result,indent=2)+'\n')
                     record('TASK_DONE',id=task['id'],action=action,frame='frame' in result,power=result.get('status',{}).get('power'))
-                    if action in ('close','reboot-download'):break
+                    if action in ('close','reboot-download','poweroff-charge'):break
                 record('DONE',tasks=len(processed))
             except BaseException as exc:
                 record('STOP',error=str(exc),retry=False)
@@ -127,7 +131,7 @@ def serve(a):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='mode',required=True)
-    s=sub.add_parser('serve');s.add_argument('--kernel',type=Path,required=True);s.add_argument('--output',type=Path,required=True);s.add_argument('--seconds',type=int,choices=range(60,1801),default=1200);s.add_argument('--allow-reboot-download',action='store_true');s.add_argument('--charge-on-ready',action='store_true',help='Save native charge evidence immediately after the verified handshake')
+    s=sub.add_parser('serve');s.add_argument('--kernel',type=Path,required=True);s.add_argument('--output',type=Path,required=True);s.add_argument('--seconds',type=int,choices=range(60,1801),default=1200);s.add_argument('--allow-reboot-download',action='store_true');s.add_argument('--allow-poweroff-charge',action='store_true');s.add_argument('--charge-on-ready',action='store_true',help='Save native charge evidence immediately after the verified handshake')
     q=sub.add_parser('request');q.add_argument('--owner',type=Path,required=True);q.add_argument('--id',required=True);q.add_argument('--action',required=True);q.add_argument('--xy',type=int,nargs='+');q.add_argument('--ms',type=int);q.add_argument('--process');q.add_argument('--thread-limit',type=int);q.add_argument('--no-frame',action='store_true')
     a=p.parse_args()
     if a.mode=='serve':return serve(a)

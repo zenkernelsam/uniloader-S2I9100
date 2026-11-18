@@ -45,6 +45,7 @@ def capture(kernel,symbols,out):
     raw=kernel.read(address,4*(4+16*stride))
     (out/'charge-diag.bin').write_bytes(raw)
     result=decode(raw)
+    (out/'charge-diag.json').write_text(json.dumps(result,indent=2)+'\n')
     if '_do_power_save' in symbols.values:
         result['do_power_save']=kernel.u32(symbols['_do_power_save'])
     if '_i9100_display_power_diag' in symbols.values:
@@ -55,6 +56,13 @@ def capture(kernel,symbols,out):
         words=struct.unpack('<8I',kernel.read(symbols['_i9100_boot_source'],32))
         result['boot_source']=dict(zip(('magic','version','flags','inform2','inform3','sboot_mode','r1','r2'),words))
     header=kernel.read(address,16)
-    if header!=raw[:16]:raise ValueError('Charge snapshot changed during read; retained, not retried')
+    after_version,after_count,after_stride,after_capacity=struct.unpack('<4I',header)
+    if (after_version,after_stride,after_capacity)!=(version,stride,capacity):
+        raise ValueError('Charge schema changed during read; retained, not retried')
+    # Each read-memory response is an immutable kernel staging snapshot.
+    # Later Power ticks may publish newer samples while ancillary snapshots
+    # are read; that does not invalidate the already validated historical rows.
+    result['producer_count_after']=after_count
+    result['producer_advanced_after_snapshot']=after_count!=result['count']
     (out/'charge-diag.json').write_text(json.dumps(result,indent=2)+'\n')
     return result
