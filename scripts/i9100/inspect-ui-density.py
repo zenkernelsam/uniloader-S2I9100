@@ -60,6 +60,10 @@ def capture(session,kernel,symbols,layout,out,record):
     rows=[dict(zip(FIELDS,struct.unpack_from('<20I',raw,n*80))) for n in range(3)]
     result=dict(tag=symbols.tag,installation=dict(zip(('backboardd','SpringBoard','Setup'),rows)),
                 processes={},power={},sequential=True,physical_touch_verified=False)
+    if '_i9100_ui_density_sync_diag' in symbols.values:
+        data=kernel.read(symbols['_i9100_ui_density_sync_diag'],32)
+        (out/'density-sync.bin').write_bytes(data)
+        result['patch_sync']=dict(zip(('version','calls','prior_irq_enabled','ttbr0','ttbr1','ttbcr','sctlr','completed'),struct.unpack('<8I',data)))
     if '_i9100_ui_density_execution' in symbols.values:
         raw_execution=kernel.read(symbols['_i9100_ui_density_execution'],144);(out/'density-execution.bin').write_bytes(raw_execution)
         names=('version','pid','idversion','before_count','after_count','init_count','copy_error','last_phase','caller_lr','stack','scale_bits','reserved')
@@ -91,6 +95,10 @@ def capture(session,kernel,symbols,layout,out,record):
         scale=struct.unpack('<f',scale_raw)[0];pixels=list(struct.unpack('<2I',pixels_raw))
         entry=dict(pid=pid,task=hex(task),slide=hex(slide),gs_scale=scale,gs_scale_bits=scale_raw.hex(),gs_pixels=pixels,present=True)
         schema=result['installation'][name]['version'];producer=2 if schema>=2 else 1
+        if schema==0:
+            result['processes'][name]=dict(present=True,pid=pid,task=hex(task),density_patch='not installed in this process',
+                limit='Startup/identity qualification has not run; do not interpret legacy MG addresses')
+            save();continue
         entry['producer_schema']=producer
         # Verify the live UIKit imports and both initializer sites. A private
         # calibration page alone does not prove that UIKit calls that mapping.
