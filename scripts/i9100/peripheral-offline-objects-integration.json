@@ -1,5 +1,5 @@
 {
-  "source_sha256": "802765c61a8b4ade7ed313019c85676784e7b39187fba5d04b787b1611a5f483",
+  "source_sha256": "7377591ffeae2d2e0f7290a2c0ccbc66ccdaeb8fd5d6036d72e0f864c6e3f60f",
   "new_objects": [
     "iokit/i9100_gpio_broker.o",
     "iokit/i9100_i2c_gpio.o",
@@ -58,9 +58,10 @@
     "iokit/i9100_power_shared.cpo",
     "iokit/IOS6I9100AudioPCM.cpo",
     "iokit/i9100_pl330_ring_native.cpo",
-    "iokit/i9100_pl330_ring_mmio.cpo"
+    "iokit/i9100_pl330_ring_mmio.cpo",
+    "iokit/i9100_audio_gated.cpo"
   ],
-  "patch_sha256": "21ad91f86392bf6b64421bce779c5a1fb9f67267bfd76c44ecd68bdbbca8ed97",
+  "patch_sha256": "766959ddffc9753dd1e45734846fdfa3ed246a437c40e0e89a276bd1b8aa0dc7",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first"
