@@ -42,6 +42,7 @@
     "iokit/i9100_bcm_pump.o",
     "iokit/i9100_radio_survey.o",
     "iokit/i9100_audio_user_session.o",
+    "iokit/i9100_pl330_ring.o",
     "iokit/i9100_dma_native.cpo",
     "iokit/i9100_peripheral_native.cpo",
     "iokit/IOS7I9100EMMC.cpo",
@@ -55,9 +56,11 @@
     "iokit/i9100_bcm_worker.cpo",
     "iokit/i9100_bcm_irq.cpo",
     "iokit/i9100_power_shared.cpo",
-    "iokit/IOS6I9100AudioPCM.cpo"
+    "iokit/IOS6I9100AudioPCM.cpo",
+    "iokit/i9100_pl330_ring_native.cpo",
+    "iokit/i9100_pl330_ring_mmio.cpo"
   ],
-  "patch_sha256": "d6d919e0747c20e1c5584d06150ad89d903d08c702e4c0ed8d5d5095a115daaa",
+  "patch_sha256": "21ad91f86392bf6b64421bce779c5a1fb9f67267bfd76c44ecd68bdbbca8ed97",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first"
