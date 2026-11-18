@@ -12,6 +12,46 @@ HERE=Path(__file__).resolve().parent
 s=importlib.util.spec_from_file_location('ui_owner_boot',HERE/'capture-boot-snapshot.py')
 b=importlib.util.module_from_spec(s);s.loader.exec_module(b)
 
+def process_lease(pid):
+    """Native liveness and birth identity; no SerialPort or serial WMI query."""
+    if os.name!='nt':raise RuntimeError('Windows native owner lease required')
+    import ctypes
+    from ctypes import wintypes as W
+    k=ctypes.WinDLL('kernel32',use_last_error=True)
+    k.OpenProcess.argtypes=[W.DWORD,W.BOOL,W.DWORD];k.OpenProcess.restype=W.HANDLE
+    k.WaitForSingleObject.argtypes=[W.HANDLE,W.DWORD];k.WaitForSingleObject.restype=W.DWORD
+    k.CloseHandle.argtypes=[W.HANDLE]
+    k.GetProcessTimes.argtypes=[W.HANDLE,*([ctypes.POINTER(W.FILETIME)]*4)]
+    k.GetTickCount64.restype=ctypes.c_ulonglong
+    handle=k.OpenProcess(0x1000|0x100000,False,pid)
+    if not handle:raise RuntimeError('Owner process is absent or cannot be identified; task not queued')
+    try:
+        if k.WaitForSingleObject(handle,0)!=258:
+            raise RuntimeError('Owner process has finished; task not queued')
+        times=[W.FILETIME() for _ in range(4)]
+        if not k.GetProcessTimes(handle,*(ctypes.byref(t) for t in times)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        created=(times[0].dwHighDateTime<<32)|times[0].dwLowDateTime
+        return created,k.GetTickCount64()
+    finally:k.CloseHandle(handle)
+
+def require_live_owner(owner):
+    metadata=json.loads((owner/'owner.json').read_text())
+    created,ticks=process_lease(metadata['pid'])
+    b.o.require(metadata.get('process_created_100ns')==created,'Owner PID identity differs; task not queued')
+    b.o.require(type(metadata.get('expires_ticks')) is int and ticks<metadata['expires_ticks'],
+        'Owner command budget has expired; task not queued')
+    # Process existence alone does not prove its serial loop is still active.
+    with (owner/'events.jsonl').open('rb') as events:
+        events.seek(0,2);length=events.tell();events.seek(max(0,length-8192))
+        tail=events.read().splitlines()
+    if length>8192:tail=tail[1:]
+    for line in tail:
+        try:row=json.loads(line)
+        except (ValueError,UnicodeError):continue
+        b.o.require(row.get('phase') not in ('DONE','STOP','CLOSED'),'Owner reached a terminal phase; task not queued')
+    return metadata
+
 def validate(task):
     if not isinstance(task,dict) or set(task)-{'id','action','xy','ms','frame','process','thread_limit'}:raise ValueError('Unknown task fields')
     if not re.fullmatch(r'[0-9]{4}',str(task.get('id',''))):raise ValueError('Four-digit task id required')
@@ -82,7 +122,10 @@ def serve(a):
                 transport=b.f.WinTransport(device['port'],record)
                 session=OwnerSession(transport,symbols.tag,record,capture,timeout=20,seconds=a.seconds,allow_input_test=True,allow_reboot_download=a.allow_reboot_download,allow_poweroff_charge=a.allow_poweroff_charge)
                 session.handshake();kernel=b.m.Kernel(session,symbols)
-                (out/'owner.json').write_text(json.dumps(dict(pid=os.getpid(),tag=symbols.tag,seconds=a.seconds),indent=2)+'\n')
+                created,ticks=process_lease(os.getpid())
+                expires=ticks+int(max(0,session.deadline-time.monotonic())*1000)
+                (out/'owner.json').write_text(json.dumps(dict(pid=os.getpid(),tag=symbols.tag,seconds=a.seconds,
+                    process_created_100ns=created,expires_ticks=expires),indent=2)+'\n')
                 record('READY',pid=os.getpid(),tag=symbols.tag)
                 if a.charge_on_ready:
                     first=queue/'0000.part';first.write_text(json.dumps(dict(id='0000',action='charge',frame=False))+'\n')
@@ -148,11 +191,14 @@ def main():
     a=p.parse_args()
     if a.mode=='serve':return serve(a)
     owner=b.o.confined(a.owner,b.f.REPO/'out');queue=owner/'queue';b.o.require(queue.is_dir() and (owner/'owner.json').is_file(),'Owner must have reached READY')
+    require_live_owner(owner)
     task=dict(id=a.id,action=a.action)
     for name in ('xy','ms','process','thread_limit'):
         if getattr(a,name) is not None:task[name]=getattr(a,name)
     if a.no_frame:task['frame']=False
     validate(task);target=queue/(a.id+'.json');temp=queue/(a.id+'.part')
     b.o.require(not target.exists() and not temp.exists(),'Task id already used')
-    temp.write_text(json.dumps(task)+'\n');os.replace(temp,target);print(str(target))
+    temp.write_text(json.dumps(task)+'\n')
+    require_live_owner(owner)
+    os.replace(temp,target);print(str(target))
 if __name__=='__main__':main()
