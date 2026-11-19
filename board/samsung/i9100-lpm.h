@@ -11,6 +11,7 @@
 #include "i9100-charge-screen.h"
 #include "i9100-charge-report.h"
 #include "i9100-charge-start.h"
+#include <main/i9100-boot-charge.h>
 #include "charge/i9100_panel_spi.h"
 #include "charge/i9100_panel_sleep.h"
 #ifndef LPM_BARRIER
@@ -19,6 +20,11 @@
 #define LPM_WAIT() __asm__ volatile("wfi" ::: "memory")
 #endif
 static struct i9100_power_state i9100_lpm_battery;
+static struct i9100_power_hw i9100_lpm_hw;
+static struct i9100_charge_start i9100_lpm_boot_gate;
+static unsigned i9100_lpm_boot_active,i9100_lpm_resume_charge,i9100_lpm_boot_in_service;
+static unsigned i9100_lpm_boot_polls,i9100_lpm_boot_phase;
+static uint64_t i9100_lpm_boot_next;
 static int lpm_boot_requested(const struct I9100BootSource *source)
 {return source && source->magic==I9100_BOOT_SOURCE_MAGIC && source->version==1 &&
  source->flags==3 && source->sboot_mode==1 && source->inform2==1;}
@@ -173,20 +179,58 @@ static int lpm_screen_bind(struct i9100_charge_screen *screen,unsigned *window)
  if(!i9100_charge_bind(screen,con,base,pitch,xy,end) || !i9100_charge_screen_valid(screen))return 0;
  *window=selected;return 1;
 }
+#ifdef I9100_STANDALONE_CHARGE_BUILD
+void i9100_boot_charge_service(void)
+{
+ if(!i9100_lpm_boot_active || i9100_lpm_boot_in_service)return;
+ uint64_t now=lpm_ticks();if(now<i9100_lpm_boot_next)return;
+ i9100_lpm_boot_in_service=1;
+ unsigned result=i9100_power_poll(&i9100_lpm_battery);
+ uint64_t sampled=lpm_ticks();
+ i9100_charge_start_update(&i9100_lpm_boot_gate,&i9100_lpm_battery,result,(sampled/24U)*1000U);
+ i9100_lpm_boot_polls++;i9100_lpm_boot_next=sampled+24000000U;
+ i9100_lpm_boot_in_service=0;
+}
+static void lpm_boot_report(unsigned stage)
+{
+ i9100_lpm_boot_phase=stage;
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+ extern void usbcdc4210_charge_boot_report(const unsigned[8]);
+ unsigned fields[8]={stage,i9100_lpm_boot_polls,i9100_lpm_battery.valid,
+  i9100_lpm_battery.percent,i9100_lpm_battery.millivolts,i9100_lpm_battery.charging,
+  (unsigned)i9100_lpm_battery.reason,i9100_lpm_battery.timeout};
+ usbcdc4210_charge_boot_report(fields);
+#endif
+}
+void i9100_boot_charge_stage(unsigned stage)
+{
+ if(!i9100_lpm_boot_active)return;
+ i9100_boot_charge_service();lpm_boot_report(stage);
+}
+#endif
 void i9100_standalone_charge_gate(void)
 {
 #ifdef I9100_STANDALONE_CHARGE_BUILD
- if(!lpm_boot_requested(&i9100_boot_source))return;
+ unsigned resuming=i9100_lpm_resume_charge;
+ i9100_lpm_resume_charge=0;
+ if(!resuming && !lpm_boot_requested(&i9100_boot_source))return;
  if(!lpm_timer_init())lpm_download();
  /* Bootloader watchdog must not reset a supervised charger every few seconds. */
  lpm_write(0x10060000U,0,lpm_read(0x10060000U,0)&~((1U<<5)|1U));
- struct i9100_power_hw hw={0,lpm_hw_read,lpm_hw_write,lpm_delay,lpm_enter,lpm_leave};
- struct i9100_power_io io={0};io.cookie=&hw;io.pmic_read=i9100_power_pmic_read;
+ /* The IO cookie must outlive this gate while bootstrap supervision runs. */
+ i9100_lpm_hw=(struct i9100_power_hw){0,lpm_hw_read,lpm_hw_write,lpm_delay,lpm_enter,lpm_leave};
+ struct i9100_power_io io={0};io.cookie=&i9100_lpm_hw;io.pmic_read=i9100_power_pmic_read;
  io.pmic_write=i9100_power_pmic_write;io.fuel_read=i9100_power_fuel_read;
  io.adc_read=i9100_power_adc_read;io.sub_read=i9100_power_sub_read;
  io.sub_enable=i9100_power_sub_enable;io.muic_read=i9100_power_muic_read;
  io.muic_write=i9100_power_muic_write;io.now_ns=lpm_now;
- if(i9100_power_init(&i9100_lpm_battery,&io,lpm_revision()))lpm_download();
+ if(!resuming){
+  if(i9100_power_init(&i9100_lpm_battery,&io,lpm_revision()))lpm_download();
+  i9100_lpm_boot_gate=(struct i9100_charge_start){0};i9100_lpm_boot_polls=0;
+ }
+ /* Enable and supervise the safe charger BEFORE lengthy USB setup. Resume
+  * keeps the original full/timeout/thermal latches and charge_start epoch. */
+ i9100_lpm_boot_active=1;i9100_lpm_boot_next=0;i9100_boot_charge_service();
 #if defined(CONFIG_EXYNOS_CDCACM4210)
    extern void usbcdc4210_charge_render_report(const unsigned[8]);
    extern void usbcdc4210_charge_start_report(const unsigned[8]);
@@ -202,6 +246,7 @@ void i9100_standalone_charge_gate(void)
 #endif
  uint64_t next=0,pressed=0,show_until=lpm_ticks()+720000000U;unsigned polls=0,report_sequence=0;
  unsigned window=0,blanked=0;
+ i9100_charge_renderer_reset(); /* Normal boot may have reused this scanout. */
  struct i9100_charge_screen screen={0};unsigned screen_ok=lpm_screen_bind(&screen,&window),animation=0,drawn=0;
 #ifdef I9100_PANEL_SLEEP_BUILD
  struct i9100_panel_spi panel_spi={0};struct i9100_panel_sleep panel={0};
@@ -341,13 +386,41 @@ void i9100_standalone_charge_gate(void)
  if(!lpm_panel_awake(&panel))lpm_download();
 #endif
  if(blanked)lpm_write(0x11c00000U,winmap,saved_map);
- i9100_power_stop(&i9100_lpm_battery);
+ i9100_lpm_boot_gate=start_gate;
+ i9100_lpm_boot_next=0;i9100_lpm_boot_phase=1;
+ /* The plain bootstrap supervisor replaces the standalone periodic gate;
+  * retaining an enabled comparator without its loop leaves pending IRQ89. */
+ (void)lpm_mct_write(0x240,256,1U<<16);
+ lpm_write(0x10050000U,0x244,1);lpm_write(0x10050000U,0x248,0);
+ lpm_write(0x10490000U,0x188,1U<<25);lpm_write(0x10490000U,0x288,1U<<25);
  lpm_write(0x10020000U,0x808,0x12345678U);
  lpm_write(0x10020000U,0x80c,0x12345670U);
 #if defined(CONFIG_EXYNOS_CDCACM4210)
  usbcdc4210_charge_identity(0);
 #endif
- lpm_write(0x10050000U,0x248,0);lpm_write(0x10490000U,0x188,1U<<25);
 #endif
 }
+#ifdef I9100_STANDALONE_CHARGE_BUILD
+void i9100_boot_charge_finish(void)
+{
+ if(!i9100_lpm_boot_active)return;
+ for(;;){
+  /* Force one fresh supervised sample immediately before the actual jump,
+   * after staging/decode and the host wait, not before either operation. */
+  i9100_lpm_boot_next=0;i9100_boot_charge_service();
+  if(i9100_charge_start_ready(&i9100_lpm_boot_gate,lpm_now(0)) &&
+     i9100_power_stop(&i9100_lpm_battery))break;
+  /* No low-cell reset loop: return to the same charging policy and wait for
+   * another qualified Power/remote boot. The cell's deadline is not reset. */
+  i9100_boot_charge_stage(8);i9100_lpm_resume_charge=1;
+  i9100_standalone_charge_gate();
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+  usbcdc4210_init(); /* Re-establish normal-loader USB after the held charger. */
+#endif
+ }
+ /* No callback may re-enable the charger after the final checked stop. */
+ lpm_write(0x10050000U,0x248,0);lpm_write(0x10490000U,0x188,1U<<25);
+ i9100_lpm_boot_active=0;lpm_boot_report(7);
+}
+#endif
 #endif

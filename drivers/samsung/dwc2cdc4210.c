@@ -25,6 +25,7 @@
 #include <string.h>
 #include <lib/debug.h>
 #include <lib/console.h>
+#include <main/i9100-boot-charge.h>
 #include "../../board/samsung/i9100-charge-control.h"
 #include "../../board/samsung/i9100-charge-report.h"
 #ifndef I9100_CONTROL_TAG
@@ -289,6 +290,7 @@ static void charge_out_rearm(void)
 }
 
 /* ---------------- helpers ---------------- */
+static unsigned charge_delay_quanta;
 
 static void udelay(unsigned int us)
 {
@@ -298,6 +300,9 @@ static void udelay(unsigned int us)
 	while (us--) {
 		for (i = 0; i < 400; i++)
 			__asm__ __volatile__("nop");
+		/* Preserve cadence across the repeated udelay(1) calls in bounded
+		 * CSRST/FIFO waits as well as a single longer PHY delay. */
+		if(++charge_delay_quanta==1000U){charge_delay_quanta=0;i9100_boot_charge_service();}
 	}
 }
 
@@ -940,6 +945,8 @@ void usbcdc4210_charge_render_report(const unsigned values[8])
 {charge_words_report("I9CR1 ",values);}
 void usbcdc4210_charge_start_report(const unsigned values[8])
 {charge_words_report("I9BT1 ",values);}
+void usbcdc4210_charge_boot_report(const unsigned values[8])
+{charge_words_report("I9BS1 ",values);}
 void usbcdc4210_charge_transport_report(void)
 {
  if(!charge_identity || !usb_ok)return;

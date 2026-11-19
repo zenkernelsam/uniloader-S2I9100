@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <main/i9100-boot-charge.h>
 
 /* On-screen progress: one green/blue slot per 512 KiB of output.
  * If the decoder dies mid-stream, the bars freeze at the culprit. */
@@ -22,6 +23,9 @@ size_t lz4_decompress(const uint8_t *in, size_t inlen, uint8_t *out,
 {
 	const uint8_t *ip = in, *ie = in + inlen;
 	uint8_t *op = out, *oe = out + outcap;
+#if defined(CONFIG_SAMSUNG_I9100) && defined(I9100_STANDALONE_CHARGE_BUILD)
+	unsigned int service_bytes=0;
+#endif
 
 	while (ip < ie) {
 #ifdef LZPROG
@@ -69,6 +73,9 @@ size_t lz4_decompress(const uint8_t *in, size_t inlen, uint8_t *out,
 
 			*(volatile uint8_t *)op = d;
 			op++;
+#if defined(CONFIG_SAMSUNG_I9100) && defined(I9100_STANDALONE_CHARGE_BUILD)
+			if(++service_bytes==65536U){i9100_boot_charge_service();service_bytes=0;}
+#endif
 		}
 		if (ip == ie)
 			break; /* last sequence carries no match */
@@ -113,6 +120,9 @@ size_t lz4_decompress(const uint8_t *in, size_t inlen, uint8_t *out,
 
 			*(volatile uint8_t *)op = d;
 			op++;
+#if defined(CONFIG_SAMSUNG_I9100) && defined(I9100_STANDALONE_CHARGE_BUILD)
+			if(++service_bytes==65536U){i9100_boot_charge_service();service_bytes=0;}
+#endif
 		}
 	}
 

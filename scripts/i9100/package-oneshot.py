@@ -229,7 +229,8 @@ def main():
     blob = output/'Image.lz4'
     blob.write_bytes(lz4.block.compress(raw_data, store_size=False))
     assert lz4.block.decompress(blob.read_bytes(), uncompressed_size=len(raw_data)) == raw_data
-    run(['gcc','-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all',
+    run(['gcc','-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(loader/'include'),
+        *(['-DCONFIG_SAMSUNG_I9100=1','-DI9100_STANDALONE_CHARGE_BUILD=1'] if args.standalone_charge else []),
         helpers/'test-lz4.c','-o',output/'test-lz4'], loader, output/'test-lz4-build.log')
     run([output/'test-lz4', blob, raw], loader, output/'test-lz4.log')
     build = output/'loader'
@@ -345,6 +346,9 @@ def main():
     (output/'loader-symbols.txt').write_text(symbols)
     sym = {row.split()[2]: int(row.split()[0],16) for row in symbols.splitlines()
         if len(row.split()) == 3 and row.split()[0][0] in '0123456789abcdef'}
+    if args.standalone_charge:
+        assert all(name in sym for name in ('i9100_boot_charge_service','i9100_boot_charge_stage','i9100_boot_charge_finish'))
+        assert b'I9BS1 ' in data,'Startup supervision reporting missing from the actual loader'
     if art_record:
         embedded=data[sym['i9100_charge_art_start']-0x48000000:sym['i9100_charge_art_end']-0x48000000]
         assert embedded==art_bytes and sha(args.charge_art)==art_record['sha256'],'Embedded local artwork differs'
@@ -401,6 +405,7 @@ def main():
         'standalone_charge': args.standalone_charge,
         'standalone_charge_art': art_record,
         'standalone_charge_transport': args.standalone_charge and b'I9UT1 ' in data,
+        'standalone_charge_boot_supervision': args.standalone_charge and b'I9BS1 ' in data,
         'standalone_charge_control': args.standalone_charge and b'I9CHC2 READY ' in data,
         'standalone_charge_control_version': 2 if args.standalone_charge and b'I9CHC2 READY ' in data else None,
         'standalone_charge_control_tag': charger_tag,

@@ -9,6 +9,7 @@
 #include <main/boot.h>
 #include <main/main.h>
 #include <lib/debug.h>
+#include <main/i9100-boot-charge.h>
 
 extern struct board_data board_ops;
 
@@ -35,15 +36,18 @@ void main(void* dt, void* kernel, void* ramdisk)
 	i9100_capture_boot_source();
 	i9100_standalone_charge_gate();
 #endif
+	i9100_boot_charge_stage(1);
 	early_console_init();
 
 	INITCALL(board_ops.ops.early_init);
+	i9100_boot_charge_stage(2);
 
 	driver_probe_all(board_ops.devices, board_ops.num_devices);
 
 	print_splash();
 
 	INITCALL(board_ops.ops.late_init);
+	i9100_boot_charge_stage(3);
 
 	/* Framebuffer console is live now - dump handover environment. */
 	{

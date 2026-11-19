@@ -4,6 +4,12 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdarg.h>
+#if defined(CONFIG_SAMSUNG_I9100) && defined(I9100_STANDALONE_CHARGE_BUILD)
+static unsigned charge_service_calls;
+void i9100_boot_charge_service(void){charge_service_calls++;}
+void i9100_boot_charge_stage(unsigned stage){(void)stage;}
+void i9100_boot_charge_finish(void){}
+#endif
 void fb_mark_asm(unsigned int o, unsigned int c) { (void)o; (void)c; }
 void printk(int l, const char *f, ...) { (void)l; (void)f; }
 #include "../../arch/arm/lz4dec.c"
@@ -38,6 +44,9 @@ int main(int argc, char **argv)
         size_t cn,rn;
         uint8_t *c=read_file(argv[1],&cn), *r=read_file(argv[2],&rn), *decoded=malloc(rn);
         if (lz4_decompress(c,cn,decoded,rn) != rn || memcmp(r,decoded,rn)) return 1;
+#if defined(CONFIG_SAMSUNG_I9100) && defined(I9100_STANDALONE_CHARGE_BUILD)
+        if(charge_service_calls!=rn/65536U)return 1;
+#endif
         free(c); free(r); free(decoded);
     }
     puts("PASS LZ4 bounds and production payload"); return 0;

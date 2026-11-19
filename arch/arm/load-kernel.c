@@ -7,6 +7,7 @@
 #include <main/boot.h>
 #include <string.h>
 #include <lib/simplefb.h>
+#include <main/i9100-boot-charge.h>
 
 #ifdef CONFIG_EMBED_XNU
 
@@ -71,13 +72,17 @@ static void stage_payloads(void **kernel, void **dt, void **ramdisk)
 
 	if (source < destination) {
 		/* Backward copy also covers overlapping relocation ranges. */
-		for (unsigned long i = size; i; i--)
+		for (unsigned long i = size; i; i--){
 			*(volatile unsigned char *)(destination + i - 1) =
 				*(volatile const unsigned char *)(source + i - 1);
+			if((i&65535U)==0)i9100_boot_charge_service();
+		}
 	} else if (source > destination) {
-		for (unsigned long i = 0; i < size; i++)
+		for (unsigned long i = 0; i < size; i++){
 			*(volatile unsigned char *)(destination + i) =
 				*(volatile const unsigned char *)(source + i);
+			if((i&65535U)==0)i9100_boot_charge_service();
+		}
 	}
 	delta_value = 0;
 	*kernel = &_kernel_start;
@@ -388,6 +393,7 @@ void arch_load_kernel_xnu(void *kernel, void *dt, void *ramdisk)
 	struct xnu_boot_args *ba;
 
 	dsc_arg[0] = 0;
+	i9100_boot_charge_stage(4);
 
 #ifdef CONFIG_EXYNOS_SD_FAT
 	/* BRING-UP (J1): FIRST try the FAT32 SD card - if Image/dtb/ramdisk
@@ -669,6 +675,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 				;
 		}
 		printk(KERN_INFO, "xnu: decoded %u bytes to 0x%08x\n", ksize, load_pa);
+		i9100_boot_charge_stage(5);
 #ifdef CONFIG_SAMSUNG_I9100
 		*(volatile unsigned int *)0x10020818 = 0x77660003U;
 #endif
@@ -916,7 +923,10 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 	}
 
 	/* Clear kernel BSS up to dt_pa */
-	memset((void *)(load_pa + ksize), 0, 0x1000000);
+	for(unsigned int cleared=0;cleared<0x1000000U;cleared+=65536U){
+		memset((void *)(load_pa + ksize + cleared),0,65536U);
+		i9100_boot_charge_service();
+	}
 
 
 	{
@@ -1028,6 +1038,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 #if defined(CONFIG_EXYNOS_CDCACM4210)
 		{
 			extern int usbcdc4210_wait_host(unsigned int ms);
+			i9100_boot_charge_stage(6);
 
 			printk(KERN_INFO, "xnu: waiting for host before handoff\n");
 			usbcdc4210_wait_host(30000);
@@ -1039,6 +1050,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 		*(volatile unsigned int *)0x10020818 = 0x77660004U;
 		__asm__ __volatile__("dsb sy" ::: "memory");
 #endif
+		i9100_boot_charge_finish();
 		jump_to_xnu(load_pa + entry_off, ba_pa);
 	}
 

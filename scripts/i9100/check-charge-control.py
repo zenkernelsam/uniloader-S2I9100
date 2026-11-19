@@ -26,6 +26,14 @@ static uint32_t receive_fifo[32];static unsigned fifo_index;
 #define I9100_CONTROL_TAG "1234567890abcdef"
 #define I9100_CHARGER_TAG "fedcba0987654321"
 static uint32_t rxpop(unsigned ep){assert(ep==0 && fifo_index<32);return receive_fifo[fifo_index++];}
+/* This variant exercises the driver's real delay-service scheduling. The
+ * charger supervisor is modeled; controller reset/FIFO remains the old model. */
+#define CONFIG_SAMSUNG_I9100 1
+#define I9100_STANDALONE_CHARGE_BUILD 1
+static unsigned supervisor_calls;
+void i9100_boot_charge_service(void){supervisor_calls++;}
+void i9100_boot_charge_stage(unsigned stage){(void)stage;}
+void i9100_boot_charge_finish(void){}
 void printk(int level,const char*fmt,...){(void)level;(void)fmt;}
 #include "driver.c"
 void console_register(const struct console*c){(void)c;}
@@ -39,6 +47,10 @@ static void received(const char*line){unsigned n=strlen(line);assert(n<=64);mems
 static void complete(void){GINTSTS=GINTSTS_IEPINT;DAINT=2;DIEPINT(1)=DXEPINT_XFERCOMPL;usbcdc_poll();GINTSTS=0;DIEPINT(1)=0;}
 static void setup(unsigned rt,unsigned rq,unsigned value){memset(setup_pkt,0,8);setup_pkt[0]=rt;setup_pkt[1]=rq;setup_pkt[2]=value;ep0_setup();}
 int main(void){
+ supervisor_calls=charge_delay_quanta=0;
+ for(unsigned n=0;n<999;n++)udelay(1);
+ assert(!supervisor_calls);udelay(1);assert(supervisor_calls==1);
+ udelay(2500);assert(supervisor_calls==3 && charge_delay_quanta==500);
  /* A late opener must drain the queued status and READY over multiple
   * short packets, not lose its second packet after the initial 64 bytes. */
  reset();host_open=0;

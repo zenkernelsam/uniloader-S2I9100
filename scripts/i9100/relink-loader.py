@@ -171,6 +171,8 @@ def main():
         command = [arg for arg in command if not arg.startswith('-DVER_TAG=')]
         if source.suffix == '.c':
             command.append('-DVER_TAG="' + label + '"')
+        if args.standalone_charge and source_name in ('main/main.c','drivers/samsung/dwc2cdc4210.c','arch/arm/lz4dec.c'):
+            command.append('-DI9100_STANDALONE_CHARGE_BUILD=1')
         if args.control and source_name == 'arch/arm/load-kernel.c':
             if args.aks_development:
                 command.append('-DI9100_AKS_DEVELOPMENT_BUILD=1')
