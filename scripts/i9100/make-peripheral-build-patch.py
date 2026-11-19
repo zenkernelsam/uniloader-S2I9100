@@ -44,6 +44,10 @@ patch.write_text("".join(difflib.unified_diff(original.splitlines(True), modifie
 manifest = dict(source_sha256=hashlib.sha256(original_bytes).hexdigest(), new_objects=objects,
                 patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),
                 applied=False, hardware_enabled=False,
-                prerequisite="Apply both XNU files.arm patches and regenerate iokit rules/full filelist first")
+                prerequisite="Apply both XNU files.arm patches and regenerate iokit rules/full filelist first",
+                sensor_hid_service=dict(applied=False,hardware_enabled=False,
+                    integration_patch="xnu-S2I9100/port-tests/i9100_sensor_hid_service_integration.patch",
+                    paired_rebuild="iokit/IOS7LeoHIDTouch.cpo",
+                    prerequisite="Before opting into sensor service publication, apply its existing IOHIDEventService extension and rebuild this paired object; do not add a second matching class"))
 (repo / "scripts/i9100/peripheral-offline-objects-integration.json").write_text(json.dumps(manifest, indent=2) + "\n")
 print("PREPARED (not applied)", patch)

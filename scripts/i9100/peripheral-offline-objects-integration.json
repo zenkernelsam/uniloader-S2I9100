@@ -1,5 +1,5 @@
 {
-  "source_sha256": "7377591ffeae2d2e0f7290a2c0ccbc66ccdaeb8fd5d6036d72e0f864c6e3f60f",
+  "source_sha256": "bbc706df783adfbda791f4775f811b412875c49cefcd74d0134d7a65ece62d70",
   "new_objects": [
     "iokit/i9100_gpio_broker.o",
     "iokit/i9100_i2c_gpio.o",
@@ -43,6 +43,8 @@
     "iokit/i9100_radio_survey.o",
     "iokit/i9100_audio_user_session.o",
     "iokit/i9100_pl330_ring.o",
+    "iokit/i9100_sensor_hid_wire.o",
+    "iokit/i9100_sensor_hid_queue.o",
     "iokit/i9100_dma_native.cpo",
     "iokit/i9100_peripheral_native.cpo",
     "iokit/IOS7I9100EMMC.cpo",
@@ -59,10 +61,19 @@
     "iokit/IOS6I9100AudioPCM.cpo",
     "iokit/i9100_pl330_ring_native.cpo",
     "iokit/i9100_pl330_ring_mmio.cpo",
-    "iokit/i9100_audio_gated.cpo"
+    "iokit/i9100_audio_gated.cpo",
+    "iokit/i9100_sensor_hid.cpo",
+    "iokit/i9100_sensor_hid_endpoint.cpo"
   ],
-  "patch_sha256": "766959ddffc9753dd1e45734846fdfa3ed246a437c40e0e89a276bd1b8aa0dc7",
+  "patch_sha256": "182186cdfbfb37458c4af343e1af6869049694128ea8c0658caf288b3c1a68f5",
   "applied": false,
   "hardware_enabled": false,
-  "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first"
+  "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first",
+  "sensor_hid_service": {
+    "applied": false,
+    "hardware_enabled": false,
+    "integration_patch": "xnu-S2I9100/port-tests/i9100_sensor_hid_service_integration.patch",
+    "paired_rebuild": "iokit/IOS7LeoHIDTouch.cpo",
+    "prerequisite": "Before opting into sensor service publication, apply its existing IOHIDEventService extension and rebuild this paired object; do not add a second matching class"
+  }
 }
