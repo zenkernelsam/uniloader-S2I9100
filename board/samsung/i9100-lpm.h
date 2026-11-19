@@ -9,6 +9,7 @@
 #include "charge/i9100_power.c"
 #include "charge/i9100_power_bus.c"
 #include "i9100-charge-screen.h"
+#include "i9100-charge-report.h"
 #ifndef LPM_BARRIER
 #define LPM_BARRIER() __asm__ volatile("dsb sy" ::: "memory")
 #define LPM_MASK_IRQ() __asm__ volatile("cpsid if" ::: "memory")
@@ -136,14 +137,14 @@ void i9100_standalone_charge_gate(void)
  if(i9100_power_init(&i9100_lpm_battery,&io,lpm_revision()))lpm_download();
 #if defined(CONFIG_EXYNOS_CDCACM4210)
  extern void usbcdc4210_charge_identity(int);
- extern void usbcdc4210_charge_report(unsigned,unsigned,unsigned,int,unsigned,int);
+ extern void usbcdc4210_charge_timed_report(const struct i9100_charge_report *);
  extern void usbcdc4210_charge_screen_report(unsigned,unsigned,unsigned,unsigned);
  extern void usbcdc4210_charge_fimd_report(const unsigned[8]);
  extern unsigned usbcdc4210_charge_take_action(void);
  extern void usbcdc4210_charge_set_boot_ready(unsigned);
  usbcdc4210_charge_identity(1);usbcdc4210_init();
 #endif
- uint64_t next=0,pressed=0,show_until=lpm_ticks()+720000000U;unsigned polls=0;
+ uint64_t next=0,pressed=0,show_until=lpm_ticks()+720000000U;unsigned polls=0,report_sequence=0;
  unsigned window=0,blanked=0;
  struct i9100_charge_screen screen={0};unsigned screen_ok=lpm_screen_bind(&screen,&window),animation=0,drawn=0;
  if(!screen_ok && (lpm_read(0x11c00000U,0x28)&1U))window=2;
@@ -155,9 +156,16 @@ void i9100_standalone_charge_gate(void)
 #if defined(CONFIG_EXYNOS_CDCACM4210)
    usbcdc4210_charge_set_boot_ready(i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500);
    if((polls++%30)==0){
-    usbcdc4210_charge_report(i9100_lpm_battery.valid,
-     i9100_lpm_battery.percent,i9100_lpm_battery.millivolts,
-     i9100_lpm_battery.temperature_deci_c,i9100_lpm_battery.charging,i9100_lpm_battery.reason);
+    uint64_t measured=lpm_ticks();
+    struct i9100_charge_report report={0};
+    report.sequence=++report_sequence;report.milliseconds=measured/24000U;
+    report.valid=i9100_lpm_battery.valid;report.percent=i9100_lpm_battery.percent;
+    report.millivolts=i9100_lpm_battery.millivolts;report.temperature_deci_c=i9100_lpm_battery.temperature_deci_c;
+    report.charging=i9100_lpm_battery.charging;report.reason=i9100_lpm_battery.reason;
+    report.full=i9100_lpm_battery.full;report.timeout=i9100_lpm_battery.timeout;report.recharging=i9100_lpm_battery.recharging;
+    if(i9100_lpm_battery.charge_start && measured/24U*1000U>=i9100_lpm_battery.charge_start)
+      report.elapsed_seconds=(measured/24U*1000U-i9100_lpm_battery.charge_start)/1000000000ULL;
+    usbcdc4210_charge_timed_report(&report);
     usbcdc4210_charge_screen_report(drawn,(unsigned)screen.pixels,screen.stride,screen.bpp);
     unsigned fb[8]={lpm_read(0x11c00000U,0x20),lpm_read(0x11c00000U,0x28),
       lpm_read(0x11c00000U,0xb0),lpm_read(0x11c00000U,0x108),

@@ -26,6 +26,7 @@
 #include <lib/debug.h>
 #include <lib/console.h>
 #include "../../board/samsung/i9100-charge-control.h"
+#include "../../board/samsung/i9100-charge-report.h"
 #ifndef I9100_CONTROL_TAG
 #define I9100_CONTROL_TAG "0000000000000000"
 #endif
@@ -877,6 +878,11 @@ void usbcdc4210_charge_report(unsigned valid,unsigned soc,unsigned mv,int temp,
   while(count)line[at++]=digits[--count];line[at++]=n==5?'\n':' ';
  }
  line[at]=0;usbcon_write(KERN_INFO,"",line);
+}
+void usbcdc4210_charge_timed_report(const struct i9100_charge_report *report)
+{
+ char line[256];
+ if(i9100_charge_format(line,sizeof(line),report))usbcon_write(KERN_INFO,"",line);
 }
 void usbcdc4210_charge_screen_report(unsigned drawn,unsigned base,unsigned stride,unsigned bpp)
 {

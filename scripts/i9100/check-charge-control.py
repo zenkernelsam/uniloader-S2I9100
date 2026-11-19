@@ -91,6 +91,7 @@ int main(void){
  puts("PASS production charger source/kernel qualification, sized OUT, DTR/config/reset cancellation, committed ACK, boot refusal and no nonce replay");}
 '''
 (out/'driver.c').write_text((repo/'drivers/samsung/dwc2cdc4210.c').read_text().replace('#include "../../board/samsung/i9100-charge-control.h"','#include "i9100-charge-control.h"'))
+(out/'driver.c').write_text((out/'driver.c').read_text().replace('#include "../../board/samsung/i9100-charge-report.h"','#include "i9100-charge-report.h"'))
 (out/'check.c').write_text(code)
 for n,cmd in enumerate((['clang','-O1','-g','-fno-pie','-no-pie','-Wno-int-to-void-pointer-cast','-Wno-pointer-to-int-cast','-fsanitize=address,undefined','-fno-sanitize-recover=all',
     '-I'+str(repo/'include'),'-I'+str(repo/'board/samsung'),str(out/'check.c'),'-o',str(out/'check')],[str(out/'check')])):

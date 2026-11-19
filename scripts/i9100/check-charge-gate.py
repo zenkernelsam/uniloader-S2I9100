@@ -24,6 +24,7 @@ code=r'''
 #include <setjmp.h>
 #include "charge/i9100_power.h"
 #include "i9100-charge-screen.h"
+#include "i9100-charge-report.h"
 #define I9100_STANDALONE_CHARGE_BUILD 1
 #define CONFIG_EXYNOS_CDCACM4210 1
 #define LPM_BARRIER() do{}while(0)
@@ -87,7 +88,9 @@ int i9100_power_sub_enable(void*c,unsigned v){(void)c;(void)v;return 0;}
 int i9100_power_muic_read(void*c,unsigned r,uint8_t*v){(void)c;(void)r;(void)v;return 0;}
 int i9100_power_muic_write(void*c,unsigned r,uint8_t v){(void)c;(void)r;(void)v;return 0;}
 int usbcdc4210_init(void){return 0;}void usbcdc4210_charge_identity(int n){assert(n==0 || n==1);}
-void usbcdc4210_charge_report(unsigned v,unsigned s,unsigned m,int t,unsigned c,int r){(void)v;(void)s;(void)m;(void)t;(void)c;(void)r;reports++;}
+void usbcdc4210_charge_timed_report(const struct i9100_charge_report *r){
+ assert(r->sequence==reports+1 && r->milliseconds==ticks/24000 && r->percent==50);reports++;
+}
 void usbcdc4210_charge_screen_report(unsigned d,unsigned b,unsigned s,unsigned p){(void)d;(void)b;assert(s==1920 && p==32);}
 void usbcdc4210_charge_fimd_report(const unsigned p[8]){assert(p[1]==0x8035 && p[6]==(blanked?0x1000000:0));}
 void usbcdc_poll(void){usb_calls++;}

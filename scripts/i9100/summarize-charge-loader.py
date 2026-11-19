@@ -14,6 +14,49 @@ STATUS = re.compile(
     rb'^I9CHG1 valid=(?P<valid>[01]) soc=(?P<soc>\d+) mv=(?P<millivolts>\d+) '
     rb'temp=(?P<temperature_deci_c>-?\d+) charging=(?P<charging>[01]) '
     rb'reason=(?P<reason>-?\d+)\r*$', re.MULTILINE)
+TIMED_STATUS = re.compile(
+    rb'^I9CHG2 seq=(?P<sequence>[0-9a-f]{8}) ms=(?P<measured_ms>[0-9a-f]{16}) '
+    rb'valid=(?P<valid>[01]) soc=(?P<soc>\d+) mv=(?P<millivolts>\d+) '
+    rb'temp=(?P<temperature_deci_c>-?\d+) charging=(?P<charging>[01]) '
+    rb'reason=(?P<reason>-?\d+) full=(?P<full>[01]) timeout=(?P<timeout>[01]) '
+    rb'recharging=(?P<recharging>[01]) elapsed=(?P<charge_elapsed_seconds>\d+)\r*$',re.MULTILINE)
+
+def decode_status(raw,receipts):
+    matches=sorted([(match,1) for match in STATUS.finditer(raw)]+
+                   [(match,2) for match in TIMED_STATUS.finditer(raw)],key=lambda item:item[0].start())
+    samples=[];cursor=0;segment=0;previous=None
+    for match,version in matches:
+        if match.end()==len(raw) or raw[match.end()]!=10:continue
+        row={key:int(value,16 if key in ('sequence','measured_ms') else 10) for key,value in match.groupdict().items()}
+        row['version']=version
+        for key in ('reason','temperature_deci_c'):
+            value=row[key]
+            if not -(1<<31)<=value<=0xffffffff:raise ValueError('Charger int32 field outside wire range')
+            if version==2 and value>(1<<31)-1:raise ValueError('Timed charger int field must use signed decimal')
+            row[key+'_wire']=value
+            if value>=1<<31:row[key]=value-(1<<32)
+        if row['soc']>100 or row['millivolts']>10000:raise ValueError('Charger measurement outside its protocol range')
+        row['end_offset']=match.end()+1
+        while cursor<len(receipts) and receipts[cursor]['total']<row['end_offset']:cursor+=1
+        row['host_received_at']=receipts[cursor]['time'] if cursor<len(receipts) else None
+        if version==2:
+            if not row['sequence']:raise ValueError('Timed charger sequence is zero')
+            row['interval_available']=False
+            if previous and previous['version']==2:
+                seq_delta=(row['sequence']-previous['sequence'])&0xffffffff
+                elapsed=row['measured_ms']-previous['measured_ms']
+                if seq_delta!=1 or not 0<elapsed<=120000:
+                    segment+=1
+                    row['segment_break']='sequence discontinuity or measured clock reset/gap; no rate across this boundary'
+                elif row['valid'] and previous['valid']:
+                    row['interval_available']=True;row['interval_ms']=elapsed
+                    row['observed_soc_change']=row['soc']-previous['soc']
+                    row['observed_millivolts_change']=row['millivolts']-previous['millivolts']
+            else:
+                segment+=1;row['segment_break']='first timed sample after capture/legacy data'
+            row['measurement_segment']=segment
+        samples.append(row);previous=row
+    return samples
 
 
 def confined(path):
@@ -65,25 +108,7 @@ def summarize(path, allow_partial=False):
     if complete and receipts and previous != len(raw):
         raise ValueError('Receipt offsets and completed capture differ')
 
-    samples = []
-    cursor = 0
-    for match in STATUS.finditer(raw):
-        # A status without its final newline may still be arriving.
-        if match.end() == len(raw) or raw[match.end()] != 10:
-            continue
-        row = {key: int(value) for key, value in match.groupdict().items()}
-        # Historical loader writes signed int fields as unsigned decimal.
-        # Preserve that wire value and normalize only the int32 fields.
-        for key in ('reason','temperature_deci_c'):
-            value=row[key]
-            if not -(1<<31)<=value<=0xffffffff:raise ValueError('Charger int32 field outside wire range')
-            row[key+'_wire']=value
-            if value>=1<<31:row[key]=value-(1<<32)
-        row['end_offset'] = match.end() + 1
-        while cursor < len(receipts) and receipts[cursor]['total'] < row['end_offset']:
-            cursor += 1
-        row['host_received_at'] = receipts[cursor]['time'] if cursor < len(receipts) else None
-        samples.append(row)
+    samples=decode_status(raw,receipts)
     valid = [row for row in samples if row['valid']]
     begin = next((e['time'] for e in events if e.get('phase') == 'DTR_OK'), None)
     end = done[0]['time'] if complete else None
@@ -112,9 +137,9 @@ def summarize(path, allow_partial=False):
         'observed_soc_delta': valid[-1]['soc'] - valid[0]['soc'] if valid else None,
         'observed_millivolts_delta': valid[-1]['millivolts'] - valid[0]['millivolts'] if valid else None,
         'ranges': ranges, 'samples': samples,
-        'source_measurement_times_available': False,
+        'source_measurement_times_available': any(row['version']==2 for row in samples),
         'charge_rate_verified': False,
-        'timing_limit': 'I9CHG1 has no device clock or sequence; host receipt times can include buffered states. Do not infer a charge rate or join boots.',
+        'timing_limit': 'I9CHG2 device clock/sequence qualifies only uninterrupted measurement segments; gaps/reboots/legacy data are split. Host receipts can include buffered states. SOC and voltage changes do not measure milliamps or prove a charge rate.',
     }
 
 
