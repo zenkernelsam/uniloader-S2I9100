@@ -94,6 +94,15 @@ def qualify_art_records(raw,timed,require_transport=False):
 def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False):
     summary=s.summarize(path)
     raw=(path/'received.bin').read_bytes()
+    # A failed payload stays in a healthy supervised charger, but that does
+    # not make the same payload eligible for another automatic boot attempt.
+    # This rejection also applies to builds which omit the new artwork.
+    fault_prefix=re.search(rb'^I9BF1(?: |$)',raw,re.MULTILINE)
+    if fault_prefix:
+        faults=re.findall(rb'^I9BF1 ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?$',raw,re.MULTILINE)
+        o.require(faults,'Partial bootstrap fault record; no boot attempt')
+        reason,stage,*_=map(lambda word:int(word,16),faults[-1].split())
+        raise ValueError(f'Bootstrap fault parked in charger: reason={reason}, stage={stage}; no boot attempt')
     o.require(re.search(rb'^I9CHC2 READY '+expected.encode()+rb'\r?$',raw,re.MULTILINE) is not None,
         'Matching deployed charger kernel/source identity missing from logs')
     timed=[sample for sample in summary['samples'] if sample['version']==2]

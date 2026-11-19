@@ -24,6 +24,7 @@ service=function('i9100_boot_charge_service')
 finish=function('i9100_boot_charge_finish')
 boot_report=function('lpm_boot_report')
 stage=function('i9100_boot_charge_stage')
+failure=function('i9100_boot_charge_failure')
 code=r'''
 #include <stdint.h>
 #include <stdlib.h>
@@ -44,11 +45,12 @@ code=r'''
 static struct i9100_power_state i9100_lpm_battery;
 static struct i9100_power_hw i9100_lpm_hw;
 static struct i9100_charge_start i9100_lpm_boot_gate;
-static unsigned i9100_lpm_boot_active,i9100_lpm_resume_charge,i9100_lpm_boot_in_service;
+static unsigned i9100_lpm_boot_active,i9100_lpm_boot_owned,i9100_lpm_resume_charge,i9100_lpm_boot_in_service;
 static unsigned i9100_lpm_boot_polls,i9100_lpm_boot_phase;
+static unsigned i9100_lpm_boot_fault,i9100_lpm_fault_phase;
 static uint64_t i9100_lpm_boot_next;
 static unsigned power_init_calls,failed_stop;
-static unsigned stop_sequence,last_boot_stage;
+static unsigned stop_sequence,last_boot_stage,fault_reports,boot_admission;
 static unsigned i9100_boot_source,scenario,draws,late_draws,blanked,last_unblank,remote_issued,stops,reports,usb_calls;
 static uint64_t ticks,last_draw_ticks,reset_ticks,action_taken_ticks;static uint32_t fb[480*800];static jmp_buf escaped;
 static unsigned pmu2,pmu3,wait_ticks,panel_mode=0x9c,panel_scan=0x1003,panel_commands;
@@ -104,7 +106,7 @@ static uint64_t lpm_now(void*c){(void)c;return ticks*1000/24;}
 int i9100_power_init(struct i9100_power_state*s,const struct i9100_power_io*io,unsigned r){power_init_calls++;assert(r==14);memset(s,0,sizeof(*s));s->io=*io;s->ready=s->enabled=s->valid=s->present=s->connected=s->charging=1;s->millivolts=scenario==4?3400:4000;s->percent=50;s->temperature_deci_c=250;s->charge_start=12345;return 0;}
 int i9100_power_poll(struct i9100_power_state*s){assert(s->io.cookie==&i9100_lpm_hw);
  if(scenario>=11)ticks+=2400U; /* Each real bus sample advances the MCT. */
- if(scenario==5 && seconds()>=35)s->connected=0;
+ if((scenario==5 && seconds()>=35) || (scenario==16 && seconds()>=62))s->connected=0;
  if(scenario==11){s->millivolts=seconds()>=40 && seconds()<44?3400:4000;}
  if(scenario==13 && seconds()>=40){s->timeout=1;s->reason=-5;s->enabled=s->charging=0;}
  else if(s->connected && !s->timeout)s->enabled=s->charging=1;
@@ -128,14 +130,20 @@ void usbcdc4210_charge_fimd_report(const unsigned p[8]){assert(p[1]==0x8035 && p
 void usbcdc4210_charge_render_report(const unsigned p[8]){assert(p[0]<=1 && p[4]<=480*800);}
 void usbcdc4210_charge_start_report(const unsigned p[8]){assert(p[0]<=1 && p[1]<=11 && p[3]==1);}
 void usbcdc4210_charge_transport_report(void){}
+void usbcdc4210_charge_fault_report(const unsigned p[8]){
+ assert(i9100_lpm_boot_fault && p[0]==i9100_lpm_boot_fault && p[1]==i9100_lpm_fault_phase);
+ assert(p[3]==i9100_lpm_battery.valid && p[7]==(unsigned)i9100_lpm_battery.reason);fault_reports++;
+}
 void usbcdc4210_charge_boot_report(const unsigned p[8]){
- assert(p[0]>=1 && p[0]<=8 && p[2]<=1 && p[7]<=1);last_boot_stage=p[0];
+ assert(p[0]>=1 && p[0]<=9 && p[2]<=1 && p[7]<=1);last_boot_stage=p[0];
  if(p[0]==7)assert(stops && !i9100_lpm_boot_active && !i9100_lpm_battery.enabled);
 }
 void usbcdc_poll(void){usb_calls++;
  if(scenario==10 && seconds()>=35 && !remote_issued)ticks+=7200000ULL;
 }
 void usbcdc4210_charge_set_boot_ready(unsigned available){
+ boot_admission=available;
+ if(i9100_lpm_boot_fault)assert(!available);
 #ifdef I9100_PANEL_SLEEP_BUILD
  if(scenario<=10)assert(available==(seconds()>=11 && scenario!=4 && !(scenario==6 && seconds()>=31 && seconds()<36) &&
   !((scenario==8 || scenario==9) && seconds()>=31)));
@@ -144,6 +152,7 @@ void usbcdc4210_charge_set_boot_ready(unsigned available){
 #endif
 }
 unsigned usbcdc4210_charge_take_action(void){
+ if(scenario==15 && seconds()>=65 && !remote_issued){remote_issued=1;action_taken_ticks=ticks;return 2;}
  if(((scenario>=2 && scenario<=4) || scenario==8 || scenario==10) && seconds()>=35 && !remote_issued){
   remote_issued=1;action_taken_ticks=ticks;return scenario==3||scenario==8||scenario==10?2:1;
  }
@@ -159,7 +168,7 @@ static int wrapped_draw(const struct i9100_charge_screen*s,unsigned valid,unsign
 }
 #define i9100_charge_draw wrapped_draw
 static void lpm_sleep_tick(void){ticks+=240000;wait_ticks++;
- if((seconds()>40 && scenario==4) || (seconds()>70 && scenario==13))longjmp(escaped,4);}
+ if((seconds()>40 && scenario==4) || (seconds()>70 && (scenario==13 || scenario==14)))longjmp(escaped,4);}
 void i9100_boot_charge_service(void);
 static uint32_t lpm_panel_gpio_read(void*c,unsigned o){(void)c;(void)o;return 0;}
 static void lpm_panel_gpio_write(void*c,unsigned o,uint32_t v){(void)c;(void)o;(void)v;}
@@ -187,14 +196,14 @@ void usbcdc4210_charge_panel_identity_report(const unsigned values[4]){
 void usbcdc4210_charge_panel_recovery_report(const unsigned values[4]){
  assert(values[0]<=1 && values[1]<=2 && values[3]<=4);
 }
-'''+service+'\n'+boot_report+'\n'+stage+'\n'+gate+'\n'+finish+r'''
+'''+service+'\n'+boot_report+'\n'+stage+'\n'+gate+'\n'+finish+'\n'+failure+r'''
 int main(void){
  alarm(20); /* A stuck offline model cannot hold a CPU indefinitely. */
  for(scenario=1;scenario<=
 #ifdef I9100_PANEL_SLEEP_BUILD
- 13
+ 16
 #else
- 13
+ 16
 #endif
  ;scenario++){
   fprintf(stderr,"SCENARIO %u begin\n",scenario);fflush(stderr);
@@ -203,12 +212,18 @@ int main(void){
 #endif
   panel_mode=0x9c;panel_scan=0x1003;panel_commands=0;
   ticks=action_taken_ticks=draws=late_draws=blanked=last_unblank=remote_issued=stops=reports=usb_calls=pmu2=pmu3=wait_ticks=0;i9100_boot_source=1;i9100_charge_renderer_reset();
-  i9100_lpm_boot_active=i9100_lpm_resume_charge=i9100_lpm_boot_in_service=i9100_lpm_boot_polls=0;
+  i9100_lpm_boot_active=i9100_lpm_boot_owned=i9100_lpm_resume_charge=i9100_lpm_boot_in_service=i9100_lpm_boot_polls=0;
+  i9100_lpm_boot_fault=i9100_lpm_fault_phase=0;
   i9100_lpm_boot_next=0;
-  power_init_calls=failed_stop=stop_sequence=last_boot_stage=0;
+  power_init_calls=failed_stop=stop_sequence=last_boot_stage=fault_reports=boot_admission=0;
+  i9100_boot_charge_failure(99);assert(!i9100_lpm_boot_fault && !power_init_calls); /* ordinary boot */
   unsigned result=setjmp(escaped);if(!result){
    i9100_standalone_charge_gate();result=1;
-   if(scenario>=11){ticks=40ULL*24000000;i9100_boot_charge_finish();}
+   if(scenario>=11){
+    ticks=40ULL*24000000;
+    if(scenario>=14){i9100_lpm_boot_phase=5;i9100_boot_charge_failure(1);assert(0);}
+    else i9100_boot_charge_finish();
+   }
   }
   assert(late_draws==0 && draws>=30 && usb_calls>1000 && reports>=2);
   if(scenario!=6 && scenario!=8 && scenario!=10)assert(panel_scan==0x1003 || scenario>=3 && scenario<=5);
@@ -241,9 +256,16 @@ int main(void){
    assert(i9100_lpm_battery.timeout==1 && i9100_lpm_battery.charge_start==12345);
    assert(stops==0 && i9100_lpm_boot_phase==8 && !i9100_lpm_battery.enabled);
   }
+  if(scenario>=14){
+   assert(power_init_calls==1 && i9100_lpm_boot_fault==1 && i9100_lpm_fault_phase==5);
+   assert(i9100_lpm_boot_active && !boot_admission && fault_reports>=1 && i9100_lpm_battery.charge_start==12345);
+   if(scenario==14)assert(result==4 && stops==0 && i9100_lpm_battery.enabled && last_boot_stage==9);
+   if(scenario==15)assert(result==2 && stops==0 && reset_ticks>=action_taken_ticks+12000000ULL);
+   if(scenario==16)assert(result==3 && stops==1 && !i9100_lpm_battery.enabled);
+  }
   fprintf(stderr,"SCENARIO %u done\n",scenario);fflush(stderr);
  }
- puts("PASS production charger gate and startup service: persistent IO owner, supervised boot, final checked stop, low/failed-stop hold without reinit/deadline reset, timeout lock, blank/wake and ACK grace");
+ puts("PASS production charger startup/failure: persistent IO, final checked stop, low/failed-stop hold, timeout retention, failed-payload boot lock, live fault logs/download/unplug and ACK grace");
 }
 '''
 for variant in ('legacy','panel'):

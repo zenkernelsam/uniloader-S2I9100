@@ -465,6 +465,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 						printk(KERN_EMERG,
 						    "cacheslice: dst overflow\n");
 						fb_mark(0x155000, 0xFFFF00FF);
+						i9100_boot_charge_failure(3);
 						while (1)
 							;
 					}
@@ -671,6 +672,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 		if (!ksize || ksize == 59 || ksize == 85 || ksize == 101) {
 			printk(KERN_EMERG, "lz4: kernel FAILED result %u\n", ksize);
 			fb_mark(0x140000, 0xFFFF0000);
+			i9100_boot_charge_failure(1);
 			while (1)
 				;
 		}
@@ -750,6 +752,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 			}
 			if (!rd_size || rd_size < 0x1000) {
 				fb_mark(0x150000, 0xFFFF00FF);
+				i9100_boot_charge_failure(2);
 				while (1)
 					;
 			}
@@ -796,6 +799,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 					    0xC0DE0002) {
 						printk(KERN_EMERG,
 						    "xnu: tbl probe FAILED\n");
+						i9100_boot_charge_failure(5);
 						while (1)
 							;
 					}
@@ -812,6 +816,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 				if ((flg & 0x07) != flg) {
 					printk(KERN_EMERG,
 					    "xnu: gzip reserved flags\n");
+					i9100_boot_charge_failure(4);
 					while (1)
 						;
 				}
@@ -845,6 +850,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 				if (pp[0] != 0xA55A5AA5) {
 					printk(KERN_EMERG,
 					    "xnu: probe low FAILED\n");
+					i9100_boot_charge_failure(6);
 					while (1)
 						;
 				}
@@ -853,6 +859,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 				    0x5AA5A55A) {
 					printk(KERN_EMERG,
 					    "xnu: probe hi FAILED\n");
+					i9100_boot_charge_failure(7);
 					while (1)
 						;
 				}
@@ -877,6 +884,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 					printk(KERN_EMERG,
 					    "inflate: FAILED\n");
 					fb_mark(0x150000, 0xFFFF00FF);
+					i9100_boot_charge_failure(8);
 					while (1)
 						;
 				}
@@ -1055,6 +1063,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 	}
 
 	/* Not reached. */
+	i9100_boot_charge_failure(9);
 	while (1)
 		;
 }

@@ -30,11 +30,12 @@ static uint32_t rxpop(unsigned ep){assert(ep==0 && fifo_index<32);return receive
  * charger supervisor is modeled; controller reset/FIFO remains the old model. */
 #define CONFIG_SAMSUNG_I9100 1
 #define I9100_STANDALONE_CHARGE_BUILD 1
-static unsigned supervisor_calls;
+static unsigned supervisor_calls,console_calls;
 void i9100_boot_charge_service(void){supervisor_calls++;}
 void i9100_boot_charge_stage(unsigned stage){(void)stage;}
 void i9100_boot_charge_finish(void){}
-void printk(int level,const char*fmt,...){(void)level;(void)fmt;}
+void i9100_boot_charge_failure(unsigned reason){(void)reason;}
+void printk(int level,const char*fmt,...){(void)level;(void)fmt;console_calls++;}
 #include "driver.c"
 void console_register(const struct console*c){(void)c;}
 static void reset(void){memset(registers,0,sizeof(registers));memset(&charge_control,0,sizeof(charge_control));
@@ -47,6 +48,8 @@ static void received(const char*line){unsigned n=strlen(line);assert(n<=64);mems
 static void complete(void){GINTSTS=GINTSTS_IEPINT;DAINT=2;DIEPINT(1)=DXEPINT_XFERCOMPL;usbcdc_poll();GINTSTS=0;DIEPINT(1)=0;}
 static void setup(unsigned rt,unsigned rq,unsigned value){memset(setup_pkt,0,8);setup_pkt[0]=rt;setup_pkt[1]=rq;setup_pkt[2]=value;ep0_setup();}
 int main(void){
+ reset();console_calls=0;setup(0x21,0x22,1);assert(!console_calls);
+ charge_identity=0;setup(0x21,0x22,1);assert(console_calls>0);
  supervisor_calls=charge_delay_quanta=0;
  for(unsigned n=0;n<999;n++)udelay(1);
  assert(!supervisor_calls);udelay(1);assert(supervisor_calls==1);

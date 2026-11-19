@@ -254,6 +254,10 @@ static const uint8_t str3_charge[] = {
  24,3,'S',0,'2',0,'I',0,'9',0,'1',0,'0',0,'0',0,'-',0,'C',0,'H',0,'G',0
 };
 static unsigned charge_identity;
+/* A bootstrap failure can return after simplefb was registered. Internal
+ * USB printk must not repaint that console over the charging artwork or
+ * delay EP0; I9CHG/I9UT/I9BF retain dedicated charger diagnostics. */
+#define usbcdc_printk(level,...) do { if(!charge_identity)printk(level,__VA_ARGS__); } while(0)
 
 /* ---------------- state ---------------- */
 
@@ -453,7 +457,7 @@ static void ep0_arm_zlp(void)
 static void ep0_commit(void)
 {
 	if (ep0_req == REQ_DATA && ep0_plen) {
-		printk(KERN_INFO, "ep0i: tx %uB\n", ep0_plen);
+		usbcdc_printk(KERN_INFO, "ep0i: tx %uB\n", ep0_plen);
 		ep0_send(ep0_ptr, ep0_plen);
 	} else if (ep0_req == REQ_DATA || ep0_req == REQ_ZLP) {
 		ep0_arm_zlp();
@@ -502,7 +506,7 @@ static void ep0_setup(void)
 	uint16_t wi = setup_pkt[4] | (setup_pkt[5] << 8);
 	uint16_t wl = setup_pkt[6] | (setup_pkt[7] << 8);
 
-	printk(KERN_INFO, "ep0: rq%02x %02x wv%04x wl%u\n",
+	usbcdc_printk(KERN_INFO, "ep0: rq%02x %02x wv%04x wl%u\n",
 	       rt, rq, wv, wl);
 	if (rt == 0x80 && rq == 6) {		/* GET_DESCRIPTOR dev->host */
 		switch (wv >> 8) {
@@ -554,7 +558,7 @@ static void ep0_setup(void)
 		DIEPCTL(1) = DXEPCTL_EPTYPE(2) | DXEPCTL_USBACTEP |
 			DXEPCTL_MPS(bulk_mps) | (1 << 22) /* TXFNUM=1 */ |
 			DXEPCTL_SETD0PID;
-		printk(KERN_INFO, "usbcdc: ep1 ctl=%08x txf=%08x dtx=%08x\n",
+		usbcdc_printk(KERN_INFO, "usbcdc: ep1 ctl=%08x txf=%08x dtx=%08x\n",
 		       DIEPCTL(1), DPTXFSIZ(1), DTXFSTS(1));
 		DIEPCTL(2) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(3) |
 			DXEPCTL_MPS(8) | DXEPCTL_SNAK;
@@ -667,10 +671,10 @@ static void ep1_kick(void)
 		/* Capture before printk can delay servicing the next event. */
 		uint32_t ctl = DIEPCTL(1), size_arm = DIEPTSIZ(1);
 		uint32_t space_arm = DTXFSTS(1), intr = DIEPINT(1);
-		printk(KERN_INFO,
+		usbcdc_printk(KERN_INFO,
 		       "ep1 pre ctl=%08x set=%08x fifo=%08x dtx=%08x\n",
 		       ctl_before, size_set, size_fifo, space_fifo);
-		printk(KERN_INFO,
+		usbcdc_printk(KERN_INFO,
 		       "ep1 k%d n=%u ctl=%08x tsiz=%08x dtx=%08x int=%08x\n",
 		       ep1_dbg, n, ctl, size_arm, space_arm, intr);
 		ep1_dbg++;
@@ -703,7 +707,7 @@ void usbcdc_poll(void)
 		cfg_desc[58] = cfg_desc[65] = bulk_mps >> 8;
 		/* S-Boot reads DSTS enum speed then patches descriptor
 		 * MPS; our MPS stays 64 (legal for FS too). */
-		printk(KERN_INFO, "usbcdc: enumdone dsts=%08x\n", DSTS);
+		usbcdc_printk(KERN_INFO, "usbcdc: enumdone dsts=%08x\n", DSTS);
 		ep0_out_rearm();
 	}
 	if (st & GINTSTS_RXFLVL) {
@@ -764,7 +768,7 @@ void usbcdc_poll(void)
 			if (ei & DXEPINT_INTKNTXFEMP)
 				ep0_kick();	/* host knocked: send now */
 			if (ei & DXEPINT_XFERCOMPL)
-				printk(KERN_INFO, "ep0i: compl\n");
+				usbcdc_printk(KERN_INFO, "ep0i: compl\n");
 			DIEPINT(0) = ei;
 		}
 		if (d & 2) {
@@ -773,7 +777,7 @@ void usbcdc_poll(void)
 			uint32_t space = DTXFSTS(1);
 			DIEPINT(1) = ei;
 			if (ei && ei != ep1_lastint && ep1_intdbg < 10) {
-				printk(KERN_INFO,
+				usbcdc_printk(KERN_INFO,
 				       "ep1i: int=%08x ctl=%08x tsiz=%08x dtx=%08x\n",
 				       ei, ctl, size, space);
 				ep1_intdbg++;
@@ -787,7 +791,7 @@ void usbcdc_poll(void)
                    tx_completed_total-charge_control.reply_target<0x80000000U)
                     charge_action_ready=1;
 				if (ep1_compldbg < 8) {
-					printk(KERN_INFO, "ep1 done int=%08x tsiz=%08x\n",
+					usbcdc_printk(KERN_INFO, "ep1 done int=%08x tsiz=%08x\n",
 					       ei, size);
 					ep1_compldbg++;
 				}
@@ -809,7 +813,7 @@ void usbcdc_poll(void)
 		if (d & 1) {
 			uint32_t oi = DOEPINT(0);
 			if (oi)
-				printk(KERN_INFO, "ep0o: %08x\n", oi);
+				usbcdc_printk(KERN_INFO, "ep0o: %08x\n", oi);
 			/* re-arm happens after the RX entry is consumed */
 			DOEPINT(0) = oi;
 		}
@@ -857,16 +861,16 @@ int usbcdc4210_wait_host(unsigned int ms)
 
 	if (!usb_ok)
 		return 0;
-	printk(KERN_INFO, "usbcdc: waiting up to %u ms for host open\n", ms);
+	usbcdc_printk(KERN_INFO, "usbcdc: waiting up to %u ms for host open\n", ms);
 	for (i = 0; i < ms; i++) {
 		usbcdc_poll();
 		if (host_open)
 			break;
 		if ((i % 500) == 0)
-			printk(KERN_INFO, "usbcdc: host not open yet (%u ms)\n", i);
+			usbcdc_printk(KERN_INFO, "usbcdc: host not open yet (%u ms)\n", i);
 		udelay(1000);
 	}
-	printk(KERN_INFO, "usbcdc: host %s after %u ms\n",
+	usbcdc_printk(KERN_INFO, "usbcdc: host %s after %u ms\n",
 	       host_open ? "opened" : "did not open", i);
 	return host_open;
 }
@@ -947,6 +951,8 @@ void usbcdc4210_charge_start_report(const unsigned values[8])
 {charge_words_report("I9BT1 ",values);}
 void usbcdc4210_charge_boot_report(const unsigned values[8])
 {charge_words_report("I9BS1 ",values);}
+void usbcdc4210_charge_fault_report(const unsigned values[8])
+{charge_words_report("I9BF1 ",values);}
 void usbcdc4210_charge_transport_report(void)
 {
  if(!charge_identity || !usb_ok)return;
@@ -1007,7 +1013,7 @@ int usbcdc4210_init(void)
 	 * the download-mode path, so a normal boot hands us a gated
 	 * block whose registers all read 0 — first boot on hardware
 	 * silently bailed right here with zero USB enumeration. */
-	printk(KERN_INFO, "usbcdc: pre gate=%08x phyctl=%08x sid=%08x\n",
+	usbcdc_printk(KERN_INFO, "usbcdc: pre gate=%08x phyctl=%08x sid=%08x\n",
 	       CMU_GATE_IP_FSYS, *(volatile uint32_t *)PMU_USBPHYCTRL,
 	       GSNPSID);
 	gate = CMU_GATE_IP_FSYS | GATE_FSYS_USB_DEVICE;
@@ -1025,14 +1031,14 @@ int usbcdc4210_init(void)
 	PCGCCTL = 0;
 	udelay(10);
 
-	printk(KERN_INFO, "usbcdc: post gate=%08x phyctl=%08x sid=%08x\n",
+	usbcdc_printk(KERN_INFO, "usbcdc: post gate=%08x phyctl=%08x sid=%08x\n",
 	       CMU_GATE_IP_FSYS, *(volatile uint32_t *)PMU_USBPHYCTRL,
 	       GSNPSID);
 
 	if ((GSNPSID & 0xffff0000) != 0x4f540000) {
 		/* Report rather than vanish: without this the failure is
 		 * invisible on real hardware (no console registered yet). */
-		printk(KERN_INFO, "usbcdc: no dwc2, gsnpsid=%08x gate=%08x\n",
+		usbcdc_printk(KERN_INFO, "usbcdc: no dwc2, gsnpsid=%08x gate=%08x\n",
 		       GSNPSID, gate);
 		return -1;			/* no controller (QEMU) */
 	}
@@ -1065,8 +1071,8 @@ int usbcdc4210_init(void)
 
 	usb_ok = 1;
 	if(!charge_identity)console_register(&usbcon);
-	printk(KERN_INFO, "usbcdc: dwc2 device up, gsnpsid=%08x\n", GSNPSID);
-	printk(KERN_INFO, "usbcdc: hw ahb=%08x ghw2=%08x ghw3=%08x ghw4=%08x dctl=%08x thr=%08x\n",
+	usbcdc_printk(KERN_INFO, "usbcdc: dwc2 device up, gsnpsid=%08x\n", GSNPSID);
+	usbcdc_printk(KERN_INFO, "usbcdc: hw ahb=%08x ghw2=%08x ghw3=%08x ghw4=%08x dctl=%08x thr=%08x\n",
 	       GAHBCFG, GHWCFG2, GHWCFG3, GHWCFG4, DCTL, DTHRCTL);
 
 	/* Dwell servicing EP0 while the host enumerates — bounded but
@@ -1080,7 +1086,7 @@ int usbcdc4210_init(void)
 		if (configured)
 			break;
 		if ((i & 0x3fff) == 0x2000)
-			printk(KERN_INFO, "usbcdc: poll i=%d gints=%08x req%d\n"
+			usbcdc_printk(KERN_INFO, "usbcdc: poll i=%d gints=%08x req%d\n"
 				"  i0=%08x o0=%08x ictl=%08x octl=%08x\n"
 				"  gotg=%08x dsts=%08x dtx=%08x\n"
 				"  grx=%08x nptx=%08x txf1=%08x dma0=%08x ahb=%08x\n",
@@ -1090,7 +1096,7 @@ int usbcdc4210_init(void)
 			       GRXFSIZ, GNPTXFSIZ, DPTXFSIZ(1), DOEPDMA(0),
 			       GAHBCFG);
 	}
-	printk(KERN_INFO, "usbcdc: enum=%d configured=%d gintsts=%08x dsts=%08x\n",
+	usbcdc_printk(KERN_INFO, "usbcdc: enum=%d configured=%d gintsts=%08x dsts=%08x\n",
 	       enumerated, configured, GINTSTS, DSTS);
 	return 0;
 }

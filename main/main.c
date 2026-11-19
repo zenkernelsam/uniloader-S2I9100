@@ -100,5 +100,6 @@ void main(void* dt, void* kernel, void* ramdisk)
 
 	// todo: reset the board?
 	printk(KERN_EMERG, "Something wrong happened, we shouldn't be here. Hanging....\n");
+	i9100_boot_charge_failure(10);
 	HANG();
 }

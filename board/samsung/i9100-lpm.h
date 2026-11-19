@@ -22,8 +22,9 @@
 static struct i9100_power_state i9100_lpm_battery;
 static struct i9100_power_hw i9100_lpm_hw;
 static struct i9100_charge_start i9100_lpm_boot_gate;
-static unsigned i9100_lpm_boot_active,i9100_lpm_resume_charge,i9100_lpm_boot_in_service;
+static unsigned i9100_lpm_boot_active,i9100_lpm_boot_owned,i9100_lpm_resume_charge,i9100_lpm_boot_in_service;
 static unsigned i9100_lpm_boot_polls,i9100_lpm_boot_phase;
+static unsigned i9100_lpm_boot_fault,i9100_lpm_fault_phase;
 static uint64_t i9100_lpm_boot_next;
 static int lpm_boot_requested(const struct I9100BootSource *source)
 {return source && source->magic==I9100_BOOT_SOURCE_MAGIC && source->version==1 &&
@@ -230,11 +231,12 @@ void i9100_standalone_charge_gate(void)
  }
  /* Enable and supervise the safe charger BEFORE lengthy USB setup. Resume
   * keeps the original full/timeout/thermal latches and charge_start epoch. */
- i9100_lpm_boot_active=1;i9100_lpm_boot_next=0;i9100_boot_charge_service();
+ i9100_lpm_boot_active=i9100_lpm_boot_owned=1;i9100_lpm_boot_next=0;i9100_boot_charge_service();
 #if defined(CONFIG_EXYNOS_CDCACM4210)
    extern void usbcdc4210_charge_render_report(const unsigned[8]);
    extern void usbcdc4210_charge_start_report(const unsigned[8]);
    extern void usbcdc4210_charge_transport_report(void);
+   extern void usbcdc4210_charge_fault_report(const unsigned[8]);
  extern void usbcdc4210_charge_identity(int);
  extern void usbcdc4210_charge_timed_report(const struct i9100_charge_report *);
  extern void usbcdc4210_charge_screen_report(unsigned,unsigned,unsigned,unsigned);
@@ -267,7 +269,7 @@ void i9100_standalone_charge_gate(void)
   if(now>=next){unsigned poll_result=i9100_power_poll(&i9100_lpm_battery);next=now+24000000U;
    i9100_charge_start_update(&start_gate,&i9100_lpm_battery,poll_result,lpm_now(0));
 #if defined(CONFIG_EXYNOS_CDCACM4210)
-   unsigned boot_ready=i9100_charge_start_ready(&start_gate,lpm_now(0));
+   unsigned boot_ready=!i9100_lpm_boot_fault && i9100_charge_start_ready(&start_gate,lpm_now(0));
 #ifdef I9100_PANEL_SLEEP_BUILD
    if(panel.qualified && panel.stage==I9P_FAULT)boot_ready=0;
 #endif
@@ -293,11 +295,17 @@ void i9100_standalone_charge_gate(void)
       i9100_charge_render.frames,i9100_charge_render.stores,i9100_charge_render.last_stores,
       i9100_charge_render.unchanged,i9100_lpm_timer_rearms,i9100_lpm_timer_faults};
     usbcdc4210_charge_render_report(render);
-    unsigned startup[8]={start_gate.ready,start_gate.samples,start_gate.blocked_presses,
+    unsigned startup[8]={boot_ready,start_gate.samples,start_gate.blocked_presses,
       i9100_lpm_battery.present,i9100_lpm_battery.millivolts,i9100_lpm_battery.percent,
       i9100_lpm_battery.errors,(unsigned)i9100_lpm_battery.reason};
     usbcdc4210_charge_start_report(startup);
     usbcdc4210_charge_transport_report();
+    if(i9100_lpm_boot_fault){
+     unsigned fault[8]={i9100_lpm_boot_fault,i9100_lpm_fault_phase,i9100_lpm_boot_polls,
+      i9100_lpm_battery.valid,i9100_lpm_battery.percent,i9100_lpm_battery.millivolts,
+      i9100_lpm_battery.enabled,(unsigned)i9100_lpm_battery.reason};
+     usbcdc4210_charge_fault_report(fault);
+    }
 #ifdef I9100_PANEL_SLEEP_BUILD
     extern void usbcdc4210_charge_panel_report(const unsigned[8]);
     extern void usbcdc4210_charge_panel_identity_report(const unsigned[4]);
@@ -326,13 +334,13 @@ void i9100_standalone_charge_gate(void)
     }
 #endif
    }
-   if(now-pressed>=48000000U && i9100_charge_start_ready(&start_gate,lpm_now(0)) && !denied_press){
+   if(now-pressed>=48000000U && !i9100_lpm_boot_fault && i9100_charge_start_ready(&start_gate,lpm_now(0)) && !denied_press){
 #ifdef I9100_PANEL_SLEEP_BUILD
     if(!lpm_panel_awake(&panel))lpm_download(); /* Power requested boot but panel is faulted. */
 #endif
     break;
    }
-   if(now-pressed>=48000000U && !i9100_charge_start_ready(&start_gate,lpm_now(0)) && !denied_press){
+   if(now-pressed>=48000000U && (i9100_lpm_boot_fault || !i9100_charge_start_ready(&start_gate,lpm_now(0))) && !denied_press){
     start_gate.blocked_presses++;denied_press=1;
    }
   }else{pressed=0;denied_press=0;}
@@ -369,7 +377,7 @@ void i9100_standalone_charge_gate(void)
   if(received_action && !remote_action){remote_action=received_action;remote_deadline=now+12000000U;}
   if(remote_action && now>=remote_deadline){
    if(remote_action==2)lpm_download();
-   if(remote_action==1 && i9100_charge_start_ready(&start_gate,lpm_now(0))){
+   if(remote_action==1 && !i9100_lpm_boot_fault && i9100_charge_start_ready(&start_gate,lpm_now(0))){
 #ifdef I9100_PANEL_SLEEP_BUILD
     if(lpm_panel_awake(&panel))break;
 #else
@@ -421,6 +429,22 @@ void i9100_boot_charge_finish(void)
  /* No callback may re-enable the charger after the final checked stop. */
  lpm_write(0x10050000U,0x248,0);lpm_write(0x10490000U,0x188,1U<<25);
  i9100_lpm_boot_active=0;lpm_boot_report(7);
+}
+void i9100_boot_charge_failure(unsigned reason)
+{
+ /* Ordinary boots do not own the charger. A supervised bootstrap cannot
+  * leave charging enabled behind an old permanent-spin failure path. */
+ if(!i9100_lpm_boot_owned)return;
+ if(!i9100_lpm_boot_fault){
+  i9100_lpm_boot_fault=reason?reason:1U;i9100_lpm_fault_phase=i9100_lpm_boot_phase;
+ }
+ i9100_lpm_boot_active=1;i9100_boot_charge_stage(9);
+ for(;;){
+  i9100_lpm_resume_charge=1;
+  /* The failure latch forbids Power/remote boot of the same bad payload.
+   * Temperature, charge deadline, logs, unplug and Download stay live. */
+  i9100_standalone_charge_gate();
+ }
 }
 #endif
 #endif

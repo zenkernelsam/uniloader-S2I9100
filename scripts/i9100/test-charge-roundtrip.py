@@ -77,6 +77,9 @@ def charger(path,scenario):
         text=text.replace('I9CR1 00000001 0000000c 00000002 0004e200 00000000 0000001c 00000001 00000000\n','',1)
     if scenario=='art-partial-final':text=text[:-20]
     if scenario=='art-transport-invalid':text=text.replace('000000a0 00000001 00000000','00004000 00000002 00000000')
+    if scenario in ('bootstrap-fault','art-bootstrap-fault'):
+        text+='I9BF1 00000001 00000005 0000000b 00000001 0000004b 00000fa0 00000001 00000000\n'
+    if scenario=='bootstrap-fault-partial':text+='I9BF1 00000001 00000005'
     raw=text.encode();(path/'received.bin').write_bytes(raw)
     write_events(path/'events.jsonl',[dict(phase='CHARGER_IDENTITY',device=dict(device,instance=m.o.CDC.replace('OS6','CHG'))),
         dict(phase='DTR_OK',time='2026-11-19T01:00:00+00:00'),
@@ -84,7 +87,8 @@ def charger(path,scenario):
         dict(phase='DONE',bytes=len(raw),time='2026-11-19T01:02:00+00:00'),dict(phase='CLOSED')])
 
 for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format','wrong-end','shutdown-failure','boot-timeout',
-                 'art-success','art-missing','art-redrew-asleep','art-start-not-ready','art-transport-success','art-transport-missing'):
+                 'art-success','art-missing','art-redrew-asleep','art-start-not-ready','art-transport-success','art-transport-missing',
+                 'bootstrap-fault','bootstrap-fault-partial','art-bootstrap-fault'):
     directory=out/scenario;directory.mkdir();calls=[];records=[]
     class Host:
         def inventory(self):return [device]
@@ -117,6 +121,7 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
     if scenario=='shutdown-failure':assert len(calls)==1
     if scenario=='boot-timeout':assert len(calls)==3
     if scenario=='success':assert len(calls)==4
+    if scenario.startswith('bootstrap-fault'):assert len(calls)==2
     if scenario.startswith('art-'):
         capture=calls[1];assert capture[capture.index('--seconds')+1]=='180'
         assert len(calls)==(4 if expected_success else 2)
@@ -133,7 +138,7 @@ for scenario in ('recovery-success','recovery-unlimited','recovery-error','recov
     else:assert scenario=='recovery-success'
 for scenario in ('art-success','art-soc-advanced','art-old-partial','art-missing','art-invalid-level','art-undecoded','art-start-not-ready',
                  'art-stale-voltage','art-redrew-asleep','art-fault-asleep','art-partial-final',
-                 'art-transport-success','art-transport-missing','art-transport-invalid'):
+                 'art-transport-success','art-transport-missing','art-transport-invalid','art-bootstrap-fault'):
     directory=out/('decoder-'+scenario);charger(directory,scenario)
     try:m.qualify_charger(directory,tag+' '+source,require_art=True,require_transport='transport-' in scenario)
     except ValueError:assert scenario not in ('art-success','art-soc-advanced','art-old-partial','art-transport-success')
