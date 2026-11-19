@@ -93,17 +93,25 @@ def wait_resumed(directory,seconds,record,clock=time.monotonic,sleep=time.sleep)
             record('WAIT_EXPIRED',device_actions=0,reason='Bounded wait for deployment completion expired');return False
         sleep(min(20,deadline-clock()))
 
-def verify_deployment(directory,package,manifest):
+def verify_deployment(directory,package,manifest,completed_capture=None):
     armed=json.loads((directory/'armed.json').read_text(encoding='utf-8'))
     o.require(Path(armed['package']).resolve()==package and armed['kernel_sha']==manifest['artifacts']['zImage']['sha256'],
         'Deployment relay package differs')
     plan=o.Plan(armed['plan'],armed['plan_sha']);timeline=rows(plan.parent/'timeline.jsonl')
     o.require(plan.data['control_tag']==manifest['control_tag'] and (plan.parent/'started.json').is_file() and
         timeline[-1]['phase']=='DONE','Reviewed one-time deployment did not finish successfully')
-    for name in ('deployment','capture-process'):
+    for name in ('deployment',) if completed_capture is not None else ('deployment','capture-process'):
         finished=json.loads((directory/name/'finished.json').read_text(encoding='utf-8'))
         o.require(finished.get('exit_code')==0,'Deployment/capture process is not finished normally')
-    owner_complete(directory/'boot-evidence',manifest['control_tag'])
+    if completed_capture is not None:
+        # An outer host journal error can occur AFTER its one-time KERNEL
+        # child proved DONE. Continue only with a separately completed,
+        # matching single-owner capture; retain the old STOP unchanged.
+        o.require(not (directory/'capture-process').exists() and not (directory/'boot-evidence').exists(),
+            'Original post-deployment capture already started; no alternate opener')
+        o.require(completed_capture.resolve()!=directory.resolve(), 'Separate completed capture evidence required')
+        owner_complete(completed_capture,manifest['control_tag'])
+    else:owner_complete(directory/'boot-evidence',manifest['control_tag'])
 
 def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
     tag=manifest['control_tag'];charger_tag=manifest['standalone_charge_control_tag']
@@ -145,6 +153,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--package',type=Path,required=True)
     p.add_argument('--resume-evidence',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--completed-capture',type=Path,help='Explicit separate normal capture after a successful KERNEL child and a host-only relay failure')
     p.add_argument('--wait-seconds',type=int,default=3600);a=p.parse_args()
     o.require(60<=a.wait_seconds<=3600,'Bounded wait required')
     package=o.confined(a.package,o.REPO/'out');manifest=json.loads((package/'manifest.json').read_text(encoding='utf-8'))
@@ -170,8 +179,11 @@ def main():
             stream.write(json.dumps(row)+'\n');stream.flush();print(json.dumps(row),flush=True)
         record('WAIT_DEPLOYMENT',relay=str(directory),writes_to_flash=0)
         try:
-            if not wait_resumed(directory,a.wait_seconds,record):return
-            verify_deployment(directory,package,manifest)
+            completed=o.confined(a.completed_capture,o.REPO/'out') if a.completed_capture else None
+            if completed is None and not wait_resumed(directory,a.wait_seconds,record):return
+            verify_deployment(directory,package,manifest,completed)
+            if completed is not None:record('COMPLETED_DEPLOYMENT_CONTINUED',capture=str(completed),writes_to_flash=0,
+                meaning='Successful KERNEL plan and separate normal capture verified; old relay STOP retained')
             # Reserve a distinct no-flash validation once, without modifying
             # or reusing the KERNEL plan. A second verifier fails before USB.
             with (directory/'charger-roundtrip-started.json').open('x',encoding='utf-8') as reservation:
