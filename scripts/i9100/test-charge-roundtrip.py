@@ -31,8 +31,9 @@ def charger(path,scenario):
         lines.append(f'I9CHG2 seq={seq:08x} ms={ms:016x} valid=1 soc=75 mv=4000 temp=250 charging=1 reason=0 full=0 timeout=0 recharging=0 elapsed={ms//1000}\n')
         lines.append('I9UI1 00000001 5ec00000 00000780 00000020\n')
         lines.append('I9FB1 00000000 00008035 5ec00000 00000780 000efb1f 5ed77000 01000000 00000001\n')
-        if scenario in ('panel-success','panel-unqualified','panel-scanout-running'):
+        if scenario in ('panel-success','panel-unqualified','panel-scanout-running','panel-id-mismatch','panel-id-partial'):
             lines.append('I9PL1 00000001 00000003 00000000 00000000 00000002 00001003 00001000 00001000\n')
+            lines.append('I9PD1 0000003f 000000a1 00000012 00000011\n')
     text=''.join(lines)
     if scenario=='no-draw':text=text.replace('I9UI1 00000001','I9UI1 00000000')
     if scenario=='no-blank':text=text.replace('01000000 00000001','00000000 00000000')
@@ -42,6 +43,8 @@ def charger(path,scenario):
     if scenario=='wrong-end':text=text.replace('5ed77000','5ee77000')
     if scenario=='panel-unqualified':text=text.replace('I9PL1 00000001','I9PL1 00000000')
     if scenario=='panel-scanout-running':text=text.replace('00001000 00001000','00001000 00001003')
+    if scenario=='panel-id-mismatch':text=text.replace('I9PD1 0000003f 000000a1 00000012','I9PD1 0000003f 000000a1 00000013')
+    if scenario=='panel-id-partial':text=text.replace('I9PD1 0000003f','I9PD1 00000007')
     raw=text.encode();(path/'received.bin').write_bytes(raw)
     write_events(path/'events.jsonl',[dict(phase='CHARGER_IDENTITY',device=dict(device,instance=m.o.CDC.replace('OS6','CHG'))),
         dict(phase='DTR_OK',time='2026-11-19T01:00:00+00:00'),
@@ -77,7 +80,7 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
     if scenario=='boot-timeout':assert len(calls)==3
     if scenario=='success':assert len(calls)==4
     (directory/'result.json').write_text(json.dumps(dict(scenario=scenario,child_count=len(calls),records=records,hardware=False),indent=2)+'\n')
-for scenario in ('panel-success','panel-unqualified','panel-scanout-running','panel-missing'):
+for scenario in ('panel-success','panel-unqualified','panel-scanout-running','panel-missing','panel-id-mismatch','panel-id-partial'):
     directory=out/scenario;charger(directory,scenario)
     try:m.qualify_charger(directory,tag+' '+source,True)
     except ValueError:assert scenario!='panel-success'

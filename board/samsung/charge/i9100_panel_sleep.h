@@ -20,7 +20,7 @@ struct i9100_panel_sleep_io {
 };
 struct i9100_panel_sleep {
  struct i9100_panel_sleep_io io;
- uint32_t stage,qualified,error,cleanup_error,mode,commands,requests,saved_scanout,owned_scanout;
+ uint32_t stage,qualified,error,cleanup_error,mode,commands,requests,saved_scanout,owned_scanout,identity_reads;
  uint8_t id[3];
 };
 static int i9100_panel_identity(const uint8_t id[3])
@@ -36,11 +36,14 @@ static int i9100_panel_probe(struct i9100_panel_sleep *p)
  if(!p || !p->io.read_byte || !p->io.command || !p->io.scanout_read || !p->io.scanout_write ||
     !p->io.wait_ms || p->stage!=I9P_UNQUALIFIED)return I9P_ERROR_ARGUMENT;
  uint8_t id[3],again[3];
- for(unsigned n=0;n<3;n++)if(!p->io.read_byte(p->io.cookie,0xda+n,&id[n]) ||
-     !p->io.read_byte(p->io.cookie,0xda+n,&again[n])){p->error=I9P_ERROR_IO;return p->error;}
- for(unsigned n=0;n<3;n++)if(id[n]!=again[n]){p->error=I9P_ERROR_IDENTITY;return p->error;}
+ for(unsigned n=0;n<3;n++){
+  if(!p->io.read_byte(p->io.cookie,0xda+n,&id[n])){p->error=I9P_ERROR_IO;return p->error;}
+  p->id[n]=id[n];p->identity_reads|=1U<<n;
+  if(!p->io.read_byte(p->io.cookie,0xda+n,&again[n])){p->error=I9P_ERROR_IO;return p->error;}
+  p->identity_reads|=1U<<(n+3U);
+ }
+ for(unsigned n=0;n<3;n++)if(id[n]!=again[n]){p->identity_reads|=1U<<6;p->error=I9P_ERROR_IDENTITY;return p->error;}
  if(!i9100_panel_identity(id)){p->error=I9P_ERROR_IDENTITY;return p->error;}
- for(unsigned n=0;n<3;n++)p->id[n]=id[n];
  int result=i9100_panel_mode(p,0x14,0x14);
  if(result){p->error=result;return result;}
  if((p->io.scanout_read(p->io.cookie)&3U)!=3U){p->error=I9P_ERROR_SCANOUT;return p->error;}

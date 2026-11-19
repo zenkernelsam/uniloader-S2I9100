@@ -77,8 +77,8 @@ def decode_panel_sleep(raw,header_after=None):
     if len(raw)!=64:raise ValueError('Panel sleep snapshot size differs')
     words=struct.unpack('<16I',raw)
     fields=('version','sequence','enabled','qualified','stage','error','cleanup_error','mode',
-        'commands','requests','saved_scanout','owned_scanout','id0','id1','id2','reserved')
-    if words[0]!=1 or words[2]>1 or words[3]>1 or words[4]>4 or words[7]>255 or any(words[n]>255 for n in (12,13,14)):
+        'commands','requests','saved_scanout','owned_scanout','id0','id1','id2','identity_reads')
+    if words[0]!=1 or words[2]>1 or words[3]>1 or words[4]>4 or words[7]>255 or words[15]&~0x7f or any(words[n]>255 for n in (12,13,14)):
         raise ValueError('Malformed panel sleep snapshot')
     result=dict(zip(fields,words));result['consistent']=not words[1]&1
     if header_after is not None:
@@ -87,6 +87,7 @@ def decode_panel_sleep(raw,header_after=None):
         result.update(producer_version_after=version,producer_sequence_after=sequence)
         result['consistent']=result['consistent'] and (version,sequence)==words[:2]
     result['limit']='Actual panel-mode/scanout owner path; electrical power savings require separate measurements'
+    result['identity_read_limit']='Bits0..2 first ID reads, bits3..5 second ID reads, bit6 unstable mismatch; zero may be a legacy producer'
     return result
 
 

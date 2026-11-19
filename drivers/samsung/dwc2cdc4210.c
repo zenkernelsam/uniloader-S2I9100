@@ -912,6 +912,15 @@ void usbcdc4210_charge_panel_report(const unsigned values[8])
  }
  line[at]=0;usbcon_write(KERN_INFO,"",line);
 }
+void usbcdc4210_charge_panel_identity_report(const unsigned values[4])
+{
+ char line[64];unsigned at=0;memcpy(line,"I9PD1 ",6);at=6;
+ for(unsigned n=0;n<4;n++){
+  for(unsigned digit=0;digit<8;digit++)line[at++]="0123456789abcdef"[(values[n]>>((7U-digit)*4))&15U];
+  line[at++]=n==3?'\n':' ';
+ }
+ line[at]=0;usbcon_write(KERN_INFO,"",line);
+}
 
 /* ---------------- init ---------------- */
 

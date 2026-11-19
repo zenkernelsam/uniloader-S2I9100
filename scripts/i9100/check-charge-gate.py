@@ -135,6 +135,9 @@ void usbcdc4210_charge_panel_report(const unsigned values[8]){
  assert(values[0]<=1 && values[1]<=4 && values[7]==panel_scan);
  if(values[0] && values[1]==I9P_SLEEP)assert(!(values[7]&3));
 }
+void usbcdc4210_charge_panel_identity_report(const unsigned values[4]){
+ assert(values[0]==0x3f && values[1]==(scenario==7?0:0xa1) && values[2]==0x12 && values[3]==0x11);
+}
 '''+gate+r'''
 int main(void){
  for(scenario=1;scenario<=

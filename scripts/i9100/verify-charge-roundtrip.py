@@ -57,6 +57,7 @@ def qualify_charger(path,expected,require_panel_sleep=False):
         50<=timed[-1]['temperature_deci_c']<=400 and timed[-1]['reason'] in (0,-4) and
         not timed[-1]['timeout'],'Latest battery state does not qualify a boot contrast')
     panel_values=None
+    panel_identity=None
     if require_panel_sleep:
         panels=re.findall(rb'^I9PL1 ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?$',raw,re.MULTILINE)
         o.require(panels,'Actual standalone panel sleep record missing')
@@ -65,7 +66,12 @@ def qualify_charger(path,expected,require_panel_sleep=False):
             panel_values[3]&0x14==0 and panel_values[4]>=2 and
             panel_values[5]&3==3 and panel_values[6]==panel_values[7]==panel_values[5]&~3,
             'Standalone panel did not qualify sleep and actual stopped scanout')
-    return dict(summary=summary,ui=values,fimd=registers,panel_sleep=panel_values,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
+        identities=re.findall(rb'^I9PD1 ((?:[0-9a-f]{8} ){3}[0-9a-f]{8})\r?$',raw,re.MULTILINE)
+        o.require(identities,'Actual panel identity/qualification mask missing')
+        panel_identity=[int(word,16) for word in identities[-1].split()]
+        o.require(panel_identity[0]==0x3f and panel_identity[1] in (0xa1,0xa2) and panel_identity[2]==0x12 and
+            panel_identity[3]!=0xff and panel_identity[3]<=255,'Panel identity failed complete stable read qualification')
+    return dict(summary=summary,ui=values,fimd=registers,panel_sleep=panel_values,panel_identity=panel_identity,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
         limit='Draw/register/timed-log qualification; no physical image or keypress acceptance inferred')
 
 def wait_resumed(directory,seconds,record,clock=time.monotonic,sleep=time.sleep):
