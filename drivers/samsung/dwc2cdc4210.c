@@ -29,8 +29,11 @@
 #ifndef I9100_CONTROL_TAG
 #define I9100_CONTROL_TAG "0000000000000000"
 #endif
+#ifndef I9100_CHARGER_TAG
+#define I9100_CHARGER_TAG "0000000000000000"
+#endif
 static struct i9100_charge_control charge_control;
-static unsigned charge_action_ready,tx_written_total,tx_drained_total,tx_completed_total,ep1_transfer_total;
+static unsigned charge_action_ready,charge_boot_available,tx_written_total,tx_drained_total,tx_completed_total,ep1_transfer_total;
 static void ring_push(const char *s);
 
 /* Base addresses are overridable so the same logic can run under a
@@ -383,7 +386,7 @@ static void dev_soft_init(void)
 	ep1_busy = 0;
 	ep1_dbg = ep1_intdbg = ep1_compldbg = 0;
 
- memset(&charge_control,0,sizeof(charge_control));charge_action_ready=0;
+ i9100_chg_cancel_incomplete(&charge_control,charge_action_ready);
  tx_written_total=(tx_head-tx_tail)&(TXRING-1U);tx_drained_total=tx_completed_total=ep1_transfer_total=0;
 	ep1_lastint = 0;
 	configured = 0;
@@ -489,6 +492,7 @@ static void ep0_setup(void)
 {
 	uint8_t rt = setup_pkt[0], rq = setup_pkt[1];
 	uint16_t wv = setup_pkt[2] | (setup_pkt[3] << 8);
+	uint16_t wi = setup_pkt[4] | (setup_pkt[5] << 8);
 	uint16_t wl = setup_pkt[6] | (setup_pkt[7] << 8);
 
 	printk(KERN_INFO, "ep0: rq%02x %02x wv%04x wl%u\n",
@@ -527,6 +531,16 @@ static void ep0_setup(void)
 		goto tail;
 	}
 	if (rt == 0x00 && rq == 9) {		/* SET_CONFIGURATION */
+
+        if(charge_identity){
+            if(wi || wl || wv>1){ep0_stall();return;}
+            i9100_chg_cancel_incomplete(&charge_control,charge_action_ready);
+            if(!wv){
+                configured=host_open=0;
+                DOEPCTL(1)|=DXEPCTL_SNAK;DIEPCTL(1)|=DXEPCTL_SNAK;
+                ep0_status_in();goto tail;
+            }
+        }
 		/* s3c-hsotg style: configure EP1 (bulk, dedicated fifo 1,
 		 * MPS 64, DATA0) but let ep1_kick set EPENA per packet.
 		 * S-Boot's 0x84088840 assumed DMA and TXFNUM=0. */
@@ -556,9 +570,11 @@ static void ep0_setup(void)
 		goto tail;
 	}
 	if (rt == 0x21 && rq == 0x22) {		/* SET_CONTROL_LINE_STATE */
-		host_open = 1;
-
-        if(charge_identity){char line[48];i9100_chg_ready(line,I9100_CONTROL_TAG);ring_push(line);}
+		if(charge_identity){
+            i9100_chg_cancel_incomplete(&charge_control,charge_action_ready);
+            host_open=configured && (wv&1U);
+            if(host_open){char line[64];i9100_chg_ready(line,I9100_CONTROL_TAG,I9100_CHARGER_TAG);ring_push(line);}
+        }else host_open=1; /* Preserve the existing loader-to-kernel handoff. */
 		ep0_status_in();
 		goto tail;
 	}
@@ -706,12 +722,14 @@ void usbcdc_poll(void)
                 /* Slave-mode RX payloads share DFIFO0. Preserve the old
                  * non-charger path; the new charger OUT channel uses RX0. */
 				w = FIFO_RD(charge_identity && ep==1?0:ep);
-                if(ep==1 && charge_identity && host_open)for(unsigned n=0;n<4 && i+n<bc;n++){
-                    if(i9100_chg_parse(&charge_control,(char)(w>>(n*8)),I9100_CONTROL_TAG)){
-                        char line[48];i9100_chg_reply(line,charge_control.last,charge_control.action);
+                if(ep==1 && charge_identity && configured && host_open)for(unsigned n=0;n<4 && i+n<bc;n++){
+                    if(i9100_chg_parse(&charge_control,(char)(w>>(n*8)),I9100_CONTROL_TAG,I9100_CHARGER_TAG)){
+                        unsigned allowed=charge_control.action!=1 || charge_boot_available;
+                        char line[48];i9100_chg_reply(line,charge_control.last,charge_control.action,charge_boot_available);
                         unsigned length=strlen(line),space=(tx_tail-tx_head-1U)&(TXRING-1U);
                         if(space<length){charge_control.action=0;charge_action_ready=0;}
                         else{ring_push(line);charge_control.reply_target=tx_written_total;}
+                        if(!allowed){charge_control.action=0;charge_action_ready=0;}
                     }
                 }
             }
@@ -754,7 +772,8 @@ void usbcdc_poll(void)
 				ep1_intdbg++;
 			}
 			ep1_lastint = ei;
-			if (ei & DXEPINT_XFERCOMPL) {
+			if ((ei & DXEPINT_XFERCOMPL) &&
+                (!charge_identity || (ep1_busy && !(ei&(DXEPINT_AHBERR|DXEPINT_TIMEOUT))))) {
 				ep1_busy = 0;
                 tx_completed_total=ep1_transfer_total;
                 if(charge_identity && charge_control.action &&
@@ -769,7 +788,8 @@ void usbcdc_poll(void)
 			if (ei & DXEPINT_AHBERR)
 				ep1_busy = 0;
             if(charge_identity && (ei&(DXEPINT_AHBERR|DXEPINT_TIMEOUT))){
-                charge_control.action=0;charge_action_ready=0;
+                ep1_busy=0;
+                i9100_chg_cancel_incomplete(&charge_control,charge_action_ready);
             }
 		}
 		if (d & 4) {
@@ -789,6 +809,7 @@ void usbcdc_poll(void)
 		if (d & 2) {
 			uint32_t oi = DOEPINT(1);
 			DOEPINT(1) = oi;
+            if(charge_identity && (oi&DXEPINT_AHBERR))i9100_chg_cancel_incomplete(&charge_control,charge_action_ready);
             if(oi&DXEPINT_XFERCOMPL)charge_out_rearm();
 		}
 	}
@@ -800,6 +821,10 @@ unsigned usbcdc4210_charge_take_action(void)
 {
  if(!charge_identity || !charge_action_ready)return 0;
  unsigned action=charge_control.action;charge_control.action=0;charge_action_ready=0;return action;
+}
+void usbcdc4210_charge_set_boot_ready(unsigned available)
+{
+ if(charge_identity)charge_boot_available=available==1;
 }
 
 /* Keep the gadget alive until the host has actually opened the port.
@@ -881,6 +906,9 @@ void usbcdc4210_charge_identity(int enable)
  if(charge_identity!=(unsigned)enable && usb_ok){
   DCTL|=DCTL_SFTDISCON;
   usb_ok=0;enumerated=configured=host_open=0;
+ }
+ if(charge_identity!=(unsigned)enable){
+  memset(&charge_control,0,sizeof(charge_control));charge_action_ready=charge_boot_available=0;
  }
  charge_identity=(unsigned)enable;
 }

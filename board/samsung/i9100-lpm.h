@@ -140,6 +140,7 @@ void i9100_standalone_charge_gate(void)
  extern void usbcdc4210_charge_screen_report(unsigned,unsigned,unsigned,unsigned);
  extern void usbcdc4210_charge_fimd_report(const unsigned[8]);
  extern unsigned usbcdc4210_charge_take_action(void);
+ extern void usbcdc4210_charge_set_boot_ready(unsigned);
  usbcdc4210_charge_identity(1);usbcdc4210_init();
 #endif
  uint64_t next=0,pressed=0,show_until=lpm_ticks()+720000000U;unsigned polls=0;
@@ -152,6 +153,7 @@ void i9100_standalone_charge_gate(void)
   uint64_t now=lpm_ticks();
   if(now>=next){i9100_power_poll(&i9100_lpm_battery);next=now+24000000U;
 #if defined(CONFIG_EXYNOS_CDCACM4210)
+   usbcdc4210_charge_set_boot_ready(i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500);
    if((polls++%30)==0){
     usbcdc4210_charge_report(i9100_lpm_battery.valid,
      i9100_lpm_battery.percent,i9100_lpm_battery.millivolts,

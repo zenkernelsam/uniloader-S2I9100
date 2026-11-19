@@ -24,6 +24,7 @@ static uint32_t receive_fifo[32];static unsigned fifo_index;
 #define CMU_GATE_IP_FSYS clockgate
 #define FIFO_RD(n) rxpop(n)
 #define I9100_CONTROL_TAG "1234567890abcdef"
+#define I9100_CHARGER_TAG "fedcba0987654321"
 static uint32_t rxpop(unsigned ep){assert(ep==0 && fifo_index<32);return receive_fifo[fifo_index++];}
 void printk(int level,const char*fmt,...){(void)level;(void)fmt;}
 #include "driver.c"
@@ -31,27 +32,63 @@ void console_register(const struct console*c){(void)c;}
 static void reset(void){memset(registers,0,sizeof(registers));memset(&charge_control,0,sizeof(charge_control));
  charge_identity=1;usb_ok=1;configured=host_open=1;in_poll=ep1_busy=0;
  charge_action_ready=tx_written_total=tx_drained_total=tx_completed_total=ep1_transfer_total=0;
+ charge_boot_available=1;
  tx_head=tx_tail=0;bulk_mps=512;DTXFSTS(1)=512;DIEPCTL(1)=DXEPCTL_USBACTEP|DXEPCTL_MPS(512);}
 static void received(const char*line){unsigned n=strlen(line);assert(n<=64);memset(receive_fifo,0,sizeof(receive_fifo));
  memcpy(receive_fifo,line,n);fifo_index=0;GINTSTS=GINTSTS_RXFLVL;GRXSTSP=1U|(n<<4)|(PKTSTS_OUTRX<<17);usbcdc_poll();GINTSTS=0;}
 static void complete(void){GINTSTS=GINTSTS_IEPINT;DAINT=2;DIEPINT(1)=DXEPINT_XFERCOMPL;usbcdc_poll();GINTSTS=0;DIEPINT(1)=0;}
+static void setup(unsigned rt,unsigned rq,unsigned value){memset(setup_pkt,0,8);setup_pkt[0]=rt;setup_pkt[1]=rq;setup_pkt[2]=value;ep0_setup();}
 int main(void){
- reset();received("I9CHC1 00000001 1234567890abcdef boot\n");assert(charge_control.action==1 && !usbcdc4210_charge_take_action());
+ reset();received("I9CHC2 00000001 1234567890abcdef fedcba0987654321 boot\n");assert(charge_control.action==1 && !usbcdc4210_charge_take_action());
  complete();assert(usbcdc4210_charge_take_action()==1 && !usbcdc4210_charge_take_action());
- received("I9CHC1 00000001 1234567890abcdef boot\n");assert(!charge_control.action);
- received("I9CHC1 00000002 1234567890abcdee download\n");assert(!charge_control.action);
- received("I9CHC1 00000003 1234567890abcdef flash\n");assert(!charge_control.action);
- received("I9CHC1 00000004 1234567890abcdef download\n");assert(charge_control.action==2);complete();assert(usbcdc4210_charge_take_action()==2);
+ received("I9CHC2 00000001 1234567890abcdef fedcba0987654321 boot\n");assert(!charge_control.action);
+ received("I9CHC2 00000002 1234567890abcdee fedcba0987654321 download\n");assert(!charge_control.action);
+ received("I9CHC2 00000003 1234567890abcdef fedcba0987654321 flash\n");assert(!charge_control.action);
+ received("I9CHC2 00000004 1234567890abcdef fedcba0987654321 download\n");assert(charge_control.action==2);complete();assert(usbcdc4210_charge_take_action()==2);
+ received("I9CHC2 00000005 1234567890abcdef fedcba0987654320 boot\n");assert(!charge_control.action);
  reset();char text[180];memset(text,'x',160);text[160]='\n';text[161]=0;
- for(unsigned n=0;n<161;n++)i9100_chg_parse(&charge_control,text[n],I9100_CONTROL_TAG);
- received("I9CHC1 00000005 1234567890abcdef boot\n");assert(charge_control.action==1);
+ for(unsigned n=0;n<161;n++)i9100_chg_parse(&charge_control,text[n],I9100_CONTROL_TAG,I9100_CHARGER_TAG);
+ received("I9CHC2 00000005 1234567890abcdef fedcba0987654321 boot\n");assert(charge_control.action==1);
  GINTSTS=GINTSTS_IEPINT;DAINT=2;DIEPINT(1)=DXEPINT_AHBERR;usbcdc_poll();assert(!usbcdc4210_charge_take_action() && !charge_control.action);
  reset();ring_push("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\n");ep1_kick();
- received("I9CHC1 00000006 1234567890abcdef download\n");assert(charge_control.action==2 && !charge_action_ready);
+ received("I9CHC2 00000006 1234567890abcdef fedcba0987654321 download\n");assert(charge_control.action==2 && !charge_action_ready);
  complete();assert(!charge_action_ready);complete();assert(!charge_action_ready);complete();assert(usbcdc4210_charge_take_action()==2);
  reset();DOEPCTL(1)=DXEPCTL_USBACTEP|DXEPCTL_MPS(512);DOEPTSIZ(1)=0;GINTSTS=GINTSTS_OEPINT;DAINT=2U<<16;DOEPINT(1)=1;
  usbcdc_poll();assert(DOEPTSIZ(1)==((1U<<19)|512) && (DOEPCTL(1)&DXEPCTL_EPENA));
- puts("PASS production charger bulk OUT/IN, matching tag/new sequence, no reset before full ACK, prior logs, reply crossing packets, error cancellation and OUT rearm");}
+ /* DTR0 and config0 cancel half-lines and untransmitted actions. DTR2
+  * is RTS without DTR and must not leave a command opener active. */
+ reset();received("I9CHC2 00000007 1234567890abcdef fedcba0987654321 ");
+ setup(0x21,0x22,0);assert(!host_open && !charge_control.used);
+ setup(0x21,0x22,2);assert(!host_open);received("boot\n");assert(!charge_control.action);
+ setup(0x21,0x22,1);assert(host_open);
+ received("I9CHC2 00000008 1234567890abcdef fedcba0987654321 boot\n");
+ setup(0x21,0x22,0);assert(!charge_control.action && charge_control.last==8);
+ reset();received("I9CHC2 00000009 1234567890abcdef fedcba0987654321 boot\n");
+ setup(0,9,0);assert(!configured && !host_open && !charge_control.action && charge_control.last==9);
+ received("I9CHC2 00000010 1234567890abcdef fedcba0987654321 boot\n");assert(!charge_control.action);
+ reset();received("I9CHC2 0000000a 1234567890abcdef fedcba0987654321 boot\n");
+ complete();assert(charge_action_ready);setup(0x21,0x22,0);assert(usbcdc4210_charge_take_action()==1);
+ /* The same accepted nonce cannot be replayed after a bus reset. A
+  * completed ACK remains committed even when the host closes immediately. */
+ reset();received("I9CHC2 0000000b 1234567890abcdef fedcba0987654321 boot\n");
+ dev_soft_init();assert(!charge_control.action && charge_control.last==11 && !configured && !host_open);
+ setup(0,9,1);setup(0x21,0x22,1);received("I9CHC2 0000000b 1234567890abcdef fedcba0987654321 boot\n");assert(!charge_control.action);
+ reset();received("I9CHC2 0000000c 1234567890abcdef fedcba0987654321 boot\n");complete();
+ dev_soft_init();assert(usbcdc4210_charge_take_action()==1);
+ reset();usbcdc4210_charge_set_boot_ready(0);
+ received("I9CHC2 0000000d 1234567890abcdef fedcba0987654321 boot\n");assert(!charge_control.action);
+ char reply[48];i9100_chg_reply(reply,13,1,0);assert(!strcmp(reply,"I9CHC2 0000000d ERR boot-unavailable\n"));
+ complete();assert(!usbcdc4210_charge_take_action());
+ received("I9CHC2 0000000e 1234567890abcdef fedcba0987654321 download\n");assert(charge_control.action==2);
+ complete();assert(usbcdc4210_charge_take_action()==2);
+ reset();received("I9CHC2 0000000f 1234567890abcdef fedcba0987654321 boot\n");
+ GINTSTS=GINTSTS_IEPINT;DAINT=2;DIEPINT(1)=DXEPINT_XFERCOMPL|DXEPINT_AHBERR;
+ usbcdc_poll();assert(!charge_action_ready && !usbcdc4210_charge_take_action());
+ reset();received("I9CHC2 00000010 1234567890abcdef fedcba0987654321 boot\n");
+ GINTSTS=GINTSTS_IEPINT;DAINT=2;DIEPINT(1)=DXEPINT_XFERCOMPL|DXEPINT_TIMEOUT;
+ usbcdc_poll();assert(!charge_action_ready && !usbcdc4210_charge_take_action());
+ reset();received("I9CHC1 00000011 1234567890abcdef boot\n");assert(!charge_control.action);
+ puts("PASS production charger source/kernel qualification, sized OUT, DTR/config/reset cancellation, committed ACK, boot refusal and no nonce replay");}
 '''
 (out/'driver.c').write_text((repo/'drivers/samsung/dwc2cdc4210.c').read_text().replace('#include "../../board/samsung/i9100-charge-control.h"','#include "i9100-charge-control.h"'))
 (out/'check.c').write_text(code)

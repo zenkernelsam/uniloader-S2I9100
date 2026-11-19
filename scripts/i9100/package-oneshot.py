@@ -216,8 +216,23 @@ def main():
         helpers/'test-lz4.c','-o',output/'test-lz4'], loader, output/'test-lz4-build.log')
     run([output/'test-lz4', blob, raw], loader, output/'test-lz4.log')
     build = output/'loader'
+    charger_tag=None;charger_sources={}
+    if args.standalone_charge:
+        for directory in ('arch','board','drivers','lib','include','main','soc'):
+            for path in sorted((loader/directory).rglob('*')):
+                if path.is_file() and path.suffix in ('.c','.h','.S','.s','.lds'):
+                    charger_sources[str(path.relative_to(loader))]=sha(path)
+        for name in ('.config','include/generated/autoconf.h'):
+            path=loader/name
+            if path.is_file():charger_sources[name]=sha(path)
+        charger_identity=dict(schema=2,kernel_sha256=sha(kernel),sources=charger_sources,
+            flags={key:value for key,value in vars(args).items() if key not in ('kernel','output')})
+        charger_tag=hashlib.sha256(json.dumps(charger_identity,sort_keys=True,separators=(',',':')).encode()).hexdigest()[:16]
+        (output/'charger-identity.json').write_text(json.dumps(dict(schema=2,tag=charger_tag,
+            kernel_sha256=sha(kernel),sources=charger_sources,flags=charger_identity['flags']),indent=2)+'\n')
     run([sys.executable, helpers/'relink-loader.py', '--output', build,
         *(['--control', '--control-tag', sha(kernel)[:16]] if args.control else []),
+        *(['--charger-tag',charger_tag] if charger_tag else []),
         *(['--ls-bootstrap'] if args.ls_bootstrap else []),
         *(['--ls-ui-timeout'] if args.ls_ui_timeout else []),
         *(['--audio-property-lock'] if args.audio_property_lock else []),
@@ -256,6 +271,9 @@ def main():
     shutil.copyfile(kernel, output/'mach_kernel')
     shutil.copyfile(kernel.with_name('mach_kernel.sys'), output/'mach_kernel.sys')
     data = (output/'zImage').read_bytes()
+    if charger_tag:
+        assert b'I9CHC2 READY ' in data and (charger_tag+'\0').encode() in data
+        assert all(sha(loader/name)==value for name,value in charger_sources.items()),'Charger source changed during packaging'
     assert struct.unpack_from('<I', data, 0x24)[0] == 0x016f2818
     assert struct.unpack_from('<I', data, 0x28)[0] == 0x40008000
     assert struct.unpack_from('<I', data, 0x2c)[0] == 0x40008000 + len(data)
@@ -354,7 +372,9 @@ def main():
         'charge_diag': args.charge_diag,
         'charge_probe': args.charge_probe,
         'standalone_charge': args.standalone_charge,
-        'standalone_charge_control': args.standalone_charge and b'I9CHC1 READY ' in data,
+        'standalone_charge_control': args.standalone_charge and b'I9CHC2 READY ' in data,
+        'standalone_charge_control_version': 2 if args.standalone_charge and b'I9CHC2 READY ' in data else None,
+        'standalone_charge_control_tag': charger_tag,
         'reboot_download_fallback': args.reboot_download_fallback,
         'tcc_development_unconfined': args.tcc_development,
         'mdns_development_unconfined': args.mdns_development,

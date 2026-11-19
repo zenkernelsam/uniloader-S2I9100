@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Incrementally relink a configured loader without deleting build artifacts."""
 import argparse
+import re
 import os
 from pathlib import Path
 import shlex
@@ -27,6 +28,7 @@ def main():
     parser.add_argument('--dtb-blob', type=Path)
     parser.add_argument('--control', action='store_true')
     parser.add_argument('--control-tag')
+    parser.add_argument('--charger-tag')
     parser.add_argument('--ls-bootstrap', action='store_true')
     parser.add_argument('--ls-ui-timeout',action='store_true')
     parser.add_argument('--audio-property-lock',action='store_true')
@@ -105,6 +107,8 @@ def main():
         parser.error('--charge-probe requires --charge-diag')
     if args.standalone_charge and not args.control:
         parser.error('--standalone-charge requires --control')
+    if args.standalone_charge and not re.fullmatch('[0-9a-f]{16}',args.charger_tag or ''):
+        parser.error('--standalone-charge requires its source-qualified --charger-tag')
     if args.reboot_download_fallback and not args.control:
         parser.error('--reboot-download-fallback requires --control')
     if args.tcc_development and not args.control:
@@ -226,6 +230,7 @@ def main():
             command.append('-DI9100_STANDALONE_CHARGE_BUILD=1')
         if source_name == 'drivers/samsung/dwc2cdc4210.c' and args.control and args.standalone_charge:
             command.append('-DI9100_CONTROL_TAG="'+args.control_tag+'"')
+            command.append('-DI9100_CHARGER_TAG="'+args.charger_tag+'"')
         if source_name == 'arch/arm/start.S' and args.kernel_blob:
             command.append('-DI9100_KERNEL_BLOB="' + str(blob) + '"')
         if source_name == 'arch/arm/start.S' and args.dtb_blob:
