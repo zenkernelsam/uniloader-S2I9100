@@ -34,7 +34,7 @@ def owner_complete(path,tag):
         not any(row['phase']=='STOP' for row in events),'Owner did not complete normally; no next opener')
     return events
 
-def qualify_charger(path,expected):
+def qualify_charger(path,expected,require_panel_sleep=False):
     summary=s.summarize(path)
     raw=(path/'received.bin').read_bytes()
     o.require(re.search(rb'^I9CHC2 READY '+expected.encode()+rb'\r?$',raw,re.MULTILINE) is not None,
@@ -56,7 +56,16 @@ def qualify_charger(path,expected):
     o.require(timed[-1]['soc']>=5 and timed[-1]['millivolts']>=3500 and
         50<=timed[-1]['temperature_deci_c']<=400 and timed[-1]['reason'] in (0,-4) and
         not timed[-1]['timeout'],'Latest battery state does not qualify a boot contrast')
-    return dict(summary=summary,ui=values,fimd=registers,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
+    panel_values=None
+    if require_panel_sleep:
+        panels=re.findall(rb'^I9PL1 ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?$',raw,re.MULTILINE)
+        o.require(panels,'Actual standalone panel sleep record missing')
+        panel_values=[int(word,16) for word in panels[-1].split()]
+        o.require(panel_values[0]==1 and panel_values[1]==3 and panel_values[2]==0 and
+            panel_values[3]&0x14==0 and panel_values[4]>=2 and
+            panel_values[5]&3==3 and panel_values[6]==panel_values[7]==panel_values[5]&~3,
+            'Standalone panel did not qualify sleep and actual stopped scanout')
+    return dict(summary=summary,ui=values,fimd=registers,panel_sleep=panel_values,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
         limit='Draw/register/timed-log qualification; no physical image or keypress acceptance inferred')
 
 def wait_resumed(directory,seconds,record,clock=time.monotonic,sleep=time.sleep):
@@ -101,7 +110,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
     record('SHUTDOWN_COMPLETE')
     child([sys.executable,'-B',HERE/'capture-charge-loader.py','--output',out/'charger-evidence',
         '--seconds','120','--wait','180'],out/'charger-process',420,record)
-    evidence=qualify_charger(out/'charger-evidence',tag+' '+charger_tag)
+    evidence=qualify_charger(out/'charger-evidence',tag+' '+charger_tag,manifest.get('panel_sleep') is True)
     o.save(out/'charger-qualified.json',evidence);record('CHARGER_QUALIFIED',measured_interval_ms=evidence['measured_interval_ms'])
     child([sys.executable,'-B',HERE/'charge-command.py','--package',package,'--action','boot',
         '--output',out/'boot-command-evidence'],out/'boot-command-process',120,record)

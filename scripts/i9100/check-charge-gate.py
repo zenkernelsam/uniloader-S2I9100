@@ -25,13 +25,15 @@ code=r'''
 #include "charge/i9100_power.h"
 #include "i9100-charge-screen.h"
 #include "i9100-charge-report.h"
+#include "charge/i9100_panel_spi.h"
+#include "charge/i9100_panel_sleep.h"
 #define I9100_STANDALONE_CHARGE_BUILD 1
 #define CONFIG_EXYNOS_CDCACM4210 1
 #define LPM_BARRIER() do{}while(0)
 static struct i9100_power_state i9100_lpm_battery;
 static unsigned i9100_boot_source,scenario,draws,late_draws,blanked,last_unblank,remote_issued,stops,reports,usb_calls;
 static uint64_t ticks,last_draw_ticks,reset_ticks;static uint32_t fb[480*800];static jmp_buf escaped;
-static unsigned pmu2,pmu3,wait_ticks;
+static unsigned pmu2,pmu3,wait_ticks,panel_mode=0x9c,panel_scan=0x1003,panel_commands;
 static int lpm_boot_requested(const unsigned*p){return *p==1;}
 static int lpm_timer_init(void){return 1;}
 static uint64_t lpm_ticks(void){return ticks;}
@@ -40,7 +42,7 @@ static unsigned seconds(void){return (unsigned)(ticks/24000000ULL);}
 static uint32_t lpm_read(unsigned base,unsigned off){
  if(base==0x10060000 && off==0)return 33;
  if(base==0x11000000 && off==0xc44){
-  if(scenario==1 && seconds()>=35 && seconds()<38)return 0x7f;
+  if((scenario==1 || scenario==6 || scenario==7) && seconds()>=35 && seconds()<38)return 0x7f;
   return 0xff;
  }
  if(base==0x11000000 && off==0xc64)return 0xff;
@@ -94,9 +96,15 @@ void usbcdc4210_charge_timed_report(const struct i9100_charge_report *r){
 void usbcdc4210_charge_screen_report(unsigned d,unsigned b,unsigned s,unsigned p){(void)d;(void)b;assert(s==1920 && p==32);}
 void usbcdc4210_charge_fimd_report(const unsigned p[8]){assert(p[1]==0x8035 && p[6]==(blanked?0x1000000:0));}
 void usbcdc_poll(void){usb_calls++;}
-void usbcdc4210_charge_set_boot_ready(unsigned available){assert(available==(scenario!=4));}
+void usbcdc4210_charge_set_boot_ready(unsigned available){
+#ifdef I9100_PANEL_SLEEP_BUILD
+ assert(available==(scenario!=4 && !((scenario==6 || scenario==8) && seconds()>=31)));
+#else
+ assert(available==(scenario!=4));
+#endif
+}
 unsigned usbcdc4210_charge_take_action(void){
- if(scenario>=2 && scenario<=4 && seconds()>=35 && !remote_issued){remote_issued=1;return scenario==3?2:1;}
+ if(((scenario>=2 && scenario<=4) || scenario==8) && seconds()>=35 && !remote_issued){remote_issued=1;return scenario==3||scenario==8?2:1;}
  return 0;
 }
 static void lpm_download(void){reset_ticks=ticks;longjmp(escaped,2);}
@@ -108,24 +116,56 @@ static int wrapped_draw(const struct i9100_charge_screen*s,unsigned valid,unsign
 }
 #define i9100_charge_draw wrapped_draw
 static void lpm_sleep_tick(void){ticks+=240000;wait_ticks++;if(seconds()>40 && scenario==4)longjmp(escaped,4);}
+static uint32_t lpm_panel_gpio_read(void*c,unsigned o){(void)c;(void)o;return 0;}
+static void lpm_panel_gpio_write(void*c,unsigned o,uint32_t v){(void)c;(void)o;(void)v;}
+static void lpm_panel_delay(void*c,unsigned us){(void)c;(void)us;}
+static unsigned lpm_panel_enter(void*c){(void)c;return 0;}
+static void lpm_panel_leave(void*c,unsigned n){(void)c;(void)n;}
+static int lpm_panel_read_byte(void*c,unsigned reg,uint8_t*v){(void)c;
+ *v=reg==0xda?(scenario==7?0x00:0xa1):reg==0xdb?0x12:reg==0xdc?0x11:panel_mode;return 1;}
+static int lpm_panel_command(void*c,unsigned cmd){(void)c;++panel_commands;
+ if(scenario!=6 && scenario!=8){if(cmd==0x28)panel_mode&=~4U;else if(cmd==0x10)panel_mode&=~16U;
+  else if(cmd==0x11)panel_mode|=16U;else if(cmd==0x29)panel_mode|=4U;}
+ return 1;}
+static uint32_t lpm_panel_scan_read(void*c){(void)c;return panel_scan;}
+static void lpm_panel_scan_write(void*c,uint32_t v){(void)c;panel_scan=v;}
+static void lpm_panel_wait(void*c,unsigned ms){(void)c;ticks+=(uint64_t)ms*24000U;}
+static int lpm_panel_awake(struct i9100_panel_sleep*p){return !p->qualified || !i9100_panel_sleep_change(p,1);}
+void usbcdc4210_charge_panel_report(const unsigned values[8]){
+ assert(values[0]<=1 && values[1]<=4 && values[7]==panel_scan);
+ if(values[0] && values[1]==I9P_SLEEP)assert(!(values[7]&3));
+}
 '''+gate+r'''
 int main(void){
- for(scenario=1;scenario<=5;scenario++){
+ for(scenario=1;scenario<=
+#ifdef I9100_PANEL_SLEEP_BUILD
+ 8
+#else
+ 5
+#endif
+ ;scenario++){
+  panel_mode=0x9c;panel_scan=0x1003;panel_commands=0;
   ticks=draws=late_draws=blanked=last_unblank=remote_issued=stops=reports=usb_calls=pmu2=pmu3=wait_ticks=0;i9100_boot_source=1;
   unsigned result=setjmp(escaped);if(!result){i9100_standalone_charge_gate();result=1;}
   assert(late_draws==0 && draws>=30 && usb_calls>1000 && reports>=2);
+  if(scenario!=6 && scenario!=8)assert(panel_scan==0x1003 || scenario>=3 && scenario<=5);
   if(scenario==1){assert(result==1 && ticks>=37ULL*24000000 && last_unblank==35);assert(pmu2==0x12345678 && pmu3==0x12345670 && stops==1);}
   if(scenario==2){assert(result==1 && ticks>=35ULL*24000000+12000000ULL && pmu3==0x12345670 && stops==1);}
   if(scenario==3){assert(result==2 && reset_ticks>=35ULL*24000000+12000000ULL && !pmu3);}
   if(scenario==4){assert(result==4 && !stops && !pmu2 && !pmu3);}
   if(scenario==5){assert(result==3 && stops==1 && seconds()>=35);}
+  if(scenario==6){assert(result==2 && blanked && panel_commands==1 && stops==0);}
+  if(scenario==7){assert(result==1 && panel_commands==0 && last_unblank==35);}
+  if(scenario==8){assert(result==2 && blanked && panel_commands==1);}
  }
- puts("PASS production standalone gate: window2 blank/unblank, 1Hz draw then no drawing asleep, long press/remote 500ms fence, low voltage refusal and unplug poweroff");
+ puts("PASS production standalone gate: window2 blank/unblank, 1Hz draw then no drawing asleep, long press/remote 500ms fence, low voltage refusal, panel-sleep retained scanout/fault/unknown fallbacks and unplug poweroff");
 }
 '''
-(out/'check.c').write_text(code)
-for n,cmd in enumerate((['clang','-O1','-g','-fno-pie','-no-pie','-Wno-pointer-to-int-cast','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(repo/'board/samsung'),str(out/'check.c'),'-o',str(out/'check')],[str(out/'check')])):
-    r=subprocess.run(cmd,text=True,capture_output=True);(out/f'command-{n}.log').write_text(r.stdout+r.stderr)
-    if r.returncode:print((r.stdout+r.stderr)[-3000:],file=sys.stderr);r.check_returncode()
-    if r.stdout:print(r.stdout.strip(),flush=True)
+for variant in ('legacy','panel'):
+    actual=code if variant=='legacy' else code.replace('#define I9100_STANDALONE_CHARGE_BUILD 1','#define I9100_STANDALONE_CHARGE_BUILD 1\n#define I9100_PANEL_SLEEP_BUILD 1')
+    (out/(variant+'.c')).write_text(actual)
+    for n,cmd in enumerate((['clang','-O1','-g','-fno-pie','-no-pie','-Wno-pointer-to-int-cast','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(repo/'board/samsung'),str(out/(variant+'.c')),'-o',str(out/variant)],[str(out/variant)])):
+        r=subprocess.run(cmd,text=True,capture_output=True);(out/f'{variant}-command-{n}.log').write_text(r.stdout+r.stderr)
+        if r.returncode:print((r.stdout+r.stderr)[-3000:],file=sys.stderr);r.check_returncode()
+        if r.stdout:print(variant,r.stdout.strip(),flush=True)
 print('EVIDENCE',out,flush=True)

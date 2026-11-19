@@ -10,6 +10,8 @@
 #include "charge/i9100_power_bus.c"
 #include "i9100-charge-screen.h"
 #include "i9100-charge-report.h"
+#include "charge/i9100_panel_spi.h"
+#include "charge/i9100_panel_sleep.h"
 #ifndef LPM_BARRIER
 #define LPM_BARRIER() __asm__ volatile("dsb sy" ::: "memory")
 #define LPM_MASK_IRQ() __asm__ volatile("cpsid if" ::: "memory")
@@ -78,6 +80,28 @@ static void lpm_sleep_tick(void)
  if(irq==89)lpm_write(0x10050000U,0x244,1);
  if(irq<1020)lpm_write(0x10480000U,0x10,token);
 }
+#ifdef I9100_PANEL_SLEEP_BUILD
+static uint32_t lpm_panel_gpio_read(void *cookie,unsigned off)
+{(void)cookie;return lpm_read(0x11000000U,off);}
+static void lpm_panel_gpio_write(void *cookie,unsigned off,uint32_t value)
+{(void)cookie;lpm_write(0x11000000U,off,value);}
+static void lpm_panel_delay(void *cookie,unsigned us){lpm_delay(cookie,us);}
+static unsigned lpm_panel_enter(void *cookie){(void)cookie;return 0;}
+static void lpm_panel_leave(void *cookie,unsigned token){(void)cookie;(void)token;}
+static int lpm_panel_read_byte(void *cookie,unsigned command,uint8_t *value)
+{return i9100_panel_spi_read_byte(cookie,command,value);}
+static int lpm_panel_command(void *cookie,unsigned command)
+{return i9100_panel_spi_word(cookie,command);}
+static uint32_t lpm_panel_scan_read(void *cookie){(void)cookie;return lpm_read(0x11c00000U,0);}
+static void lpm_panel_scan_write(void *cookie,uint32_t value){(void)cookie;lpm_write(0x11c00000U,0,value);}
+static void lpm_panel_wait(void *cookie,unsigned ms)
+{
+ (void)cookie;uint64_t end=lpm_ticks()+(uint64_t)ms*24000U;
+ while(lpm_ticks()<end)lpm_sleep_tick();
+}
+static int lpm_panel_awake(struct i9100_panel_sleep *panel)
+{return !panel->qualified || !i9100_panel_sleep_change(panel,1);}
+#endif
 static uint32_t lpm_hw_read(void *cookie,unsigned region,unsigned off)
 {
  static const unsigned bases[4]={0x11400000U,0x11000000U,0x10030000U,0x13910000U};
@@ -147,6 +171,16 @@ void i9100_standalone_charge_gate(void)
  uint64_t next=0,pressed=0,show_until=lpm_ticks()+720000000U;unsigned polls=0,report_sequence=0;
  unsigned window=0,blanked=0;
  struct i9100_charge_screen screen={0};unsigned screen_ok=lpm_screen_bind(&screen,&window),animation=0,drawn=0;
+#ifdef I9100_PANEL_SLEEP_BUILD
+ struct i9100_panel_spi panel_spi={0};struct i9100_panel_sleep panel={0};
+ panel_spi.io=(struct i9100_panel_spi_io){0,lpm_panel_gpio_read,lpm_panel_gpio_write,
+  lpm_panel_delay,lpm_panel_enter,lpm_panel_leave};
+ panel.io=(struct i9100_panel_sleep_io){&panel_spi,lpm_panel_read_byte,lpm_panel_command,
+  lpm_panel_scan_read,lpm_panel_scan_write,lpm_panel_wait};
+ /* Unknown wiring/state uses the original supervised black-map path. Its
+  * qualification error remains visible; no sleep command is sent. */
+ if(screen_ok)(void)i9100_panel_probe(&panel);
+#endif
  if(!screen_ok && (lpm_read(0x11c00000U,0x28)&1U))window=2;
  unsigned winmap=0x180+window*4,saved_map=lpm_read(0x11c00000U,winmap);
  uint64_t next_draw=0,remote_deadline=0;unsigned remote_action=0;
@@ -154,7 +188,11 @@ void i9100_standalone_charge_gate(void)
   uint64_t now=lpm_ticks();
   if(now>=next){i9100_power_poll(&i9100_lpm_battery);next=now+24000000U;
 #if defined(CONFIG_EXYNOS_CDCACM4210)
-   usbcdc4210_charge_set_boot_ready(i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500);
+   unsigned boot_ready=i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500;
+#ifdef I9100_PANEL_SLEEP_BUILD
+   if(panel.qualified && panel.stage==I9P_FAULT)boot_ready=0;
+#endif
+   usbcdc4210_charge_set_boot_ready(boot_ready);
    if((polls++%30)==0){
     uint64_t measured=lpm_ticks();
     struct i9100_charge_report report={0};
@@ -172,6 +210,12 @@ void i9100_standalone_charge_gate(void)
       lpm_read(0x11c00000U,0x64),lpm_read(0x11c00000U,0xe0),
       lpm_read(0x11c00000U,0x188),blanked};
     usbcdc4210_charge_fimd_report(fb);
+#ifdef I9100_PANEL_SLEEP_BUILD
+    extern void usbcdc4210_charge_panel_report(const unsigned[8]);
+    unsigned panel_fields[8]={panel.qualified,panel.stage,panel.error,panel.mode,panel.commands,
+      panel.saved_scanout,panel.owned_scanout,lpm_panel_scan_read(0)};
+    usbcdc4210_charge_panel_report(panel_fields);
+#endif
    }
 #endif
   }
@@ -179,12 +223,31 @@ void i9100_standalone_charge_gate(void)
   if(!(keys&1U) && !(home&(1U<<5)))lpm_download();
   if(!(keys&(1U<<7))){if(!pressed)pressed=now;
    show_until=now+720000000U;
-   if(blanked){lpm_write(0x11c00000U,winmap,saved_map);blanked=0;}
-   if(now-pressed>=48000000U && i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500)break;
+   if(blanked){
+#ifdef I9100_PANEL_SLEEP_BUILD
+    if(lpm_panel_awake(&panel)){
+#endif
+     lpm_write(0x11c00000U,winmap,saved_map);blanked=0;
+#ifdef I9100_PANEL_SLEEP_BUILD
+    }
+#endif
+   }
+   if(now-pressed>=48000000U && i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500){
+#ifdef I9100_PANEL_SLEEP_BUILD
+    if(!lpm_panel_awake(&panel))lpm_download(); /* Power requested boot but panel is faulted. */
+#endif
+    break;
+   }
   }else pressed=0;
   if(!blanked && now>=show_until){
    lpm_write(0x11c00000U,winmap,(saved_map&~0x01ffffffU)|0x01000000U);blanked=1;
+#ifdef I9100_PANEL_SLEEP_BUILD
+   if(panel.qualified)(void)i9100_panel_sleep_change(&panel,0);
+#endif
   }
+  /* A panel wake may sleep120ms; schedule the next draw from the actual
+   * post-transition MCT value, not the loop's earlier timestamp. */
+  now=lpm_ticks();
   if(screen_ok && !blanked && now>=next_draw){
    if(i9100_charge_draw(&screen,i9100_lpm_battery.valid,i9100_lpm_battery.percent,
       i9100_lpm_battery.connected,i9100_lpm_battery.charging,i9100_lpm_battery.reason,
@@ -203,12 +266,21 @@ void i9100_standalone_charge_gate(void)
   if(received_action && !remote_action){remote_action=received_action;remote_deadline=now+12000000U;}
   if(remote_action && now>=remote_deadline){
    if(remote_action==2)lpm_download();
-   if(remote_action==1 && i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500)break;
+   if(remote_action==1 && i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500){
+#ifdef I9100_PANEL_SLEEP_BUILD
+    if(lpm_panel_awake(&panel))break;
+#else
+    break;
+#endif
+   }
    remote_action=0;
   }
 #endif
   lpm_sleep_tick();
  }
+#ifdef I9100_PANEL_SLEEP_BUILD
+ if(!lpm_panel_awake(&panel))lpm_download();
+#endif
  if(blanked)lpm_write(0x11c00000U,winmap,saved_map);
  i9100_power_stop(&i9100_lpm_battery);
  lpm_write(0x10020000U,0x808,0x12345678U);

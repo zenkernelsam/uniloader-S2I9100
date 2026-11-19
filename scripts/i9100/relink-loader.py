@@ -233,6 +233,7 @@ def main():
                 command.append('-DI9100_PANIC_TEST_BUILD=1')
         if source_name == 'board/samsung/board-i9100.c' and args.standalone_charge:
             command.append('-DI9100_STANDALONE_CHARGE_BUILD=1')
+            if args.panel_sleep:command.append('-DI9100_PANEL_SLEEP_BUILD=1')
         if source_name == 'drivers/samsung/dwc2cdc4210.c' and args.control and args.standalone_charge:
             command.append('-DI9100_CONTROL_TAG="'+args.control_tag+'"')
             command.append('-DI9100_CHARGER_TAG="'+args.charger_tag+'"')
