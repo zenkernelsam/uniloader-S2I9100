@@ -11,6 +11,7 @@ here=Path(__file__).resolve().parent
 def module(name,file):
  s=importlib.util.spec_from_file_location(name,here/file);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
 f=module('charge_command_forensic','forensic-session.py');o=module('charge_command_odin','odin-loop.py')
+ready=module('charge_command_readiness','charger-readiness.py')
 def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--package',type=Path,required=True)
  p.add_argument('--action',choices=('boot','download'),required=True);p.add_argument('--output',type=Path,required=True)
@@ -35,8 +36,6 @@ def main():
  out=o.confined(a.output,f.REPO/'out');o.require(not out.exists(),'Fresh evidence required')
  profile=json.loads((o.OUT/'inventory-20261106-211114-download-profile.json').read_text())
  with o.host_lock():
-  devices=[d for d in o.Host().inventory() if d.get('instance','').upper().endswith('S2I9100-CHG')]
-  o.require(len(devices)==1 and devices[0]['service'].lower()=='usbser' and o.normalize_location(devices[0]['location'])==profile['location'],'Approved distinct charger absent')
   out.mkdir(parents=True);transport=None
   with (out/'events.jsonl').open('x',encoding='utf-8') as events,(out/'received.bin').open('xb') as capture:
    def record(phase,**data):
@@ -63,7 +62,8 @@ def main():
       elif not drop:line.append(byte)
     raise TimeoutError('Charger reply timeout; no resend')
    try:
-    transport=f.WinTransport(devices[0]['port'],record)
+    device=ready.wait_charger(o.Host(),profile,30,record)
+    transport=f.WinTransport(device['port'],record)
     wait_for(f'I9CHC2 READY {expected} {charger_tag}'.encode());record('IDENTITY_OK',tag=expected,charger_tag=charger_tag)
     seq=transport.ticks()&0xffffffff;o.require(seq>0,'Nonzero fresh sequence required')
     wire=f'I9CHC2 {seq:08x} {expected} {charger_tag} {a.action}\n'.encode()

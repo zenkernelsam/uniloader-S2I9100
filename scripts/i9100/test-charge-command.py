@@ -18,8 +18,11 @@ charger_tag=manifest['standalone_charge_control_tag'];assert manifest['standalon
 out=repo/'out'/('charge-command-check-'+datetime.now().strftime('%Y%m%d-%H%M%S'));out.mkdir()
 profile=json.loads((m.o.OUT/'inventory-20261106-211114-download-profile.json').read_text())
 class Host:
-    def inventory(self):return [dict(instance='USB\\VID_0525&PID_A4A7\\S2I9100-CHG',service='usbser',location=profile['location'],port='COM14')]
+    def inventory(self):return [dict(instance='USB\\VID_0525&PID_A4A7\\S2I9100-CHG',service='usbser',location=profile['location'],port='COM14',status='OK')]
 m.o.host_lock=lambda:nullcontext();m.o.Host=Host
+actual_ready_wait=m.ready.wait_charger
+m.ready.wait_charger=lambda host,profile,seconds,record:actual_ready_wait(host,profile,seconds,record,
+    target=lambda port:'\\Device\\USBSER000',clock=lambda:0,sleep=lambda seconds:None)
 cases=[]
 original_clock=m.time.monotonic
 for scenario in ('boot','download','missing-ready','wrong-tag','wrong-loader','wrong-ack','boot-refused','overflow-ready','fragmented-ready'):
