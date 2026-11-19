@@ -354,6 +354,7 @@ def main():
         'charge_diag': args.charge_diag,
         'charge_probe': args.charge_probe,
         'standalone_charge': args.standalone_charge,
+        'standalone_charge_control': args.standalone_charge and b'I9CHC1 READY ' in data,
         'reboot_download_fallback': args.reboot_download_fallback,
         'tcc_development_unconfined': args.tcc_development,
         'mdns_development_unconfined': args.mdns_development,
