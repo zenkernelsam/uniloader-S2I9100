@@ -30,6 +30,7 @@
     "iokit/i9100_modem_sipc4.o",
     "iokit/i9100_emmc.o",
     "iokit/i9100_emmc_layout.o",
+    "iokit/i9100_emmc_writer.o",
     "iokit/i9100_uart_bluetooth.o",
     "iokit/i9100_pwm_haptic.o",
     "iokit/i9100_bcm_f2.o",
@@ -78,7 +79,7 @@
     "iokit/i9100_camera_mmio.cpo",
     "iokit/i9100_mfc_native.cpo"
   ],
-  "patch_sha256": "b79ca6ac71af6847322efdc07964e0ef0ed4e599af02416384066220b581072e",
+  "patch_sha256": "e1dde4d0ef7b15f516a1ec41bdf95de1e0b861837795259decce4af804cd5d1f",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first",
