@@ -15,8 +15,19 @@ assert fixture.is_relative_to(repo/'out') and out.is_relative_to(repo/'out') and
 raw=fixture.read_bytes();version,count,stride,capacity=struct.unpack_from('<4I',raw)
 assert version==2 and stride==40 and capacity==16
 out.mkdir(parents=True)
+for state in range(5):
+    words=[1,state,14,1000000000 if state in (1,4) else 0,0,0,int(state in (3,4)),0,3000000000,0,0,1]
+    decoded=m.decode_charge_adopt(struct.pack('<12I',*words))
+    assert decoded['consistent'] and decoded['state']==state and decoded['deadline_seconds']==18000
+    if state==1:assert decoded['elapsed_ns']==2000000000
+assert not m.decode_charge_adopt(struct.pack('<12I',1,0,0,0,0,0,0,0,0,0,0,0))['consistent']
+for slot,value in ((0,2),(1,5),(2,16),(6,0),(10,1),(11,2)):
+    words=[1,4,14,1000000000,0,0,1,0,3000000000,0,0,1];words[slot]=value
+    try:m.decode_charge_adopt(struct.pack('<12I',*words))
+    except ValueError:pass
+    else:raise AssertionError('Invalid charge adoption accepted: '+str(slot))
 class Symbols:
-    values={'_i9100_charge_diag':0x1000,'_i9100_setup_dev_finish_diag':0x3000}
+    values={'_i9100_charge_diag':0x1000,'_i9100_setup_dev_finish_diag':0x3000,'_i9100_charge_adopt_diag':0x4000}
     def __getitem__(self,name):return self.values[name]
 class Kernel:
     def __init__(self,setup_version):self.calls=[];self.setup_version=setup_version;self.header_reads=0
@@ -31,6 +42,8 @@ class Kernel:
             return struct.pack('<12I',self.setup_version,2,88,0x19000,88,0,0,0,0,0,0x1b76c,0x1af84)
         if address==0x3030 and size==16 and self.setup_version==2:
             return struct.pack('<4I',0x98000,132,0x79068,0x78430)
+        if address==0x4000 and size==48:
+            return struct.pack('<12I',1,1,14,1000000000,0,0,0,0,3000000000,0,0,1)
         raise AssertionError((address,size))
 for setup_version in (1,2):
     target=out/f'setup-v{setup_version}';target.mkdir();kernel=Kernel(setup_version)
@@ -40,7 +53,9 @@ for setup_version in (1,2):
     assert result['producer_advanced_after_snapshot'] and not result['net_charging_verified']
     assert ((0x3030,16) in kernel.calls)==(setup_version==2)
     assert result['setup_development_finish']['version']==setup_version
+    assert result['charger_deadline_adoption']['consistent'] and result['charger_deadline_adoption']['state']==1
+    assert result['charger_deadline_adoption']['elapsed_ns']==2000000000 and (target/'charge-adopt.bin').is_file()
     if setup_version==2:assert result['setup_development_finish']['code_bytes']==132
 (out/'result.json').write_text(json.dumps(dict(result='PASS',cases=2,fixture=str(fixture),
-    evidence='Real charger snapshot, separate optional addresses, v1/v2 decoding and later producer advancement'),indent=2)+'\n')
+    evidence='Real charger snapshot, separate optional addresses, v1/v2 decoding, inherited deadline publication and later producer advancement'),indent=2)+'\n')
 print('PASS real charger fixture; v1/v2 setup address isolation; final charger header and producer advancement')

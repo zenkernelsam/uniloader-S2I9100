@@ -24,6 +24,25 @@ CLIENT_FIELDS=('sequence','time_lo','time_hi','requested_state','hardware_result
 IDLE_FIELDS=('version','sequence','irq','waits','mct_low','mct_high','wait_low','wait_high','last','maximum',
     'frequency','map_ready')
 
+def decode_charge_adopt(raw):
+    if len(raw)!=48:raise ValueError('Charge deadline adoption size differs')
+    words=struct.unpack('<12I',raw)
+    if words[0]!=1 or words[1]>4 or any(words[n]>1 for n in (5,6,7,10,11)):
+        raise ValueError('Unknown charge deadline adoption schema')
+    value=dict(zip(('version','state','revision','start_low','start_high','full',
+        'timeout','recharging','time_low','time_high','enabled_after_init','published'),words))
+    value['consistent']=bool(words[11])
+    value['limit']='Initial Power-owner deadline adoption; current charging and energy balance still require fresh measurements'
+    if not value['consistent']:return value
+    start=(words[4]<<32)|words[3];now=(words[9]<<32)|words[8]
+    if words[2]>15 or words[10] or not now or (start and start>now):
+        raise ValueError('Malformed initial charge deadline state')
+    if words[1] in (3,4) and not words[6]:raise ValueError('Rejected/expired handoff did not retain timeout stop')
+    if words[1]==1 and not words[5] and not start:raise ValueError('Inherited charging deadline is absent')
+    value.update(charge_start_ns=start,observed_ns=now,deadline_seconds=5400 if words[7] else 18000)
+    if start:value['elapsed_ns']=now-start
+    return value
+
 def decode_idle_paired(raw,header_after=None):
     if len(raw)!=48:raise ValueError('Paired WFI size differs')
     words=struct.unpack('<12I',raw)
@@ -213,6 +232,10 @@ def capture(kernel,symbols,out):
     if observed is not None:
         result['charger_handoff']=observed
         result['charger_takeover_observation']=handoff.first_kernel_sample(observed,result['samples'])
+    if '_i9100_charge_adopt_diag' in symbols.values:
+        adopted=kernel.read(symbols['_i9100_charge_adopt_diag'],48)
+        (out/'charge-adopt.bin').write_bytes(adopted)
+        result['charger_deadline_adoption']=decode_charge_adopt(adopted)
     if '_i9100_setup_dev_finish_diag' in symbols.values:
         finish_address=symbols['_i9100_setup_dev_finish_diag']
         words=struct.unpack('<12I',kernel.read(finish_address,48))
