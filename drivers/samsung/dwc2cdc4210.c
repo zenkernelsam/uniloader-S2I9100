@@ -359,7 +359,8 @@ static void dev_soft_init(void)
 	DPTXFSIZ(1) = (EP1TX_WORDS << 16) | EP1TX_OFF;
 
 	for (i = 0; i < 4; i++)
-		DOEPCTL(i) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
+        if(!charge_identity || i==0)
+		    DOEPCTL(i) |= DXEPCTL_EPENA | DXEPCTL_CNAK;
 	DCFG &= ~0x7f0u;			/* DEVADDR=0 */
 
 	/* S-Boot 0x4d41b228: clear ep ints, EP0-IN CNAK, EP0-OUT armed */
@@ -702,7 +703,9 @@ void usbcdc_poll(void)
 			unsigned int i;
 			uint32_t w;
 			for (i = 0; i < bc; i += 4){
-				w = FIFO_RD(ep);	/* baseline loader receive path */
+                /* Slave-mode RX payloads share DFIFO0. Preserve the old
+                 * non-charger path; the new charger OUT channel uses RX0. */
+				w = FIFO_RD(charge_identity && ep==1?0:ep);
                 if(ep==1 && charge_identity && host_open)for(unsigned n=0;n<4 && i+n<bc;n++){
                     if(i9100_chg_parse(&charge_control,(char)(w>>(n*8)),I9100_CONTROL_TAG)){
                         char line[48];i9100_chg_reply(line,charge_control.last,charge_control.action);

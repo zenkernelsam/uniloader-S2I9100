@@ -183,6 +183,10 @@ def main():
         raise RuntimeError('Kernel lacks the explicit native Setup background preference')
     if args.ui_density and b'i9100uidensity'+bytes([0]) not in raw_data:
         raise RuntimeError('Kernel lacks the explicit native density capability')
+    if args.ui_canvas and b'i9100uicanvas'+bytes([0]) not in raw_data:
+        raise RuntimeError('Kernel lacks the explicit integer render canvas capability')
+    if args.ui_density_metrics and b'i9100uidensitymetrics'+bytes([0]) not in raw_data:
+        raise RuntimeError('Kernel lacks the experimental metric-publication capability')
     if args.system_sounds_unavailable and b'i9100nosound\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit system-sound unavailability capability')
     if args.reboot_download_fallback and b'i9100rebootdownload\0' not in raw_data:

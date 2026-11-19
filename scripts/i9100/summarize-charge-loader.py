@@ -72,6 +72,13 @@ def summarize(path, allow_partial=False):
         if match.end() == len(raw) or raw[match.end()] != 10:
             continue
         row = {key: int(value) for key, value in match.groupdict().items()}
+        # Historical loader writes signed int fields as unsigned decimal.
+        # Preserve that wire value and normalize only the int32 fields.
+        for key in ('reason','temperature_deci_c'):
+            value=row[key]
+            if not -(1<<31)<=value<=0xffffffff:raise ValueError('Charger int32 field outside wire range')
+            row[key+'_wire']=value
+            if value>=1<<31:row[key]=value-(1<<32)
         row['end_offset'] = match.end() + 1
         while cursor < len(receipts) and receipts[cursor]['total'] < row['end_offset']:
             cursor += 1
@@ -85,6 +92,10 @@ def summarize(path, allow_partial=False):
     ranges = {key: {'minimum': min(row[key] for row in valid),
                     'maximum': max(row[key] for row in valid)}
               for key in ('soc', 'millivolts', 'temperature_deci_c')} if valid else {}
+    transitions=[]
+    for n,row in enumerate(valid):
+        if n and (row['reason'],row['charging'])!=(valid[n-1]['reason'],valid[n-1]['charging']):
+            transitions.append(dict(index=n,before=valid[n-1],after=row))
     return {
         'capture': str(path), 'complete': complete, 'closed': closed,
         'partial_event_record': partial_event,
@@ -93,6 +104,7 @@ def summarize(path, allow_partial=False):
         'events_sha256': hashlib.sha256(events_raw).hexdigest(),
         'host_opened_at': begin, 'host_completed_at': end, 'host_capture_seconds': seconds,
         'sample_count': len(samples), 'valid_sample_count': len(valid),
+        'state_transitions': transitions,
         'invalid_sample_count': len(samples) - len(valid),
         'reasons': dict(Counter(str(row['reason']) for row in samples)),
         'charging_sample_count': sum(bool(row['charging']) for row in valid),

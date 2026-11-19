@@ -24,7 +24,7 @@ static uint32_t receive_fifo[32];static unsigned fifo_index;
 #define CMU_GATE_IP_FSYS clockgate
 #define FIFO_RD(n) rxpop(n)
 #define I9100_CONTROL_TAG "1234567890abcdef"
-static uint32_t rxpop(unsigned ep){assert(ep==1 && fifo_index<32);return receive_fifo[fifo_index++];}
+static uint32_t rxpop(unsigned ep){assert(ep==0 && fifo_index<32);return receive_fifo[fifo_index++];}
 void printk(int level,const char*fmt,...){(void)level;(void)fmt;}
 #include "driver.c"
 void console_register(const struct console*c){(void)c;}
