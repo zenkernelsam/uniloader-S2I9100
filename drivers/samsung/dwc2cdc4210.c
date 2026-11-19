@@ -25,6 +25,13 @@
 #include <string.h>
 #include <lib/debug.h>
 #include <lib/console.h>
+#include "../../board/samsung/i9100-charge-control.h"
+#ifndef I9100_CONTROL_TAG
+#define I9100_CONTROL_TAG "0000000000000000"
+#endif
+static struct i9100_charge_control charge_control;
+static unsigned charge_action_ready,tx_written_total,tx_drained_total,tx_completed_total,ep1_transfer_total;
+static void ring_push(const char *s);
 
 /* Base addresses are overridable so the same logic can run under a
  * host-side register simulator (tools/usbcdc_sim.c) — the EP0 state
@@ -268,6 +275,13 @@ static uint8_t setup_pkt[8];
 #define TXRING 16384
 static char txring[TXRING];
 static volatile unsigned int tx_head, tx_tail;
+static void charge_out_rearm(void)
+{
+ if(!charge_identity || !configured)return;
+ if(DOEPCTL(1)&DXEPCTL_EPENA)return;
+ DOEPTSIZ(1)=(1U<<19)|bulk_mps;
+ DOEPCTL(1)=(DOEPCTL(1)&~(DXEPCTL_EPDIS|DXEPCTL_SNAK|DXEPCTL_STALL))|DXEPCTL_EPENA|DXEPCTL_CNAK;
+}
 
 /* ---------------- helpers ---------------- */
 
@@ -367,6 +381,9 @@ static void dev_soft_init(void)
 	ep0_plen = 0;
 	ep1_busy = 0;
 	ep1_dbg = ep1_intdbg = ep1_compldbg = 0;
+
+ memset(&charge_control,0,sizeof(charge_control));charge_action_ready=0;
+ tx_written_total=(tx_head-tx_tail)&(TXRING-1U);tx_drained_total=tx_completed_total=ep1_transfer_total=0;
 	ep1_lastint = 0;
 	configured = 0;
 	host_open = 0;
@@ -519,8 +536,9 @@ static void ep0_setup(void)
 		       DIEPCTL(1), DPTXFSIZ(1), DTXFSTS(1));
 		DIEPCTL(2) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(3) |
 			DXEPCTL_MPS(8) | DXEPCTL_SNAK;
-		DOEPCTL(1) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(2) |
-			DXEPCTL_MPS(bulk_mps) | DXEPCTL_EPENA | DXEPCTL_CNAK;
+		DOEPCTL(1) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(2) | DXEPCTL_MPS(bulk_mps);
+		if(charge_identity)DOEPTSIZ(1)=(1U<<19)|bulk_mps;
+		DOEPCTL(1)|=DXEPCTL_EPENA|DXEPCTL_CNAK;
 		configured = 1;
 		ep0_status_in();
 		goto tail;
@@ -538,6 +556,8 @@ static void ep0_setup(void)
 	}
 	if (rt == 0x21 && rq == 0x22) {		/* SET_CONTROL_LINE_STATE */
 		host_open = 1;
+
+        if(charge_identity){char line[48];i9100_chg_ready(line,I9100_CONTROL_TAG);ring_push(line);}
 		ep0_status_in();
 		goto tail;
 	}
@@ -565,6 +585,7 @@ static void ring_push(const char *s)
 			break;			/* full: drop */
 		txring[tx_head] = *s++;
 		tx_head = next;
+        tx_written_total++;
 	}
 }
 
@@ -596,7 +617,10 @@ static void ep1_kick(void)
 	for (unsigned int i = 0; i < n; i++) {
 		pkt[i] = txring[tx_tail];
 		tx_tail = (tx_tail + 1) & (TXRING - 1);
+        tx_drained_total++;
 	}
+
+ ep1_transfer_total=tx_drained_total;
 
 	/* s3c-hsotg sets MC(1) for every non-control IN endpoint. */
 	DIEPTSIZ(1) = (1 << 19) | n | 0x20000000;
@@ -677,8 +701,17 @@ void usbcdc_poll(void)
 		} else if (ps == PKTSTS_OUTRX) {	/* 2: OUT data */
 			unsigned int i;
 			uint32_t w;
-			for (i = 0; i < bc; i += 4)
+			for (i = 0; i < bc; i += 4){
 				w = FIFO_RD(ep);	/* baseline loader receive path */
+                if(ep==1 && charge_identity && host_open)for(unsigned n=0;n<4 && i+n<bc;n++){
+                    if(i9100_chg_parse(&charge_control,(char)(w>>(n*8)),I9100_CONTROL_TAG)){
+                        char line[48];i9100_chg_reply(line,charge_control.last,charge_control.action);
+                        unsigned length=strlen(line),space=(tx_tail-tx_head-1U)&(TXRING-1U);
+                        if(space<length){charge_control.action=0;charge_action_ready=0;}
+                        else{ring_push(line);charge_control.reply_target=tx_written_total;}
+                    }
+                }
+            }
 			(void)w;
 			if (ep == 0 && ep0_req == REQ_OUT) {
 				/* SET_LINE_CODING payload arrived;
@@ -720,6 +753,10 @@ void usbcdc_poll(void)
 			ep1_lastint = ei;
 			if (ei & DXEPINT_XFERCOMPL) {
 				ep1_busy = 0;
+                tx_completed_total=ep1_transfer_total;
+                if(charge_identity && charge_control.action &&
+                   tx_completed_total-charge_control.reply_target<0x80000000U)
+                    charge_action_ready=1;
 				if (ep1_compldbg < 8) {
 					printk(KERN_INFO, "ep1 done int=%08x tsiz=%08x\n",
 					       ei, size);
@@ -728,6 +765,9 @@ void usbcdc_poll(void)
 			}
 			if (ei & DXEPINT_AHBERR)
 				ep1_busy = 0;
+            if(charge_identity && (ei&(DXEPINT_AHBERR|DXEPINT_TIMEOUT))){
+                charge_control.action=0;charge_action_ready=0;
+            }
 		}
 		if (d & 4) {
 			uint32_t ei = DIEPINT(2);
@@ -746,11 +786,17 @@ void usbcdc_poll(void)
 		if (d & 2) {
 			uint32_t oi = DOEPINT(1);
 			DOEPINT(1) = oi;
+            if(oi&DXEPINT_XFERCOMPL)charge_out_rearm();
 		}
 	}
 drain:
 	ep1_kick();
 	in_poll = 0;
+}
+unsigned usbcdc4210_charge_take_action(void)
+{
+ if(!charge_identity || !charge_action_ready)return 0;
+ unsigned action=charge_control.action;charge_control.action=0;charge_action_ready=0;return action;
 }
 
 /* Keep the gadget alive until the host has actually opened the port.

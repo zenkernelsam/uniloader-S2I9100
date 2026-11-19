@@ -105,13 +105,20 @@ static void lpm_download(void)
  lpm_write(0x10020000U,0x808,0x12345678U);lpm_write(0x10020000U,0x80c,0x12345671U);
  lpm_write(0x10020000U,0x400,1);for(;;)LPM_WAIT();
 }
-static int lpm_screen_bind(struct i9100_charge_screen *screen)
+static int lpm_screen_bind(struct i9100_charge_screen *screen,unsigned *window)
 {
- unsigned con=lpm_read(0x11c00000U,0x20),mode=(con>>2)&15U;
- unsigned base=lpm_read(0x11c00000U,0xa0),pitch=lpm_read(0x11c00000U,0x100);
- unsigned xy=lpm_read(0x11c00000U,0x44),end=lpm_read(0x11c00000U,0xd0);
- (void)mode;
- return i9100_charge_bind(screen,con,base,pitch,xy,end) && i9100_charge_screen_valid(screen);
+ /* S-Boot 4d4209f8 programs window2/ARGB8888; XNU uses window0/RGB888.
+  * Only the original full-screen sole enabled layer is eligible. */
+ unsigned selected=5;
+ for(unsigned n=0;n<5;n++)if(lpm_read(0x11c00000U,0x20+n*4)&1U){
+  if(selected!=5)return 0;selected=n;
+ }
+ if(selected!=0 && selected!=2)return 0;
+ unsigned con=lpm_read(0x11c00000U,0x20+selected*4);
+ unsigned base=lpm_read(0x11c00000U,0xa0+selected*8),pitch=lpm_read(0x11c00000U,0x100+selected*4);
+ unsigned xy=lpm_read(0x11c00000U,0x44+selected*16),end=lpm_read(0x11c00000U,0xd0+selected*8);
+ if(!i9100_charge_bind(screen,con,base,pitch,xy,end) || !i9100_charge_screen_valid(screen))return 0;
+ *window=selected;return 1;
 }
 void i9100_standalone_charge_gate(void)
 {
@@ -131,12 +138,15 @@ void i9100_standalone_charge_gate(void)
  extern void usbcdc4210_charge_identity(int);
  extern void usbcdc4210_charge_report(unsigned,unsigned,unsigned,int,unsigned,int);
  extern void usbcdc4210_charge_screen_report(unsigned,unsigned,unsigned,unsigned);
+ extern unsigned usbcdc4210_charge_take_action(void);
  usbcdc4210_charge_identity(1);usbcdc4210_init();
 #endif
  uint64_t next=0,pressed=0,show_until=lpm_ticks()+720000000U;unsigned polls=0;
- unsigned saved_map=lpm_read(0x11c00000U,0x180),blanked=0;
- struct i9100_charge_screen screen={0};unsigned screen_ok=lpm_screen_bind(&screen),animation=0,drawn=0;
- uint64_t next_draw=0;
+ unsigned window=0,blanked=0;
+ struct i9100_charge_screen screen={0};unsigned screen_ok=lpm_screen_bind(&screen,&window),animation=0,drawn=0;
+ if(!screen_ok && (lpm_read(0x11c00000U,0x28)&1U))window=2;
+ unsigned winmap=0x180+window*4,saved_map=lpm_read(0x11c00000U,winmap);
+ uint64_t next_draw=0,remote_deadline=0;unsigned remote_action=0;
  for(;;){
   uint64_t now=lpm_ticks();
   if(now>=next){i9100_power_poll(&i9100_lpm_battery);next=now+24000000U;
@@ -153,7 +163,7 @@ void i9100_standalone_charge_gate(void)
   if(!(keys&1U) && !(home&(1U<<5)))lpm_download();
   if(!(keys&(1U<<7))){if(!pressed)pressed=now;
    show_until=now+720000000U;
-   if(blanked){lpm_write(0x11c00000U,0x180,saved_map);blanked=0;}
+   if(blanked){lpm_write(0x11c00000U,winmap,saved_map);blanked=0;}
    if(now-pressed>=48000000U && i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500)break;
   }else pressed=0;
   if(screen_ok && !blanked && now>=next_draw){
@@ -165,7 +175,7 @@ void i9100_standalone_charge_gate(void)
    next_draw=now+24000000U; /* At most 1Hz and no framebuffer work while blanked. */
   }
   if(!blanked && now>=show_until){
-   lpm_write(0x11c00000U,0x180,(saved_map&~0x01ffffffU)|0x01000000U);blanked=1;
+   lpm_write(0x11c00000U,winmap,(saved_map&~0x01ffffffU)|0x01000000U);blanked=1;
   }
   if(i9100_lpm_battery.valid && !i9100_lpm_battery.connected){
    i9100_power_stop(&i9100_lpm_battery);
@@ -173,10 +183,17 @@ void i9100_standalone_charge_gate(void)
   }
 #if defined(CONFIG_EXYNOS_CDCACM4210)
   usbcdc_poll();
+  unsigned received_action=usbcdc4210_charge_take_action();
+  if(received_action && !remote_action){remote_action=received_action;remote_deadline=now+12000000U;}
+  if(remote_action && now>=remote_deadline){
+   if(remote_action==2)lpm_download();
+   if(remote_action==1 && i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500)break;
+   remote_action=0;
+  }
 #endif
   lpm_sleep_tick();
  }
- if(blanked)lpm_write(0x11c00000U,0x180,saved_map);
+ if(blanked)lpm_write(0x11c00000U,winmap,saved_map);
  i9100_power_stop(&i9100_lpm_battery);
  lpm_write(0x10020000U,0x808,0x12345678U);
  lpm_write(0x10020000U,0x80c,0x12345670U);

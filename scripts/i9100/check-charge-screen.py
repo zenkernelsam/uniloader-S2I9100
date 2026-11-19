@@ -20,6 +20,8 @@ code=r'''
 #include "i9100-charge-screen.h"
 int main(int argc,char**argv){assert(argc==2);
  struct i9100_charge_screen bound={0};
+ assert(i9100_charge_bind(&bound,0x8035,0x5ec00000,1920,(479U<<11)|799U,0x5ed77000));
+ assert(!i9100_charge_bind(&bound,0x8035,0x5ed00000,1920,(479U<<11)|799U,0x5ee77000));
  for(unsigned mode=5;mode<=11;mode+=6){unsigned stride=mode==5?960:1920;
   assert(i9100_charge_bind(&bound,(mode<<2)|1,0x43e00000,stride,(479U<<11)|799U,0x43e00000+stride*800));
   assert(!i9100_charge_bind(&bound,mode<<2,0x43e00000,stride,(479U<<11)|799U,0x43e00000+stride*800));
@@ -45,7 +47,7 @@ int main(int argc,char**argv){assert(argc==2);
 }
 '''
 (out/'check.c').write_text(code)
-for n,cmd in enumerate((['clang','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-fno-sanitize-recover=all',
+for n,cmd in enumerate((['clang','-O1','-g','-fno-pie','-no-pie','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-fno-sanitize-recover=all',
     '-I'+str(repo/'board/samsung'),str(out/'check.c'),'-o',str(out/'check')],[str(out/'check'),str(out)])):
     r=subprocess.run(cmd,text=True,capture_output=True);(out/f'command-{n}.log').write_text(r.stdout+r.stderr)
     if r.returncode:print(r.stderr[-3000:],file=sys.stderr);r.check_returncode()

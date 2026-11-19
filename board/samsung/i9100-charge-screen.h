@@ -8,10 +8,11 @@ static int i9100_charge_bind(struct i9100_charge_screen*s,unsigned con,unsigned 
  unsigned pitch,unsigned xy,unsigned end)
 {
  unsigned mode=(con>>2)&15U;
- if(!s || !(con&1U) || (mode!=5U && mode!=11U) || (pitch&(8191U<<13)))return 0;
+ if(!s || !(con&1U) || (mode!=5U && mode!=11U && mode!=13U) || (pitch&(8191U<<13)))return 0;
  s->bpp=mode==5?16U:32U;s->stride=pitch&8191U;s->bytes=s->stride*800U;s->pixels=(void*)(uintptr_t)base;
- return xy==((479U<<11)|799U) && s->stride==480U*(s->bpp/8) &&
-  base>=0x41000000U && (uint64_t)base+s->bytes<=0x47000000ULL && end>=base+s->bytes &&
+ unsigned owned=(base>=0x41000000U && (uint64_t)base+s->bytes<=0x47000000ULL) ||
+  (base==0x5ec00000U && s->bpp==32 && s->bytes==1536000U); /* S-Boot 4d4df774 descriptor. */
+ return xy==((479U<<11)|799U) && s->stride==480U*(s->bpp/8) && owned && end>=base+s->bytes &&
   base+s->bytes>=base && !(base&((s->bpp/8)-1U));
 }
 static int i9100_charge_screen_valid(const struct i9100_charge_screen*s)
@@ -23,7 +24,7 @@ static void i9100_charge_pixel(const struct i9100_charge_screen*s,unsigned x,uns
 {
  if(x>=480 || y>=800)return;
  unsigned index=y*s->stride+x*(s->bpp/8);
- if(s->bpp==32)*(volatile uint32_t*)((uint8_t*)s->pixels+index)=color;
+ if(s->bpp==32)*(volatile uint32_t*)((uint8_t*)s->pixels+index)=color|0xff000000U;
  else *(volatile uint16_t*)((uint8_t*)s->pixels+index)=
   (uint16_t)(((color>>8)&0xf800U)|((color>>5)&0x07e0U)|((color>>3)&0x001fU));
 }

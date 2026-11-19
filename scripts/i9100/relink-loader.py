@@ -224,6 +224,8 @@ def main():
                 command.append('-DI9100_PANIC_TEST_BUILD=1')
         if source_name == 'board/samsung/board-i9100.c' and args.standalone_charge:
             command.append('-DI9100_STANDALONE_CHARGE_BUILD=1')
+        if source_name == 'drivers/samsung/dwc2cdc4210.c' and args.control and args.standalone_charge:
+            command.append('-DI9100_CONTROL_TAG="'+args.control_tag+'"')
         if source_name == 'arch/arm/start.S' and args.kernel_blob:
             command.append('-DI9100_KERNEL_BLOB="' + str(blob) + '"')
         if source_name == 'arch/arm/start.S' and args.dtb_blob:
