@@ -165,6 +165,7 @@ void i9100_standalone_charge_gate(void)
  extern void usbcdc4210_charge_screen_report(unsigned,unsigned,unsigned,unsigned);
  extern void usbcdc4210_charge_fimd_report(const unsigned[8]);
  extern unsigned usbcdc4210_charge_take_action(void);
+ extern unsigned usbcdc4210_charge_release_action(unsigned);
  extern void usbcdc4210_charge_set_boot_ready(unsigned);
  usbcdc4210_charge_identity(1);usbcdc4210_init();
 #endif
@@ -269,6 +270,10 @@ void i9100_standalone_charge_gate(void)
 #if defined(CONFIG_EXYNOS_CDCACM4210)
   usbcdc_poll();
   unsigned received_action=usbcdc4210_charge_take_action();
+  /* Drawing, panel transitions and USB polling may have consumed time.
+   * The grace period starts after the completed ACK is actually leased,
+   * never from the older timestamp taken before those operations. */
+  now=lpm_ticks();
   if(received_action && !remote_action){remote_action=received_action;remote_deadline=now+12000000U;}
   if(remote_action && now>=remote_deadline){
    if(remote_action==2)lpm_download();
@@ -279,6 +284,7 @@ void i9100_standalone_charge_gate(void)
     break;
 #endif
    }
+   (void)usbcdc4210_charge_release_action(remote_action);
    remote_action=0;
   }
 #endif

@@ -32,7 +32,7 @@ code=r'''
 #define LPM_BARRIER() do{}while(0)
 static struct i9100_power_state i9100_lpm_battery;
 static unsigned i9100_boot_source,scenario,draws,late_draws,blanked,last_unblank,remote_issued,stops,reports,usb_calls;
-static uint64_t ticks,last_draw_ticks,reset_ticks;static uint32_t fb[480*800];static jmp_buf escaped;
+static uint64_t ticks,last_draw_ticks,reset_ticks,action_taken_ticks;static uint32_t fb[480*800];static jmp_buf escaped;
 static unsigned pmu2,pmu3,wait_ticks,panel_mode=0x9c,panel_scan=0x1003,panel_commands;
 static int lpm_boot_requested(const unsigned*p){return *p==1;}
 static int lpm_timer_init(void){return 1;}
@@ -95,7 +95,9 @@ void usbcdc4210_charge_timed_report(const struct i9100_charge_report *r){
 }
 void usbcdc4210_charge_screen_report(unsigned d,unsigned b,unsigned s,unsigned p){(void)d;(void)b;assert(s==1920 && p==32);}
 void usbcdc4210_charge_fimd_report(const unsigned p[8]){assert(p[1]==0x8035 && p[6]==(blanked?0x1000000:0));}
-void usbcdc_poll(void){usb_calls++;}
+void usbcdc_poll(void){usb_calls++;
+ if(scenario==10 && seconds()>=35 && !remote_issued)ticks+=7200000ULL;
+}
 void usbcdc4210_charge_set_boot_ready(unsigned available){
 #ifdef I9100_PANEL_SLEEP_BUILD
  assert(available==(scenario!=4 && !(scenario==6 && seconds()>=31 && seconds()<36) &&
@@ -105,9 +107,12 @@ void usbcdc4210_charge_set_boot_ready(unsigned available){
 #endif
 }
 unsigned usbcdc4210_charge_take_action(void){
- if(((scenario>=2 && scenario<=4) || scenario==8) && seconds()>=35 && !remote_issued){remote_issued=1;return scenario==3||scenario==8?2:1;}
+ if(((scenario>=2 && scenario<=4) || scenario==8 || scenario==10) && seconds()>=35 && !remote_issued){
+  remote_issued=1;action_taken_ticks=ticks;return scenario==3||scenario==8||scenario==10?2:1;
+ }
  return 0;
 }
+unsigned usbcdc4210_charge_release_action(unsigned action){assert(action==1);return 1;}
 static void lpm_download(void){reset_ticks=ticks;longjmp(escaped,2);}
 static int lpm_screen_bind(struct i9100_charge_screen*s,unsigned*w){s->pixels=fb;s->bytes=sizeof(fb);s->stride=1920;s->bpp=32;*w=2;return 1;}
 static int wrapped_draw(const struct i9100_charge_screen*s,unsigned valid,unsigned percent,unsigned connected,unsigned charging,int reason,unsigned full,unsigned frame){
@@ -147,16 +152,19 @@ void usbcdc4210_charge_panel_recovery_report(const unsigned values[4]){
 int main(void){
  for(scenario=1;scenario<=
 #ifdef I9100_PANEL_SLEEP_BUILD
- 9
+ 10
 #else
- 5
+ 10
 #endif
  ;scenario++){
+#ifndef I9100_PANEL_SLEEP_BUILD
+  if(scenario>=6 && scenario<=9)continue;
+#endif
   panel_mode=0x9c;panel_scan=0x1003;panel_commands=0;
-  ticks=draws=late_draws=blanked=last_unblank=remote_issued=stops=reports=usb_calls=pmu2=pmu3=wait_ticks=0;i9100_boot_source=1;
+  ticks=action_taken_ticks=draws=late_draws=blanked=last_unblank=remote_issued=stops=reports=usb_calls=pmu2=pmu3=wait_ticks=0;i9100_boot_source=1;
   unsigned result=setjmp(escaped);if(!result){i9100_standalone_charge_gate();result=1;}
   assert(late_draws==0 && draws>=30 && usb_calls>1000 && reports>=2);
-  if(scenario!=6 && scenario!=8)assert(panel_scan==0x1003 || scenario>=3 && scenario<=5);
+  if(scenario!=6 && scenario!=8 && scenario!=10)assert(panel_scan==0x1003 || scenario>=3 && scenario<=5);
   if(scenario==1){assert(result==1 && ticks>=37ULL*24000000 && last_unblank==35);assert(pmu2==0x12345678 && pmu3==0x12345670 && stops==1);}
   if(scenario==2){assert(result==1 && ticks>=35ULL*24000000+12000000ULL && pmu3==0x12345670 && stops==1);}
   if(scenario==3){assert(result==2 && reset_ticks>=35ULL*24000000+12000000ULL && !pmu3);}
@@ -166,6 +174,7 @@ int main(void){
   if(scenario==7){assert(result==1 && panel_commands==0 && last_unblank==35);}
   if(scenario==8){assert(result==2 && blanked && panel_commands==1);}
   if(scenario==9){assert(result==2 && blanked && panel_commands==1 && !stops);}
+  if(scenario==10){assert(result==2 && reset_ticks>=action_taken_ticks+12000000ULL);}
  }
  puts("PASS production standalone gate: window2 blank/unblank, 1Hz draw then no drawing asleep, long press/remote 500ms fence, low voltage refusal, panel-sleep retained scanout/fault/unknown fallbacks and unplug poweroff");
 }

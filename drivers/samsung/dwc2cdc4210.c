@@ -777,7 +777,7 @@ void usbcdc_poll(void)
                 (!charge_identity || (ep1_busy && !(ei&(DXEPINT_AHBERR|DXEPINT_TIMEOUT))))) {
 				ep1_busy = 0;
                 tx_completed_total=ep1_transfer_total;
-                if(charge_identity && charge_control.action &&
+                if(charge_identity && charge_control.action && !charge_control.leased &&
                    tx_completed_total-charge_control.reply_target<0x80000000U)
                     charge_action_ready=1;
 				if (ep1_compldbg < 8) {
@@ -820,8 +820,20 @@ drain:
 }
 unsigned usbcdc4210_charge_take_action(void)
 {
- if(!charge_identity || !charge_action_ready)return 0;
- unsigned action=charge_control.action;charge_control.action=0;charge_action_ready=0;return action;
+ if(!charge_identity || !charge_action_ready || charge_control.leased)return 0;
+ unsigned action=charge_control.action;
+ if(action!=1 && action!=2)return 0;
+ /* Hold the parser slot through the 500ms handoff. Closing the host or
+  * receiving another line must not abandon an already acknowledged action. */
+ charge_control.leased=1;charge_action_ready=0;return action;
+}
+unsigned usbcdc4210_charge_release_action(unsigned action)
+{
+ /* Only the sole charger main loop may cancel its own exact lease after
+  * a later boot condition fails. This is not a command retry. */
+ if(!charge_identity || !charge_control.leased || charge_control.action!=action)return 0;
+ charge_control.action=charge_control.leased=charge_control.reply_target=charge_action_ready=0;
+ return 1;
 }
 void usbcdc4210_charge_set_boot_ready(unsigned available)
 {

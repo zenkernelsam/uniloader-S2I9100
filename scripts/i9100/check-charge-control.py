@@ -41,10 +41,13 @@ static void setup(unsigned rt,unsigned rq,unsigned value){memset(setup_pkt,0,8);
 int main(void){
  reset();received("I9CHC2 00000001 1234567890abcdef fedcba0987654321 boot\n");assert(charge_control.action==1 && !usbcdc4210_charge_take_action());
  complete();assert(usbcdc4210_charge_take_action()==1 && !usbcdc4210_charge_take_action());
+ assert(charge_control.leased && !usbcdc4210_charge_release_action(2));
+ assert(usbcdc4210_charge_release_action(1) && !charge_control.action && !charge_control.leased);
  received("I9CHC2 00000001 1234567890abcdef fedcba0987654321 boot\n");assert(!charge_control.action);
  received("I9CHC2 00000002 1234567890abcdee fedcba0987654321 download\n");assert(!charge_control.action);
  received("I9CHC2 00000003 1234567890abcdef fedcba0987654321 flash\n");assert(!charge_control.action);
  received("I9CHC2 00000004 1234567890abcdef fedcba0987654321 download\n");assert(charge_control.action==2);complete();assert(usbcdc4210_charge_take_action()==2);
+ assert(usbcdc4210_charge_release_action(2));
  received("I9CHC2 00000005 1234567890abcdef fedcba0987654320 boot\n");assert(!charge_control.action);
  reset();char text[180];memset(text,'x',160);text[160]='\n';text[161]=0;
  for(unsigned n=0;n<161;n++)i9100_chg_parse(&charge_control,text[n],I9100_CONTROL_TAG,I9100_CHARGER_TAG);
@@ -88,6 +91,23 @@ int main(void){
  GINTSTS=GINTSTS_IEPINT;DAINT=2;DIEPINT(1)=DXEPINT_XFERCOMPL|DXEPINT_TIMEOUT;
  usbcdc_poll();assert(!charge_action_ready && !usbcdc4210_charge_take_action());
  reset();received("I9CHC1 00000011 1234567890abcdef boot\n");assert(!charge_control.action);
+ /* The 500ms main-loop handoff is still one action. A later nonce must
+  * not be ACKed and then silently dropped while that action is leased. */
+ reset();received("I9CHC2 00000012 1234567890abcdef fedcba0987654321 boot\n");complete();
+ assert(usbcdc4210_charge_take_action()==1);
+ received("I9CHC2 00000013 1234567890abcdef fedcba0987654321 download\n");
+ assert(charge_control.last==0x12 && charge_control.action==1 && !charge_action_ready);
+ setup(0x21,0x22,0);assert(charge_control.leased && charge_control.action==1);
+ dev_soft_init();assert(charge_control.leased && charge_control.action==1 && !usbcdc4210_charge_take_action());
+ assert(!usbcdc4210_charge_release_action(2) && usbcdc4210_charge_release_action(1));
+ assert(!charge_control.action && !charge_control.leased && charge_control.last==0x12);
+ setup(0,9,1);setup(0x21,0x22,1);
+ received("I9CHC2 00000012 1234567890abcdef fedcba0987654321 boot\n");assert(!charge_control.action);
+ received("I9CHC2 00000013 1234567890abcdef fedcba0987654321 download\n");
+ /* Reconnect queued a fresh READY ahead of this reply. Model every
+  * completed FIFO packet; one packet cannot complete both messages. */
+ for(unsigned n=0;n<8 && !charge_action_ready;n++)complete();
+ assert(usbcdc4210_charge_take_action()==2 && charge_control.leased);
  puts("PASS production charger source/kernel qualification, sized OUT, DTR/config/reset cancellation, committed ACK, boot refusal and no nonce replay");}
 '''
 (out/'driver.c').write_text((repo/'drivers/samsung/dwc2cdc4210.c').read_text().replace('#include "../../board/samsung/i9100-charge-control.h"','#include "i9100-charge-control.h"'))

@@ -4,14 +4,15 @@
 #include <string.h>
 /* Two fixed actions on the distinct charger identity. No memory/flash API,
  * arbitrary PMU writes or direct reset from the USB receive interrupt. */
-struct i9100_charge_control{char line[96];unsigned used,drop,last,action,reply_target;};
+struct i9100_charge_control{char line[96];unsigned used,drop,last,action,reply_target,leased;};
 static unsigned i9100_chg_hex(char c)
 {return c>='0'&&c<='9'?(unsigned)(c-'0'):c>='a'&&c<='f'?(unsigned)(c-'a'+10):16;}
 static void i9100_chg_cancel_incomplete(struct i9100_charge_control*s,unsigned committed)
 {
  s->used=s->drop=0;
- if(!committed){s->action=0;s->reply_target=0;}
- /* Last accepted nonce survives a close/reset during this loader boot. */
+ if(!committed && !s->leased){s->action=0;s->reply_target=0;}
+ /* Last accepted nonce survives a close/reset during this loader boot.
+  * A completed ACK already leased by the main loop stays committed too. */
 }
 static int i9100_chg_parse(struct i9100_charge_control*s,char c,const char*tag,const char*loader)
 {
