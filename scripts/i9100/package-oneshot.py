@@ -55,6 +55,7 @@ def main():
     parser.add_argument('--system-sounds-unavailable',action='store_true',help='Development: only SpringBoard system-sound status APIs return -1500 and playback is muted')
     parser.add_argument('--xpc-diag', action='store_true', help='Retain XPC boundary metadata in kernel RAM')
     parser.add_argument('--charge-diag', action='store_true', help='Read fixed charger/gauge registers on the existing Power workloop')
+    parser.add_argument('--panel-sleep',action='store_true',help='Qualify real LD9040 state before retained-gamma panel and scanout sleep')
     parser.add_argument('--charge-probe', action='store_true', help='One guarded 1-second charger-disable contrast on the Power owner')
     parser.add_argument('--standalone-charge', action='store_true', help='Keep the original charging picture and supervise U1 charging before XNU')
     parser.add_argument('--reboot-download-fallback', action='store_true',
@@ -113,6 +114,8 @@ def main():
         parser.error('--xpc-diag requires --control')
     if args.charge_diag and not args.control:
         parser.error('--charge-diag requires --control')
+    if args.panel_sleep and (not args.control or not args.charge_diag):
+        parser.error('--panel-sleep requires control and retained charge diagnostics')
     if args.charge_probe and not args.charge_diag:
         parser.error('--charge-probe requires --charge-diag')
     if args.standalone_charge and not args.control:
@@ -209,6 +212,8 @@ def main():
         raise RuntimeError('Kernel lacks the explicit AKS development state')
     if args.setup_dev_finish and b'i9100setupdevfinish\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit native Setup completion capability')
+    if args.panel_sleep and b'i9100panelsleep\0' not in raw_data:
+        raise RuntimeError('Kernel lacks the explicit panel sleep capability')
     blob = output/'Image.lz4'
     blob.write_bytes(lz4.block.compress(raw_data, store_size=False))
     assert lz4.block.decompress(blob.read_bytes(), uncompressed_size=len(raw_data)) == raw_data
@@ -252,6 +257,7 @@ def main():
         *(['--system-sounds-unavailable'] if args.system_sounds_unavailable else []),
         *(['--xpc-diag'] if args.xpc_diag else []),
         *(['--charge-diag'] if args.charge_diag else []),
+        *(['--panel-sleep'] if args.panel_sleep else []),
         *(['--charge-probe'] if args.charge_probe else []),
         *(['--standalone-charge'] if args.standalone_charge else []),
         *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
@@ -319,6 +325,7 @@ def main():
     assert (b'i9100uidensitymetrics=1' in data) == args.ui_density_metrics
     assert (b'i9100uicanvas=360' in data) == bool(args.ui_canvas)
     assert (b'i9100nosound=1' in data) == args.system_sounds_unavailable
+    assert (b'i9100panelsleep=1' in data) == args.panel_sleep
     assert 'S2I9100-OS6'.encode('utf-16le') in data
     symbols = subprocess.check_output(['arm-none-eabi-nm','-n',str(build/'uniLoader.o')],text=True)
     (output/'loader-symbols.txt').write_text(symbols)
@@ -370,6 +377,7 @@ def main():
         'system_sounds_unavailable': args.system_sounds_unavailable,
         'xpc_diag': args.xpc_diag,
         'charge_diag': args.charge_diag,
+        'panel_sleep': args.panel_sleep,
         'charge_probe': args.charge_probe,
         'standalone_charge': args.standalone_charge,
         'standalone_charge_control': args.standalone_charge and b'I9CHC2 READY ' in data,

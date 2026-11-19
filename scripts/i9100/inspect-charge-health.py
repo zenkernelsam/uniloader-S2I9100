@@ -73,6 +73,22 @@ def decode_vsync_power(raw,header_after=None):
     result['limit']='Whole physical display domain at the last power request; not measured refresh or electrical suspend'
     return result
 
+def decode_panel_sleep(raw,header_after=None):
+    if len(raw)!=64:raise ValueError('Panel sleep snapshot size differs')
+    words=struct.unpack('<16I',raw)
+    fields=('version','sequence','enabled','qualified','stage','error','cleanup_error','mode',
+        'commands','requests','saved_scanout','owned_scanout','id0','id1','id2','reserved')
+    if words[0]!=1 or words[2]>1 or words[3]>1 or words[4]>4 or words[7]>255 or any(words[n]>255 for n in (12,13,14)):
+        raise ValueError('Malformed panel sleep snapshot')
+    result=dict(zip(fields,words));result['consistent']=not words[1]&1
+    if header_after is not None:
+        if len(header_after)!=8:raise ValueError('Panel publication header size differs')
+        version,sequence=struct.unpack('<2I',header_after)
+        result.update(producer_version_after=version,producer_sequence_after=sequence)
+        result['consistent']=result['consistent'] and (version,sequence)==words[:2]
+    result['limit']='Actual panel-mode/scanout owner path; electrical power savings require separate measurements'
+    return result
+
 
 def decode_budget(raw,kind):
     if kind not in ('cpu','display_clients') or len(raw)!=4*(4+16*20):
@@ -241,6 +257,11 @@ def capture(kernel,symbols,out):
         (out/'display-vsync-power.bin').write_bytes(raw_vsync)
         (out/'display-vsync-power-after.bin').write_bytes(after_vsync)
         result['display_vsync_power']=decode_vsync_power(raw_vsync,after_vsync)
+    if '_i9100_panel_sleep_diag' in symbols.values:
+        address_panel=symbols['_i9100_panel_sleep_diag']
+        raw_panel=kernel.read(address_panel,64);after_panel=kernel.read(address_panel,8)
+        (out/'panel-sleep.bin').write_bytes(raw_panel);(out/'panel-sleep-after.bin').write_bytes(after_panel)
+        result['panel_sleep']=decode_panel_sleep(raw_panel,after_panel)
     for symbol,kind in (('_i9100_cpu_load_diag','cpu'),('_i9100_display_client_power_diag','display_clients')):
         if symbol in symbols.values:
             result[kind]=capture_budget(kernel,symbols[symbol],out,kind)

@@ -31,6 +31,7 @@ parser.add_argument('--ui-canvas',type=int,choices=(360,))
 parser.add_argument('--system-sounds-unavailable',action='store_true')
 parser.add_argument('--xpc-diag', action='store_true')
 parser.add_argument('--charge-diag', action='store_true')
+parser.add_argument('--panel-sleep',action='store_true')
 parser.add_argument('--charge-probe', action='store_true')
 parser.add_argument('--standalone-charge', action='store_true')
 parser.add_argument('--reboot-download-fallback', action='store_true')
@@ -83,6 +84,8 @@ if args.input_test and args.home_test:
     parser.error('Use requested input tests or the automatic Home test, not both')
 if args.panic_test and not args.panic_recovery:
     parser.error('--panic-test requires --panic-recovery')
+if args.panel_sleep and not args.charge_diag:
+    parser.error('--panel-sleep requires --charge-diag')
 xnu = repo.parent / 'xnu-S2I9100'
 label = 'control-' + datetime.now().strftime('%Y%m%d-%H%M%S')
 kernel = xnu / 'out/automation' / label
@@ -118,6 +121,7 @@ subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--ke
                 *(['--system-sounds-unavailable'] if args.system_sounds_unavailable else []),
                 *(['--xpc-diag'] if args.xpc_diag else []),
                 *(['--charge-diag'] if args.charge_diag else []),
+                *(['--panel-sleep'] if args.panel_sleep else []),
                 *(['--charge-probe'] if args.charge_probe else []),
                 *(['--standalone-charge'] if args.standalone_charge else []),
                 *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),

@@ -48,6 +48,7 @@ def main():
     parser.add_argument('--system-sounds-unavailable',action='store_true')
     parser.add_argument('--xpc-diag', action='store_true')
     parser.add_argument('--charge-diag', action='store_true')
+    parser.add_argument('--panel-sleep',action='store_true')
     parser.add_argument('--charge-probe', action='store_true')
     parser.add_argument('--standalone-charge', action='store_true')
     parser.add_argument('--reboot-download-fallback', action='store_true')
@@ -103,6 +104,8 @@ def main():
         parser.error('--xpc-diag requires --control')
     if args.charge_diag and not args.control:
         parser.error('--charge-diag requires --control')
+    if args.panel_sleep and (not args.control or not args.charge_diag):
+        parser.error('--panel-sleep requires control and retained charge diagnostics')
     if args.charge_probe and not args.charge_diag:
         parser.error('--charge-probe requires --charge-diag')
     if args.standalone_charge and not args.control:
@@ -212,6 +215,8 @@ def main():
                 command.append('-DI9100_XPC_DIAG_BUILD=1')
             if args.charge_diag:
                 command.append('-DI9100_CHARGE_DIAG_BUILD=1')
+            if args.panel_sleep:
+                command.append('-DI9100_PANEL_SLEEP_BUILD=1')
             if args.charge_probe:
                 command.append('-DI9100_CHARGE_PROBE_BUILD=1')
             if args.standalone_charge:
