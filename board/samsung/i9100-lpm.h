@@ -321,7 +321,10 @@ void i9100_standalone_charge_gate(void)
    }
 #endif
   }
+  /* Battery IO/report/USB may have taken time. The two-second Power hold
+   * starts at the observed key state, never at the loop's stale timestamp. */
   unsigned keys=lpm_read(0x11000000U,0xc44),home=lpm_read(0x11000000U,0xc64);
+  now=lpm_ticks();
   if(!(keys&1U) && !(home&(1U<<5)))lpm_download();
   if(!(keys&(1U<<7))){if(!pressed)pressed=now;
    show_until=now+720000000U;
@@ -330,6 +333,7 @@ void i9100_standalone_charge_gate(void)
     if(lpm_panel_awake(&panel)){
 #endif
      lpm_write(0x11c00000U,winmap,saved_map);blanked=0;
+     now=lpm_ticks();show_until=now+720000000U;
 #ifdef I9100_PANEL_SLEEP_BUILD
     }
 #endif
@@ -344,6 +348,7 @@ void i9100_standalone_charge_gate(void)
     start_gate.blocked_presses++;denied_press=1;
    }
   }else{pressed=0;denied_press=0;}
+  now=lpm_ticks();
   if(!blanked && now>=show_until){
    lpm_write(0x11c00000U,winmap,(saved_map&~0x01ffffffU)|0x01000000U);blanked=1;
 #ifdef I9100_PANEL_SLEEP_BUILD

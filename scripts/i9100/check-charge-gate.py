@@ -50,7 +50,8 @@ static unsigned i9100_lpm_boot_polls,i9100_lpm_boot_phase;
 static unsigned i9100_lpm_boot_fault,i9100_lpm_fault_phase;
 static uint64_t i9100_lpm_boot_next;
 static unsigned power_init_calls,failed_stop;
-static unsigned stop_sequence,last_boot_stage,fault_reports,boot_admission;
+static unsigned stop_sequence,last_boot_stage,fault_reports,boot_admission,slow_sample;
+static uint64_t first_key_seen,last_key_seen,unblank_ticks,last_blank_ticks;
 static unsigned i9100_boot_source,scenario,draws,late_draws,blanked,last_unblank,remote_issued,stops,reports,usb_calls;
 static uint64_t ticks,last_draw_ticks,reset_ticks,action_taken_ticks;static uint32_t fb[480*800];static jmp_buf escaped;
 static unsigned pmu2,pmu3,wait_ticks,panel_mode=0x9c,panel_scan=0x1003,panel_commands;
@@ -64,9 +65,14 @@ static unsigned seconds(void){return (unsigned)(ticks/24000000ULL);}
 static uint32_t lpm_read(unsigned base,unsigned off){
  if(base==0x10060000 && off==0)return 33;
  if(base==0x11000000 && off==0xc44){
+  if(scenario==17 && seconds()>=35 && seconds()<40){if(!first_key_seen)first_key_seen=ticks;return 0x7f;}
+  if((scenario==18 && ticks>=35ULL*24000000 && ticks<35ULL*24000000+16800000ULL) ||
+     (scenario==19 && ticks>=35ULL*24000000 && ticks<35ULL*24000000+1200000ULL)){
+   if(!first_key_seen)first_key_seen=ticks;last_key_seen=ticks;return 0x7f;
+  }
   if(scenario==12 && seconds()>=66 && seconds()<70)return 0x7f;
-  if(scenario>=11 && seconds()>=54 && seconds()<57)return 0x7f;
-  if(scenario>=11 && seconds()>=35 && seconds()<38)return 0x7f;
+  if(scenario>=11 && scenario<=16 && seconds()>=54 && seconds()<57)return 0x7f;
+  if(scenario>=11 && scenario<=16 && seconds()>=35 && seconds()<38)return 0x7f;
   if((scenario==1 || scenario==6 || scenario==7 || scenario==9) && seconds()>=35 && seconds()<38)return 0x7f;
   return 0xff;
  }
@@ -87,7 +93,9 @@ static uint32_t lpm_read(unsigned base,unsigned off){
 static void lpm_write(unsigned base,unsigned off,uint32_t value){
  if(base==0x11c00000){
   if(off==0x1a4){assert(value==3);return;}
-  assert(off==0x188);blanked=value&0x1000000; if(!blanked)last_unblank=seconds();return;
+  assert(off==0x188);blanked=value&0x1000000;
+  if(!blanked){last_unblank=seconds();unblank_ticks=ticks;}else last_blank_ticks=ticks;
+  return;
  }
  if(base==0x10060000){assert(off==0 && !(value&33));return;}
  if(base==0x10020000){
@@ -106,7 +114,9 @@ static uint64_t lpm_now(void*c){(void)c;return ticks*1000/24;}
 int i9100_power_init(struct i9100_power_state*s,const struct i9100_power_io*io,unsigned r){power_init_calls++;assert(r==14);memset(s,0,sizeof(*s));s->io=*io;s->ready=s->enabled=s->valid=s->present=s->connected=s->charging=1;s->millivolts=scenario==4?3400:4000;s->percent=50;s->temperature_deci_c=250;s->charge_start=12345;return 0;}
 int i9100_power_poll(struct i9100_power_state*s){assert(s->io.cookie==&i9100_lpm_hw);
  if(scenario>=11)ticks+=2400U; /* Each real bus sample advances the MCT. */
- if((scenario==5 && seconds()>=35) || (scenario==16 && seconds()>=62))s->connected=0;
+ if((scenario==17 || scenario==18) && seconds()>=35 && !slow_sample){ticks+=9600000U;slow_sample=1;}
+ if((scenario==5 && seconds()>=35) || (scenario==16 && seconds()>=62) ||
+    (scenario>=18 && seconds()>=68))s->connected=0;
  if(scenario==11){s->millivolts=seconds()>=40 && seconds()<44?3400:4000;}
  if(scenario==13 && seconds()>=40){s->timeout=1;s->reason=-5;s->enabled=s->charging=0;}
  else if(s->connected && !s->timeout)s->enabled=s->charging=1;
@@ -201,9 +211,9 @@ int main(void){
  alarm(20); /* A stuck offline model cannot hold a CPU indefinitely. */
  for(scenario=1;scenario<=
 #ifdef I9100_PANEL_SLEEP_BUILD
- 16
+ 19
 #else
- 16
+ 19
 #endif
  ;scenario++){
   fprintf(stderr,"SCENARIO %u begin\n",scenario);fflush(stderr);
@@ -215,18 +225,19 @@ int main(void){
   i9100_lpm_boot_active=i9100_lpm_boot_owned=i9100_lpm_resume_charge=i9100_lpm_boot_in_service=i9100_lpm_boot_polls=0;
   i9100_lpm_boot_fault=i9100_lpm_fault_phase=0;
   i9100_lpm_boot_next=0;
-  power_init_calls=failed_stop=stop_sequence=last_boot_stage=fault_reports=boot_admission=0;
+  power_init_calls=failed_stop=stop_sequence=last_boot_stage=fault_reports=boot_admission=slow_sample=0;
+  first_key_seen=last_key_seen=unblank_ticks=last_blank_ticks=0;
   i9100_boot_charge_failure(99);assert(!i9100_lpm_boot_fault && !power_init_calls); /* ordinary boot */
   unsigned result=setjmp(escaped);if(!result){
    i9100_standalone_charge_gate();result=1;
-   if(scenario>=11){
+   if(scenario>=11 && scenario<=16){
     ticks=40ULL*24000000;
     if(scenario>=14){i9100_lpm_boot_phase=5;i9100_boot_charge_failure(1);assert(0);}
     else i9100_boot_charge_finish();
    }
   }
   assert(late_draws==0 && draws>=30 && usb_calls>1000 && reports>=2);
-  if(scenario!=6 && scenario!=8 && scenario!=10)assert(panel_scan==0x1003 || scenario>=3 && scenario<=5);
+  if(scenario!=6 && scenario!=8 && scenario!=10 && scenario<18)assert(panel_scan==0x1003 || scenario>=3 && scenario<=5);
   if(scenario==1 || scenario==2 || scenario==6 || scenario==7){
    assert(i9100_lpm_boot_active && stops==0 && i9100_lpm_battery.enabled);
    assert(i9100_lpm_battery.io.cookie==&i9100_lpm_hw);
@@ -256,16 +267,30 @@ int main(void){
    assert(i9100_lpm_battery.timeout==1 && i9100_lpm_battery.charge_start==12345);
    assert(stops==0 && i9100_lpm_boot_phase==8 && !i9100_lpm_battery.enabled);
   }
-  if(scenario>=14){
+  if(scenario>=14 && scenario<=16){
    assert(power_init_calls==1 && i9100_lpm_boot_fault==1 && i9100_lpm_fault_phase==5);
    assert(i9100_lpm_boot_active && !boot_admission && fault_reports>=1 && i9100_lpm_battery.charge_start==12345);
    if(scenario==14)assert(result==4 && stops==0 && i9100_lpm_battery.enabled && last_boot_stage==9);
    if(scenario==15)assert(result==2 && stops==0 && reset_ticks>=action_taken_ticks+12000000ULL);
    if(scenario==16)assert(result==3 && stops==1 && !i9100_lpm_battery.enabled);
   }
+  if(scenario==17){
+   assert(result==1 && slow_sample && first_key_seen && i9100_lpm_boot_active);
+   assert(ticks-first_key_seen>=48000000ULL); /* Two actual seconds after key observation. */
+  }
+  if(scenario==18 || scenario==19){
+   assert(result==3 && first_key_seen && unblank_ticks && stops==1);
+   assert(last_blank_ticks>=unblank_ticks+720000000ULL && last_blank_ticks>=last_key_seen+720000000ULL);
+   assert(!pmu2 && !pmu3); /* A real short wake does not start the kernel. */
+#ifdef I9100_PANEL_SLEEP_BUILD
+   assert(panel_scan==0x1000); /* Unplugging after the later blank stays asleep. */
+#else
+   assert(panel_scan==0x1003);
+#endif
+  }
   fprintf(stderr,"SCENARIO %u done\n",scenario);fflush(stderr);
  }
- puts("PASS production charger startup/failure: persistent IO, final checked stop, low/failed-stop hold, timeout retention, failed-payload boot lock, live fault logs/download/unplug and ACK grace");
+ puts("PASS production charger startup/failure and Power timing: persistent IO, fresh two-second hold, thirty-second short wake, final checked stop, low/failed-stop hold, fault logs/download/unplug and ACK grace");
 }
 '''
 for variant in ('legacy','panel'):
