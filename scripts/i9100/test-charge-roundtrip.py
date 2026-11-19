@@ -36,13 +36,15 @@ def charger(path,scenario):
     if scenario=='no-blank':text=text.replace('01000000 00000001','00000000 00000000')
     if scenario=='wrong-tag':text=text.replace(tag,'aaaaaaaaaaaaaaaa')
     if scenario=='gap':text=text.replace('seq=00000004','seq=00000009')
+    if scenario=='wrong-format':text=text.replace('00008035','0000802d')
+    if scenario=='wrong-end':text=text.replace('5ed77000','5ee77000')
     raw=text.encode();(path/'received.bin').write_bytes(raw)
     write_events(path/'events.jsonl',[dict(phase='CHARGER_IDENTITY',device=dict(device,instance=m.o.CDC.replace('OS6','CHG'))),
         dict(phase='DTR_OK',time='2026-11-19T01:00:00+00:00'),
         dict(phase='CHARGER_RX',bytes=len(raw),total=len(raw),time='2026-11-19T01:02:00+00:00'),
         dict(phase='DONE',bytes=len(raw),time='2026-11-19T01:02:00+00:00'),dict(phase='CLOSED')])
 
-for scenario in ('success','no-draw','no-blank','wrong-tag','gap','shutdown-failure','boot-timeout'):
+for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format','wrong-end','shutdown-failure','boot-timeout'):
     directory=out/scenario;directory.mkdir();calls=[];records=[]
     class Host:
         def inventory(self):return [device]
@@ -66,7 +68,7 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','shutdown-fail
     except (ValueError,RuntimeError):assert scenario!='success'
     else:assert scenario=='success' and records[-1]['phase']=='DONE' and records[-1]['writes_to_flash']==0
     assert all('odin-loop.py' not in call and 'flash' not in call for call in calls)
-    if scenario in ('no-draw','no-blank','wrong-tag','gap'):assert len(calls)==2
+    if scenario in ('no-draw','no-blank','wrong-tag','gap','wrong-format','wrong-end'):assert len(calls)==2
     if scenario=='shutdown-failure':assert len(calls)==1
     if scenario=='boot-timeout':assert len(calls)==3
     if scenario=='success':assert len(calls)==4

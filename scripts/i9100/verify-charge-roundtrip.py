@@ -50,8 +50,8 @@ def qualify_charger(path,expected):
     values=[int(word,16) for word in ui[-1].split()]
     registers=[int(word,16) for word in fb[-1].split()]
     o.require(values==[1,0x5ec00000,1920,32], 'New charger did not draw into its expected original window')
-    o.require(registers[0]&1==0 and registers[1]&1==1 and registers[2]==0x5ec00000 and
-        registers[3]==1920 and registers[4]==((479<<11)|799) and registers[5]>=0x5ed77000 and
+    o.require(registers[0]&1==0 and registers[1]&1==1 and (registers[1]>>2)&15==13 and registers[2]==0x5ec00000 and
+        registers[3]==1920 and registers[4]==((479<<11)|799) and registers[5]==0x5ed77000 and
         registers[6]&0x01000000 and registers[7]==1,'Window2 geometry or real blank register did not qualify')
     o.require(timed[-1]['soc']>=5 and timed[-1]['millivolts']>=3500 and
         50<=timed[-1]['temperature_deci_c']<=400 and timed[-1]['reason'] in (0,-4) and
@@ -131,6 +131,15 @@ def main():
     for name in ('zImage','mach_kernel'):
         artifact=manifest['artifacts'][name];path=package/name
         o.require(path.stat().st_size==artifact['bytes'] and o.sha(path)==artifact['sha256'],'Reviewed package changed')
+    o.require(manifest['control_tag']==manifest['artifacts']['mach_kernel']['sha256'][:16],
+        'Manifest control identity differs from actual kernel')
+    identity=json.loads((package/'charger-identity.json').read_text())
+    identity_input={key:identity[key] for key in ('schema','kernel_sha256','sources','flags')}
+    import hashlib
+    o.require(identity_input['schema']==2 and identity_input['kernel_sha256']==manifest['artifacts']['mach_kernel']['sha256'] and
+        identity['tag']==manifest['standalone_charge_control_tag']==hashlib.sha256(
+            json.dumps(identity_input,sort_keys=True,separators=(',',':')).encode()).hexdigest()[:16],
+        'Charger source/profile identity differs before any device access')
     directory=o.confined(a.resume_evidence,o.REPO/'out');out=o.confined(a.output,o.REPO/'out')
     o.require(not out.exists(),'Fresh roundtrip evidence required');out.mkdir(parents=True)
     with (out/'events.jsonl').open('x',encoding='utf-8') as stream:
