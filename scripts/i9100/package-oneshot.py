@@ -378,6 +378,7 @@ def main():
         'xpc_diag': args.xpc_diag,
         'charge_diag': args.charge_diag,
         'panel_sleep': args.panel_sleep,
+        'standalone_panel_recovery': args.standalone_charge and args.panel_sleep and b'I9PR1 ' in data,
         'charge_probe': args.charge_probe,
         'standalone_charge': args.standalone_charge,
         'standalone_charge_control': args.standalone_charge and b'I9CHC2 READY ' in data,

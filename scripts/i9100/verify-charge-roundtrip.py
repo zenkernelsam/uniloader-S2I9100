@@ -34,7 +34,7 @@ def owner_complete(path,tag):
         not any(row['phase']=='STOP' for row in events),'Owner did not complete normally; no next opener')
     return events
 
-def qualify_charger(path,expected,require_panel_sleep=False):
+def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False):
     summary=s.summarize(path)
     raw=(path/'received.bin').read_bytes()
     o.require(re.search(rb'^I9CHC2 READY '+expected.encode()+rb'\r?$',raw,re.MULTILINE) is not None,
@@ -57,13 +57,13 @@ def qualify_charger(path,expected,require_panel_sleep=False):
         50<=timed[-1]['temperature_deci_c']<=400 and timed[-1]['reason'] in (0,-4) and
         not timed[-1]['timeout'],'Latest battery state does not qualify a boot contrast')
     panel_values=None
-    panel_identity=None
+    panel_identity=None;panel_recovery=None
     if require_panel_sleep:
         panels=re.findall(rb'^I9PL1 ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?$',raw,re.MULTILINE)
         o.require(panels,'Actual standalone panel sleep record missing')
         panel_values=[int(word,16) for word in panels[-1].split()]
         o.require(panel_values[0]==1 and panel_values[1]==3 and panel_values[2]==0 and
-            panel_values[3]&0x14==0 and panel_values[4]>=2 and
+            panel_values[3]!=0xff and panel_values[3]&0x14==0 and panel_values[4]>=2 and
             panel_values[5]&3==3 and panel_values[6]==panel_values[7]==panel_values[5]&~3,
             'Standalone panel did not qualify sleep and actual stopped scanout')
         identities=re.findall(rb'^I9PD1 ((?:[0-9a-f]{8} ){3}[0-9a-f]{8})\r?$',raw,re.MULTILINE)
@@ -71,7 +71,15 @@ def qualify_charger(path,expected,require_panel_sleep=False):
         panel_identity=[int(word,16) for word in identities[-1].split()]
         o.require(panel_identity[0]==0x3f and panel_identity[1] in (0xa1,0xa2) and panel_identity[2]==0x12 and
             panel_identity[3]!=0xff and panel_identity[3]<=255,'Panel identity failed complete stable read qualification')
-    return dict(summary=summary,ui=values,fimd=registers,panel_sleep=panel_values,panel_identity=panel_identity,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
+        if require_recovery:
+            recoveries=re.findall(rb'^I9PR1 ((?:[0-9a-f]{8} ){3}[0-9a-f]{8})\r?$',raw,re.MULTILINE)
+            o.require(recoveries,'Panel recovery record required by this actual package is missing')
+            panel_recovery=[int(word,16) for word in recoveries[-1].split()]
+            o.require(panel_recovery[0]<=1 and panel_recovery[1]<=2 and
+                (panel_recovery[0] or not panel_recovery[1]) and not panel_recovery[2] and
+                panel_recovery[3]==panel_values[1],'Panel recovery budget/result disagrees with its sleep state')
+    elif require_recovery:raise ValueError('Recovery qualification requires panel-sleep observations')
+    return dict(summary=summary,ui=values,fimd=registers,panel_sleep=panel_values,panel_identity=panel_identity,panel_recovery=panel_recovery,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
         limit='Draw/register/timed-log qualification; no physical image or keypress acceptance inferred')
 
 def wait_resumed(directory,seconds,record,clock=time.monotonic,sleep=time.sleep):
@@ -116,7 +124,8 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
     record('SHUTDOWN_COMPLETE')
     child([sys.executable,'-B',HERE/'capture-charge-loader.py','--output',out/'charger-evidence',
         '--seconds','120','--wait','180'],out/'charger-process',420,record)
-    evidence=qualify_charger(out/'charger-evidence',tag+' '+charger_tag,manifest.get('panel_sleep') is True)
+    evidence=qualify_charger(out/'charger-evidence',tag+' '+charger_tag,manifest.get('panel_sleep') is True,
+        manifest.get('standalone_panel_recovery') is True)
     o.save(out/'charger-qualified.json',evidence);record('CHARGER_QUALIFIED',measured_interval_ms=evidence['measured_interval_ms'])
     child([sys.executable,'-B',HERE/'charge-command.py','--package',package,'--action','boot',
         '--output',out/'boot-command-evidence'],out/'boot-command-process',120,record)
