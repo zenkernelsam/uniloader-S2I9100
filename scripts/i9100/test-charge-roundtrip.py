@@ -31,6 +31,13 @@ def charger(path,scenario):
         lines.append(f'I9CHG2 seq={seq:08x} ms={ms:016x} valid=1 soc=75 mv=4000 temp=250 charging=1 reason=0 full=0 timeout=0 recharging=0 elapsed={ms//1000}\n')
         lines.append('I9UI1 00000001 5ec00000 00000780 00000020\n')
         lines.append('I9FB1 00000000 00008035 5ec00000 00000780 000efb1f 5ed77000 01000000 00000001\n')
+        if scenario.startswith('art-') and scenario!='art-missing':
+            # Native frame 12 is the measured 75% level. Repeated blank
+            # reports keep frames/stores fixed while device time advances.
+            lines.append('I9CR1 00000001 0000000c 00000002 0004e200 00000000 0000001c 00000001 00000000\n')
+            lines.append('I9BT1 00000001 0000000b 00000000 00000001 00000fa0 0000004b 00000000 00000000\n')
+            if 'transport-' in scenario and scenario!='art-transport-missing':
+                lines.append('I9UT1 00040000 80488200 20080040 00000000 00000180 000000a0 00000001 00000000\n')
         if scenario in ('panel-success','panel-unqualified','panel-scanout-running','panel-id-mismatch','panel-id-partial') or scenario.startswith('recovery-'):
             lines.append('I9PL1 00000001 00000003 00000000 00000000 00000002 00001003 00001000 00001000\n')
             lines.append('I9PD1 0000003f 000000a1 00000012 00000011\n')
@@ -51,13 +58,33 @@ def charger(path,scenario):
     if scenario=='recovery-error':text=text.replace('I9PR1 00000000 00000000 00000000','I9PR1 00000001 00000001 00000004')
     if scenario=='recovery-stage':text=text.replace('I9PR1 00000000 00000000 00000000 00000003','I9PR1 00000000 00000000 00000000 00000001')
     if scenario=='recovery-without-attempt':text=text.replace('I9PR1 00000000 00000000','I9PR1 00000000 00000001')
+    if scenario=='art-invalid-level':text=text.replace('I9CR1 00000001 0000000c','I9CR1 00000001 00000012')
+    if scenario=='art-undecoded':text=text.replace('I9CR1 00000001','I9CR1 00000000')
+    if scenario=='art-start-not-ready':text=text.replace('I9BT1 00000001','I9BT1 00000000')
+    if scenario=='art-stale-voltage':text=text.replace('I9BT1 00000001 0000000b 00000000 00000001 00000fa0','I9BT1 00000001 0000000b 00000000 00000001 00000d00')
+    if scenario=='art-redrew-asleep':
+        at=text.rfind('I9CR1 00000001 0000000c 00000002 0004e200')
+        text=text[:at]+text[at:].replace('I9CR1 00000001 0000000c 00000002 0004e200','I9CR1 00000001 0000000c 00000003 0004e201',1)
+    if scenario=='art-fault-asleep':
+        at=text.rfind('I9CR1 ')
+        text=text[:at]+text[at:].replace('00000001 00000000\n','00000001 00000001\n',1)
+    if scenario=='art-soc-advanced':
+        # Actual battery SOC advances while asleep, but a sleeping image
+        # correctly remains at the earlier sprite level.
+        at=text.rfind('I9CHG2 ')
+        text=text[:at]+text[at:].replace('soc=75','soc=78',1).replace('0000004b','0000004e',1)
+    if scenario=='art-old-partial':
+        text=text.replace('I9CR1 00000001 0000000c 00000002 0004e200 00000000 0000001c 00000001 00000000\n','',1)
+    if scenario=='art-partial-final':text=text[:-20]
+    if scenario=='art-transport-invalid':text=text.replace('000000a0 00000001 00000000','00004000 00000002 00000000')
     raw=text.encode();(path/'received.bin').write_bytes(raw)
     write_events(path/'events.jsonl',[dict(phase='CHARGER_IDENTITY',device=dict(device,instance=m.o.CDC.replace('OS6','CHG'))),
         dict(phase='DTR_OK',time='2026-11-19T01:00:00+00:00'),
         dict(phase='CHARGER_RX',bytes=len(raw),total=len(raw),time='2026-11-19T01:02:00+00:00'),
         dict(phase='DONE',bytes=len(raw),time='2026-11-19T01:02:00+00:00'),dict(phase='CLOSED')])
 
-for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format','wrong-end','shutdown-failure','boot-timeout'):
+for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format','wrong-end','shutdown-failure','boot-timeout',
+                 'art-success','art-missing','art-redrew-asleep','art-start-not-ready','art-transport-success','art-transport-missing'):
     directory=out/scenario;directory.mkdir();calls=[];records=[]
     class Host:
         def inventory(self):return [device]
@@ -77,14 +104,22 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
             if scenario=='boot-timeout':raise RuntimeError('modeled boot child uncertain; retained')
             target.mkdir();write_events(target/'events.jsonl',[dict(phase='SEND'),dict(phase='ACK'),dict(phase='DONE'),dict(phase='CLOSED')])
         else:raise AssertionError('Unexpected child '+tool)
-    try:m.run_roundtrip(package,manifest,directory,lambda phase,**row:records.append(dict(phase=phase,**row)),child,Host())
-    except (ValueError,RuntimeError):assert scenario!='success'
-    else:assert scenario=='success' and records[-1]['phase']=='DONE' and records[-1]['writes_to_flash']==0
+    actual_manifest=dict(manifest,standalone_charge_art=dict(local_asset=True),
+        standalone_charge_transport='transport-' in scenario) if scenario.startswith('art-') else manifest
+    expected_success=scenario in ('success','art-success','art-transport-success')
+    try:m.run_roundtrip(package,actual_manifest,directory,lambda phase,**row:records.append(dict(phase=phase,**row)),child,Host())
+    except (ValueError,RuntimeError):assert not expected_success
+    else:
+        assert expected_success and records[-1]['phase']=='DONE' and records[-1]['writes_to_flash']==0
+        assert records[-1]['native_artwork_verified']==scenario.startswith('art-')
     assert all('odin-loop.py' not in call and 'flash' not in call for call in calls)
     if scenario in ('no-draw','no-blank','wrong-tag','gap','wrong-format','wrong-end'):assert len(calls)==2
     if scenario=='shutdown-failure':assert len(calls)==1
     if scenario=='boot-timeout':assert len(calls)==3
     if scenario=='success':assert len(calls)==4
+    if scenario.startswith('art-'):
+        capture=calls[1];assert capture[capture.index('--seconds')+1]=='180'
+        assert len(calls)==(4 if expected_success else 2)
     (directory/'result.json').write_text(json.dumps(dict(scenario=scenario,child_count=len(calls),records=records,hardware=False),indent=2)+'\n')
 for scenario in ('panel-success','panel-unqualified','panel-scanout-running','panel-missing','panel-id-mismatch','panel-id-partial'):
     directory=out/scenario;charger(directory,scenario)
@@ -96,6 +131,13 @@ for scenario in ('recovery-success','recovery-unlimited','recovery-error','recov
     try:m.qualify_charger(directory,tag+' '+source,True,True)
     except ValueError:assert scenario!='recovery-success'
     else:assert scenario=='recovery-success'
+for scenario in ('art-success','art-soc-advanced','art-old-partial','art-missing','art-invalid-level','art-undecoded','art-start-not-ready',
+                 'art-stale-voltage','art-redrew-asleep','art-fault-asleep','art-partial-final',
+                 'art-transport-success','art-transport-missing','art-transport-invalid'):
+    directory=out/('decoder-'+scenario);charger(directory,scenario)
+    try:m.qualify_charger(directory,tag+' '+source,require_art=True,require_transport='transport-' in scenario)
+    except ValueError:assert scenario not in ('art-success','art-soc-advanced','art-old-partial','art-transport-success')
+    else:assert scenario in ('art-success','art-soc-advanced','art-old-partial','art-transport-success')
 
 directory=out/'expired-relay';directory.mkdir();write_events(directory/'events.jsonl',[dict(phase='WAIT_EXPIRED')])
 records=[];assert not m.wait_resumed(directory,60,lambda phase,**data:records.append(dict(phase=phase,**data)))

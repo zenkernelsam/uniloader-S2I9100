@@ -400,6 +400,7 @@ def main():
         'charge_probe': args.charge_probe,
         'standalone_charge': args.standalone_charge,
         'standalone_charge_art': art_record,
+        'standalone_charge_transport': args.standalone_charge and b'I9UT1 ' in data,
         'standalone_charge_control': args.standalone_charge and b'I9CHC2 READY ' in data,
         'standalone_charge_control_version': 2 if args.standalone_charge and b'I9CHC2 READY ' in data else None,
         'standalone_charge_control_tag': charger_tag,

@@ -99,6 +99,7 @@ void usbcdc4210_charge_screen_report(unsigned d,unsigned b,unsigned s,unsigned p
 void usbcdc4210_charge_fimd_report(const unsigned p[8]){assert(p[1]==0x8035 && p[6]==(blanked?0x1000000:0));}
 void usbcdc4210_charge_render_report(const unsigned p[8]){assert(p[0]<=1 && p[4]<=480*800);}
 void usbcdc4210_charge_start_report(const unsigned p[8]){assert(p[0]<=1 && p[1]<=11 && p[3]==1);}
+void usbcdc4210_charge_transport_report(void){}
 void usbcdc_poll(void){usb_calls++;
  if(scenario==10 && seconds()>=35 && !remote_issued)ticks+=7200000ULL;
 }

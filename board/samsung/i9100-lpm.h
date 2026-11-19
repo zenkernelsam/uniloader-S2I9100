@@ -190,6 +190,7 @@ void i9100_standalone_charge_gate(void)
 #if defined(CONFIG_EXYNOS_CDCACM4210)
    extern void usbcdc4210_charge_render_report(const unsigned[8]);
    extern void usbcdc4210_charge_start_report(const unsigned[8]);
+   extern void usbcdc4210_charge_transport_report(void);
  extern void usbcdc4210_charge_identity(int);
  extern void usbcdc4210_charge_timed_report(const struct i9100_charge_report *);
  extern void usbcdc4210_charge_screen_report(unsigned,unsigned,unsigned,unsigned);
@@ -251,6 +252,7 @@ void i9100_standalone_charge_gate(void)
       i9100_lpm_battery.present,i9100_lpm_battery.millivolts,i9100_lpm_battery.percent,
       i9100_lpm_battery.errors,(unsigned)i9100_lpm_battery.reason};
     usbcdc4210_charge_start_report(startup);
+    usbcdc4210_charge_transport_report();
 #ifdef I9100_PANEL_SLEEP_BUILD
     extern void usbcdc4210_charge_panel_report(const unsigned[8]);
     extern void usbcdc4210_charge_panel_identity_report(const unsigned[4]);

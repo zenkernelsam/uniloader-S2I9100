@@ -32,7 +32,66 @@ def owner_complete(path,tag):
         not any(row['phase']=='STOP' for row in events),'Owner did not complete normally; no next opener')
     return events
 
-def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False):
+def qualify_art_records(raw,timed,require_transport=False):
+    """Match complete native render/start records to measured charger groups.
+
+    The image remains static while blanked, so its sprite level must NOT be
+    compared with the newer SOC measured during sleep. Instead prove that
+    three timed blank observations retained the same rendered image and that
+    the latest startup admission used its own measured voltage and SOC.
+    """
+    groups=[]
+    o.require(len(timed)>=3,'Three measured artwork groups required')
+    # A reader can inherit older incomplete groups after the log reserve
+    # dropped their trailing diagnostics. Prove only the final continuous
+    # interval; never let missing startup logs negate a later full capture.
+    for index in range(len(timed)-3,len(timed)):
+        sample=timed[index]
+        end=timed[index+1]['end_offset'] if index+1<len(timed) else len(raw)
+        block=raw[sample['end_offset']:end]
+        records={}
+        tags=('I9CR1','I9BT1','I9FB1')+(('I9UT1',) if require_transport else ())
+        for tag in tags:
+            matches=re.findall(rb'^'+tag.encode()+rb' ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?$',block,re.MULTILINE)
+            o.require(len(matches)==1,'Exactly one '+tag+' record must belong to each timed charger group')
+            records[tag]=[int(word,16) for word in matches[0].split()]
+        groups.append(dict(sequence=sample['sequence'],measured_ms=sample['measured_ms'],sample=sample,**records))
+    recent=groups
+    o.require(len(recent)==3 and recent[-1]['measured_ms']-recent[0]['measured_ms']>=50000,
+        'Three complete artwork groups must span 50 seconds')
+    for group in recent:
+        render,start,fb=group['I9CR1'],group['I9BT1'],group['I9FB1']
+        o.require(render[0]==1 and render[1]<18 and render[2]>0 and render[4]<=480*800,
+            'Native artwork did not qualify a rendered sprite')
+        o.require(fb[6]&0x01000000 and fb[7]==1,'Artwork stability requires actual blank scanout records')
+        sample=group['sample']
+        wire_reason=sample['reason']&0xffffffff
+        o.require(start[0] in (0,1) and start[1]<=11 and start[3]==1 and
+            start[4]==sample['millivolts'] and start[5]==sample['soc'] and start[7]==wire_reason,
+            'Native startup state differs from its own battery measurement')
+        if require_transport:
+            transport=group['I9UT1']
+            o.require(transport[5]<16384 and transport[6] in (0,1),
+                'Charger endpoint snapshot has an impossible ring/busy state')
+    first=recent[0]['I9CR1']
+    o.require(all(group['I9CR1'][:4]==first[:4] and group['I9CR1'][4]==first[4] for group in recent[1:]),
+        'Artwork frame/store counters advanced while the display was blanked')
+    o.require(all(group['I9CR1'][7]==first[7] for group in recent[1:]),
+        'Timer fault count advanced during the blank observation interval')
+    if require_transport:
+        drops=[group['I9UT1'][7] for group in recent]
+        o.require(all(drops[n]>=drops[n-1] for n in (1,2)),
+            'Transport dropped-log count reset within the measured interval')
+    last=recent[-1]
+    o.require(last['I9BT1'][0]==1 and last['I9BT1'][1]==11 and last['sample']['millivolts']>=3600,
+        'Native low-voltage startup admission is not ready')
+    return dict(groups=recent,image_stable_while_blanked=True,
+        interval_ms=last['measured_ms']-recent[0]['measured_ms'],
+        artwork_level_during_sleep=first[1],startup_ready=True,
+        transport_snapshots=[group['I9UT1'] for group in recent] if require_transport else None,
+        limit='Production render/start counters and matched device measurements; no physical keypress or pixel capture inferred')
+
+def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False):
     summary=s.summarize(path)
     raw=(path/'received.bin').read_bytes()
     o.require(re.search(rb'^I9CHC2 READY '+expected.encode()+rb'\r?$',raw,re.MULTILINE) is not None,
@@ -54,6 +113,8 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
     o.require(timed[-1]['soc']>=5 and timed[-1]['millivolts']>=3500 and
         50<=timed[-1]['temperature_deci_c']<=400 and timed[-1]['reason'] in (0,-4) and
         not timed[-1]['timeout'],'Latest battery state does not qualify a boot contrast')
+    o.require(not require_transport or require_art,'Transport groups require native artwork reports')
+    art=qualify_art_records(raw,timed,require_transport) if require_art else None
     panel_values=None
     panel_identity=None;panel_recovery=None
     if require_panel_sleep:
@@ -77,7 +138,7 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
                 (panel_recovery[0] or not panel_recovery[1]) and not panel_recovery[2] and
                 panel_recovery[3]==panel_values[1],'Panel recovery budget/result disagrees with its sleep state')
     elif require_recovery:raise ValueError('Recovery qualification requires panel-sleep observations')
-    return dict(summary=summary,ui=values,fimd=registers,panel_sleep=panel_values,panel_identity=panel_identity,panel_recovery=panel_recovery,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
+    return dict(summary=summary,ui=values,fimd=registers,artwork=art,panel_sleep=panel_values,panel_identity=panel_identity,panel_recovery=panel_recovery,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
         limit='Draw/register/timed-log qualification; no physical image or keypress acceptance inferred')
 
 def wait_resumed(directory,seconds,record,clock=time.monotonic,sleep=time.sleep):
@@ -128,10 +189,11 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         any(row.get('phase')=='TASK_DONE' and row.get('action')=='poweroff-charge' for row in events),
         'Normal shutdown ACK/disconnect missing; no subsequent opener')
     record('SHUTDOWN_COMPLETE')
+    require_art=manifest.get('standalone_charge_art') is not None
     child([sys.executable,'-B',HERE/'capture-charge-loader.py','--output',out/'charger-evidence',
-        '--seconds','120','--wait','180'],out/'charger-process',420,record)
+        '--seconds','180' if require_art else '120','--wait','180'],out/'charger-process',480 if require_art else 420,record)
     evidence=qualify_charger(out/'charger-evidence',tag+' '+charger_tag,manifest.get('panel_sleep') is True,
-        manifest.get('standalone_panel_recovery') is True)
+        manifest.get('standalone_panel_recovery') is True,require_art,manifest.get('standalone_charge_transport') is True)
     o.save(out/'charger-qualified.json',evidence);record('CHARGER_QUALIFIED',measured_interval_ms=evidence['measured_interval_ms'])
     child([sys.executable,'-B',HERE/'charge-command.py','--package',package,'--action','boot',
         '--output',out/'boot-command-evidence'],out/'boot-command-process',120,record)
@@ -148,6 +210,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         out/'returned-xnu-process',300,record)
     owner_complete(out/'returned-xnu-evidence',tag)
     record('DONE',meaning='Normal shutdown, timed new charger UI/blank records, one remote boot and same XNU BUILD verified',
+        native_artwork_verified=require_art,
         writes_to_flash=0,physical_power_key_verified=False,energy_balance_verified=False)
 
 def main():
@@ -171,6 +234,15 @@ def main():
         identity['tag']==manifest['standalone_charge_control_tag']==hashlib.sha256(
             json.dumps(identity_input,sort_keys=True,separators=(',',':')).encode()).hexdigest()[:16],
         'Charger source/profile identity differs before any device access')
+    art=manifest.get('standalone_charge_art')
+    if art is not None:
+        o.require(isinstance(art,dict) and isinstance(art.get('path'),str),'Actual artwork provenance missing')
+        file=o.confined(o.ROOT/art['path'],o.ROOT/'assets')
+        o.require(file.stat().st_size==art.get('bytes') and o.sha(file)==art.get('sha256'),
+            'Local artwork differs before device access')
+        o.require(identity['sources'].get('../'+art['path'])==art['sha256'] and
+            file.read_bytes() in (package/'zImage').read_bytes(),
+            'Exact original artwork is not present in the source identity and loader binary')
     directory=o.confined(a.resume_evidence,o.REPO/'out');out=o.confined(a.output,o.REPO/'out')
     o.require(not out.exists(),'Fresh roundtrip evidence required');out.mkdir(parents=True)
     with (out/'events.jsonl').open('x',encoding='utf-8') as stream:

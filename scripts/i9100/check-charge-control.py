@@ -39,6 +39,48 @@ static void received(const char*line){unsigned n=strlen(line);assert(n<=64);mems
 static void complete(void){GINTSTS=GINTSTS_IEPINT;DAINT=2;DIEPINT(1)=DXEPINT_XFERCOMPL;usbcdc_poll();GINTSTS=0;DIEPINT(1)=0;}
 static void setup(unsigned rt,unsigned rq,unsigned value){memset(setup_pkt,0,8);setup_pkt[0]=rt;setup_pkt[1]=rq;setup_pkt[2]=value;ep0_setup();}
 int main(void){
+ /* A late opener must drain the queued status and READY over multiple
+  * short packets, not lose its second packet after the initial 64 bytes. */
+ reset();host_open=0;
+ struct i9100_charge_report report={.sequence=1,.milliseconds=7900,.valid=1,
+  .percent=2,.millivolts=3508,.charging=1,.temperature_deci_c=250,.elapsed_seconds=5};
+ usbcdc4210_charge_timed_report(&report);
+ unsigned initial_written=tx_written_total;assert(initial_written>64 && ep1_busy);
+ unsigned first_completed=ep1_transfer_total;assert(first_completed==64);
+ setup(0x21,0x22,1);assert(host_open && tx_written_total==initial_written+47);
+ unsigned packet_count=0;
+ while(tx_completed_total<tx_written_total && packet_count++<10){complete();}
+ assert(packet_count>=3 && tx_completed_total==tx_written_total && tx_head==tx_tail && !ep1_busy);
+ assert(!charge_action_ready && !usbcdc4210_charge_take_action());
+ unsigned diagnostic_at=tx_head,diagnostic_before=tx_written_total;
+ usbcdc4210_charge_transport_report();assert(tx_written_total==diagnostic_before+80U);
+ assert(!memcmp(txring+diagnostic_at,"I9UT1 ",6));
+ assert(txring[(diagnostic_at+77U)&(TXRING-1U)]=='\n');
+ /* A real late opener can find hours of buffered charger messages. Logs
+  * must be dropped whole and leave room for the exact READY handshake. */
+ reset();host_open=0;GINTSTS=0;charge_log_dropped=0;
+ char status_line[256];unsigned status_bytes=i9100_charge_format(status_line,sizeof(status_line),&report)+2U;
+ unsigned accepted=0,dropped=0;
+ for(unsigned n=0;n<512;n++){
+  unsigned before=tx_written_total;usbcdc4210_charge_timed_report(&report);
+  unsigned delta=tx_written_total-before;assert(!delta || delta==status_bytes);
+  if(delta)accepted++;else dropped++;
+ }
+ unsigned backlog=tx_written_total;
+ assert(accepted && dropped && charge_log_dropped==dropped);
+ assert(((tx_tail-tx_head-1U)&(TXRING-1U))>=128U);
+ setup(0x21,0x22,1);assert(tx_written_total==backlog+47U);
+ char ready_line[64];unsigned ready_bytes=i9100_chg_ready(ready_line,I9100_CONTROL_TAG,I9100_CHARGER_TAG);
+ assert(ready_bytes==47);
+ for(unsigned n=0;n<ready_bytes;n++)assert(txring[(tx_head-ready_bytes+n)&(TXRING-1U)]==ready_line[n]);
+ assert(!charge_action_ready && !usbcdc4210_charge_take_action());
+ diagnostic_at=tx_head;diagnostic_before=tx_written_total;
+ unsigned available=(tx_tail-tx_head-1U)&(TXRING-1U);
+ /* Diagnostic records preserve the same control reserve as background
+  * status. Whichever capacity applies, it is never a partial append. */
+ usbcdc4210_charge_transport_report();
+ assert(tx_written_total-diagnostic_before==(available>=208U?80U:0U));
+ if(available<208U)assert(tx_head==diagnostic_at);
  reset();received("I9CHC2 00000001 1234567890abcdef fedcba0987654321 boot\n");assert(charge_control.action==1 && !usbcdc4210_charge_take_action());
  complete();assert(usbcdc4210_charge_take_action()==1 && !usbcdc4210_charge_take_action());
  assert(charge_control.leased && !usbcdc4210_charge_release_action(2));

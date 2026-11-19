@@ -35,6 +35,7 @@
 #endif
 static struct i9100_charge_control charge_control;
 static unsigned charge_action_ready,charge_boot_available,tx_written_total,tx_drained_total,tx_completed_total,ep1_transfer_total;
+static unsigned charge_log_dropped;
 static void ring_push(const char *s);
 
 /* Base addresses are overridable so the same logic can run under a
@@ -868,6 +869,17 @@ int usbcdc4210_wait_host(unsigned int ms)
 static void usbcon_write(int level, const char *prefix, const char *msg)
 {
 	(void)level;
+    if(charge_identity){
+        /* Late readers may leave hours of background status buffered. Do
+         * not append a partial line or consume the space reserved for a
+         * fresh 47B READY plus the command's complete acknowledgement. */
+        unsigned room=(tx_tail-tx_head-1U)&(TXRING-1U);
+        size_t prefix_length=strlen(prefix),message_length=strlen(msg);
+        if(prefix_length>TXRING || message_length>TXRING ||
+           prefix_length+message_length+2U+128U>room){
+            charge_log_dropped++;usbcdc_poll();return;
+        }
+    }
 	ring_push(prefix);
 	ring_push(msg);
 	ring_push("\r\n");
@@ -928,6 +940,15 @@ void usbcdc4210_charge_render_report(const unsigned values[8])
 {charge_words_report("I9CR1 ",values);}
 void usbcdc4210_charge_start_report(const unsigned values[8])
 {charge_words_report("I9BT1 ",values);}
+void usbcdc4210_charge_transport_report(void)
+{
+ if(!charge_identity || !usb_ok)return;
+ /* Observed on the charger loop, before appending this record. A snapshot
+  * is evidence of the state at this call, not a bus-token trace. */
+ unsigned values[8]={GINTSTS,DIEPCTL(1),DIEPTSIZ(1),DIEPINT(1),DTXFSTS(1),
+  (tx_head-tx_tail)&(TXRING-1U),(unsigned)ep1_busy,charge_log_dropped};
+ charge_words_report("I9UT1 ",values);
+}
 void usbcdc4210_charge_panel_report(const unsigned values[8])
 {
  char line[88];unsigned at=0;memcpy(line,"I9PL1 ",6);at=6;
@@ -966,7 +987,7 @@ void usbcdc4210_charge_identity(int enable)
   usb_ok=0;enumerated=configured=host_open=0;
  }
  if(charge_identity!=(unsigned)enable){
-  memset(&charge_control,0,sizeof(charge_control));charge_action_ready=charge_boot_available=0;
+  memset(&charge_control,0,sizeof(charge_control));charge_action_ready=charge_boot_available=0;charge_log_dropped=0;
  }
  charge_identity=(unsigned)enable;
 }
