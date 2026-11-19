@@ -74,12 +74,16 @@ def decode_vsync_power(raw,header_after=None):
     return result
 
 def decode_panel_sleep(raw,header_after=None):
-    if len(raw)!=64:raise ValueError('Panel sleep snapshot size differs')
-    words=struct.unpack('<16I',raw)
+    if len(raw) not in (64,80):raise ValueError('Panel sleep snapshot size differs')
+    words=struct.unpack('<'+str(len(raw)//4)+'I',raw)
+    if (words[0],len(raw)) not in ((1,64),(2,80)):raise ValueError('Unknown panel sleep snapshot schema')
     fields=('version','sequence','enabled','qualified','stage','error','cleanup_error','mode',
         'commands','requests','saved_scanout','owned_scanout','id0','id1','id2','identity_reads')
-    if words[0]!=1 or words[2]>1 or words[3]>1 or words[4]>4 or words[7]>255 or words[15]&~0x7f or any(words[n]>255 for n in (12,13,14)):
+    if words[0]==2:fields+=('recovery_attempts','recovery_commands','current_scanout','reserved')
+    if words[2]>1 or words[3]>1 or words[4]>4 or words[7]>255 or words[15]&~0x7f or any(words[n]>255 for n in (12,13,14)):
         raise ValueError('Malformed panel sleep snapshot')
+    if words[0]==2 and (words[16]>1 or words[17]>2 or words[17] and not words[16]):
+        raise ValueError('Malformed panel recovery budget')
     result=dict(zip(fields,words));result['consistent']=not words[1]&1
     if header_after is not None:
         if len(header_after)!=8:raise ValueError('Panel publication header size differs')
@@ -260,7 +264,9 @@ def capture(kernel,symbols,out):
         result['display_vsync_power']=decode_vsync_power(raw_vsync,after_vsync)
     if '_i9100_panel_sleep_diag' in symbols.values:
         address_panel=symbols['_i9100_panel_sleep_diag']
-        raw_panel=kernel.read(address_panel,64);after_panel=kernel.read(address_panel,8)
+        panel_version=struct.unpack('<I',kernel.read(address_panel,4))[0]
+        if panel_version not in (1,2):raise ValueError('Unknown panel sleep producer schema')
+        raw_panel=kernel.read(address_panel,64 if panel_version==1 else 80);after_panel=kernel.read(address_panel,8)
         (out/'panel-sleep.bin').write_bytes(raw_panel);(out/'panel-sleep-after.bin').write_bytes(after_panel)
         result['panel_sleep']=decode_panel_sleep(raw_panel,after_panel)
     for symbol,kind in (('_i9100_cpu_load_diag','cpu'),('_i9100_display_client_power_diag','display_clients')):

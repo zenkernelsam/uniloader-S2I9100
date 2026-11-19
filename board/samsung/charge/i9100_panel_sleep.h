@@ -21,6 +21,7 @@ struct i9100_panel_sleep_io {
 struct i9100_panel_sleep {
  struct i9100_panel_sleep_io io;
  uint32_t stage,qualified,error,cleanup_error,mode,commands,requests,saved_scanout,owned_scanout,identity_reads;
+ uint32_t recovery_attempts,recovery_commands;
  uint8_t id[3];
 };
 static int i9100_panel_identity(const uint8_t id[3])
@@ -29,7 +30,9 @@ static int i9100_panel_mode(struct i9100_panel_sleep *p,unsigned mask,unsigned e
 {
  uint8_t mode=0;
  if(!p->io.read_byte(p->io.cookie,0x0a,&mode))return I9P_ERROR_IO;
- p->mode=mode;return (mode&mask)==expected?0:I9P_ERROR_MODE;
+ /* A floating/high bus must not qualify awake just because every bit
+  * in the requested mask is set. Preserve the actual byte for diagnosis. */
+ p->mode=mode;return mode!=0xff && (mode&mask)==expected?0:I9P_ERROR_MODE;
 }
 static int i9100_panel_probe(struct i9100_panel_sleep *p)
 {
@@ -46,24 +49,65 @@ static int i9100_panel_probe(struct i9100_panel_sleep *p)
  if(!i9100_panel_identity(id)){p->error=I9P_ERROR_IDENTITY;return p->error;}
  int result=i9100_panel_mode(p,0x14,0x14);
  if(result){p->error=result;return result;}
- if((p->io.scanout_read(p->io.cookie)&3U)!=3U){p->error=I9P_ERROR_SCANOUT;return p->error;}
+ uint32_t scanout=p->io.scanout_read(p->io.cookie);
+ if(scanout==0xffffffffU || (scanout&3U)!=3U){p->error=I9P_ERROR_SCANOUT;return p->error;}
  p->qualified=1;p->stage=I9P_AWAKE;p->error=0;return 0;
 }
 static int i9100_panel_issue(struct i9100_panel_sleep *p,unsigned command)
 {
  ++p->commands;return p->io.command(p->io.cookie,command)?0:I9P_ERROR_IO;
 }
+static int i9100_panel_restore_awake(struct i9100_panel_sleep *p)
+{
+ /* One separate wake recovery in this loader/kernel lifetime, never a
+  * replay of the failed command. Re-identify hardware and inspect its
+  * current mode first; issue only the transition still missing. Unknown
+  * MMIO, changed timing/identity or another failed recovery stays faulted. */
+ if(!p || !p->qualified || p->stage!=I9P_FAULT || p->recovery_attempts)return I9P_ERROR_STATE;
+ ++p->recovery_attempts;int result=0;uint8_t id=0;
+ uint32_t original=p->saved_scanout;
+ if(original==0xffffffffU || (original&3U)!=3U){result=I9P_ERROR_SCANOUT;goto failed;}
+ uint32_t current=p->io.scanout_read(p->io.cookie);
+ if(current!=original && current!=(original&~1U) && current!=(original&~3U)){
+  result=I9P_ERROR_SCANOUT;goto failed;
+ }
+ for(unsigned n=0;n<3;n++){
+  if(!p->io.read_byte(p->io.cookie,0xda+n,&id)){result=I9P_ERROR_IO;goto failed;}
+  if(id!=p->id[n]){result=I9P_ERROR_IDENTITY;goto failed;}
+ }
+ result=i9100_panel_mode(p,0,0);if(result)goto failed;
+ if(!(p->mode&0x10U) && (p->mode&4U)){result=I9P_ERROR_MODE;goto failed;}
+ if(current!=original){
+  p->io.scanout_write(p->io.cookie,original);
+  if(p->io.scanout_read(p->io.cookie)!=original){result=I9P_ERROR_SCANOUT;goto failed;}
+ }
+ if(!(p->mode&0x10U)){
+  ++p->recovery_commands;result=i9100_panel_issue(p,0x11);if(result)goto failed;
+  p->io.wait_ms(p->io.cookie,120);result=i9100_panel_mode(p,0x10,0x10);if(result)goto failed;
+ }
+ if(!(p->mode&4U)){
+  ++p->recovery_commands;result=i9100_panel_issue(p,0x29);if(result)goto failed;
+  result=i9100_panel_mode(p,0x14,0x14);if(result)goto failed;
+ }
+ if(p->io.scanout_read(p->io.cookie)!=original){result=I9P_ERROR_SCANOUT;goto failed;}
+ p->stage=I9P_AWAKE;p->cleanup_error=0;return 0;
+failed:
+ p->cleanup_error=result;return result;
+}
 static int i9100_panel_sleep_change(struct i9100_panel_sleep *p,unsigned active)
 {
  if(!p || active>1 || !p->qualified)return I9P_ERROR_ARGUMENT;
  ++p->requests;
- if(p->stage==I9P_FAULT)return p->error?p->error:I9P_ERROR_STATE;
+ if(p->stage==I9P_FAULT){
+  if(active && !p->recovery_attempts)return i9100_panel_restore_awake(p);
+  return p->cleanup_error?p->cleanup_error:p->error?p->error:I9P_ERROR_STATE;
+ }
  if((active && p->stage==I9P_AWAKE) || (!active && p->stage==I9P_SLEEP))return 0;
  int result=0;
  if(!active){
   if(p->stage!=I9P_AWAKE)return I9P_ERROR_STATE;
   p->saved_scanout=p->io.scanout_read(p->io.cookie);
-  if((p->saved_scanout&3U)!=3U){result=I9P_ERROR_SCANOUT;goto fault;}
+  if(p->saved_scanout==0xffffffffU || (p->saved_scanout&3U)!=3U){result=I9P_ERROR_SCANOUT;goto fault;}
   result=i9100_panel_issue(p,0x28);if(result)goto fault;
   result=i9100_panel_mode(p,4,0);if(result)goto fault;p->stage=I9P_OFF;
   result=i9100_panel_issue(p,0x10);if(result)goto fault;
@@ -71,8 +115,12 @@ static int i9100_panel_sleep_change(struct i9100_panel_sleep *p,unsigned active)
   result=i9100_panel_mode(p,0x14,0);if(result)goto fault;p->stage=I9P_SLEEP;
   /* First finish current frame, then clear ENVID. Retain all timing,
    * window buffers and pixel formats. No clock gate or framebuffer free. */
-  p->io.scanout_write(p->io.cookie,p->saved_scanout&~1U);p->io.wait_ms(p->io.cookie,34);
-  if((p->io.scanout_read(p->io.cookie)&~1U)!=(p->saved_scanout&~1U)){
+  p->io.scanout_write(p->io.cookie,p->saved_scanout&~1U);
+  if(p->io.scanout_read(p->io.cookie)!=(p->saved_scanout&~1U)){
+   result=I9P_ERROR_SCANOUT;goto fault;
+  }
+  p->io.wait_ms(p->io.cookie,34);
+  if(p->io.scanout_read(p->io.cookie)!=(p->saved_scanout&~1U)){
    result=I9P_ERROR_SCANOUT;goto fault;
   }
   p->owned_scanout=p->saved_scanout&~3U;p->io.scanout_write(p->io.cookie,p->owned_scanout);
@@ -91,6 +139,6 @@ static int i9100_panel_sleep_change(struct i9100_panel_sleep *p,unsigned active)
 fault:
  /* First error is retained; no automatic retry or unblank after uncertain
   * transport. Owner may keep the known black mapping for diagnosis. */
- p->error=result;p->stage=I9P_FAULT;return result;
+ if(!p->error)p->error=result;p->stage=I9P_FAULT;return result;
 }
 #endif

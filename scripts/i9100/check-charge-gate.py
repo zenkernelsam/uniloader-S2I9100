@@ -42,7 +42,7 @@ static unsigned seconds(void){return (unsigned)(ticks/24000000ULL);}
 static uint32_t lpm_read(unsigned base,unsigned off){
  if(base==0x10060000 && off==0)return 33;
  if(base==0x11000000 && off==0xc44){
-  if((scenario==1 || scenario==6 || scenario==7) && seconds()>=35 && seconds()<38)return 0x7f;
+  if((scenario==1 || scenario==6 || scenario==7 || scenario==9) && seconds()>=35 && seconds()<38)return 0x7f;
   return 0xff;
  }
  if(base==0x11000000 && off==0xc64)return 0xff;
@@ -98,7 +98,8 @@ void usbcdc4210_charge_fimd_report(const unsigned p[8]){assert(p[1]==0x8035 && p
 void usbcdc_poll(void){usb_calls++;}
 void usbcdc4210_charge_set_boot_ready(unsigned available){
 #ifdef I9100_PANEL_SLEEP_BUILD
- assert(available==(scenario!=4 && !((scenario==6 || scenario==8) && seconds()>=31)));
+ assert(available==(scenario!=4 && !(scenario==6 && seconds()>=31 && seconds()<36) &&
+  !((scenario==8 || scenario==9) && seconds()>=31)));
 #else
  assert(available==(scenario!=4));
 #endif
@@ -122,9 +123,10 @@ static void lpm_panel_delay(void*c,unsigned us){(void)c;(void)us;}
 static unsigned lpm_panel_enter(void*c){(void)c;return 0;}
 static void lpm_panel_leave(void*c,unsigned n){(void)c;(void)n;}
 static int lpm_panel_read_byte(void*c,unsigned reg,uint8_t*v){(void)c;
- *v=reg==0xda?(scenario==7?0x00:0xa1):reg==0xdb?0x12:reg==0xdc?0x11:panel_mode;return 1;}
+ *v=reg==0xda?(scenario==7?0x00:0xa1):reg==0xdb?0x12:reg==0xdc?0x11:
+  scenario==9 && seconds()>=35?0xff:panel_mode;return 1;}
 static int lpm_panel_command(void*c,unsigned cmd){(void)c;++panel_commands;
- if(scenario!=6 && scenario!=8){if(cmd==0x28)panel_mode&=~4U;else if(cmd==0x10)panel_mode&=~16U;
+ if(scenario!=6 && scenario!=8 && scenario!=9){if(cmd==0x28)panel_mode&=~4U;else if(cmd==0x10)panel_mode&=~16U;
   else if(cmd==0x11)panel_mode|=16U;else if(cmd==0x29)panel_mode|=4U;}
  return 1;}
 static uint32_t lpm_panel_scan_read(void*c){(void)c;return panel_scan;}
@@ -138,11 +140,14 @@ void usbcdc4210_charge_panel_report(const unsigned values[8]){
 void usbcdc4210_charge_panel_identity_report(const unsigned values[4]){
  assert(values[0]==0x3f && values[1]==(scenario==7?0:0xa1) && values[2]==0x12 && values[3]==0x11);
 }
+void usbcdc4210_charge_panel_recovery_report(const unsigned values[4]){
+ assert(values[0]<=1 && values[1]<=2 && values[3]<=4);
+}
 '''+gate+r'''
 int main(void){
  for(scenario=1;scenario<=
 #ifdef I9100_PANEL_SLEEP_BUILD
- 8
+ 9
 #else
  5
 #endif
@@ -157,9 +162,10 @@ int main(void){
   if(scenario==3){assert(result==2 && reset_ticks>=35ULL*24000000+12000000ULL && !pmu3);}
   if(scenario==4){assert(result==4 && !stops && !pmu2 && !pmu3);}
   if(scenario==5){assert(result==3 && stops==1 && seconds()>=35);}
-  if(scenario==6){assert(result==2 && blanked && panel_commands==1 && stops==0);}
+  if(scenario==6){assert(result==1 && !blanked && panel_commands==1 && stops==1 && last_unblank==35);}
   if(scenario==7){assert(result==1 && panel_commands==0 && last_unblank==35);}
   if(scenario==8){assert(result==2 && blanked && panel_commands==1);}
+  if(scenario==9){assert(result==2 && blanked && panel_commands==1 && !stops);}
  }
  puts("PASS production standalone gate: window2 blank/unblank, 1Hz draw then no drawing asleep, long press/remote 500ms fence, low voltage refusal, panel-sleep retained scanout/fault/unknown fallbacks and unplug poweroff");
 }

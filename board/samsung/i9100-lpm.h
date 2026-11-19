@@ -213,11 +213,14 @@ void i9100_standalone_charge_gate(void)
 #ifdef I9100_PANEL_SLEEP_BUILD
     extern void usbcdc4210_charge_panel_report(const unsigned[8]);
     extern void usbcdc4210_charge_panel_identity_report(const unsigned[4]);
+    extern void usbcdc4210_charge_panel_recovery_report(const unsigned[4]);
     unsigned panel_fields[8]={panel.qualified,panel.stage,panel.error,panel.mode,panel.commands,
       panel.saved_scanout,panel.owned_scanout,lpm_panel_scan_read(0)};
     usbcdc4210_charge_panel_report(panel_fields);
     unsigned panel_identity[4]={panel.identity_reads,panel.id[0],panel.id[1],panel.id[2]};
     usbcdc4210_charge_panel_identity_report(panel_identity);
+    unsigned panel_recovery[4]={panel.recovery_attempts,panel.recovery_commands,panel.cleanup_error,panel.stage};
+    usbcdc4210_charge_panel_recovery_report(panel_recovery);
 #endif
    }
 #endif
