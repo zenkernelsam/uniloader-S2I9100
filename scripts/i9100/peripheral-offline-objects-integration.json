@@ -22,6 +22,9 @@
     "iokit/i9100_camera_protocol.o",
     "iokit/i9100_mfc.o",
     "iokit/i9100_video_layout.o",
+    "iokit/i9100_camera_engine_io.o",
+    "iokit/i9100_csis.o",
+    "iokit/i9100_fimc.o",
     "iokit/i9100_sysmmu.o",
     "iokit/i9100_modem_sipc4.o",
     "iokit/i9100_emmc.o",
@@ -69,9 +72,11 @@
     "iokit/i9100_sensor_hid.cpo",
     "iokit/i9100_sensor_hid_endpoint.cpo",
     "iokit/i9100_bt_worker.cpo",
-    "iokit/i9100_bt_control.cpo"
+    "iokit/i9100_bt_control.cpo",
+    "iokit/i9100_camera_native.cpo",
+    "iokit/i9100_camera_mmio.cpo"
   ],
-  "patch_sha256": "67cc177b4983ef884494e0ea0ab8988548e792e94f41c63212041306cfce0a3d",
+  "patch_sha256": "900c2fd6eac1b66bcb2614fee4e3a85ff1dbc65981fd20e929db180c22da8265",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first",
