@@ -31,7 +31,7 @@ def main():
     row=dict(time=datetime.now(timezone.utc).isoformat(),phase=phase,**data);events.write(json.dumps(row)+'\n');events.flush()
     if phase in ('OPEN_OK','DTR_OK','IDENTITY_OK','SEND','ACK','DONE','STOP','CLOSED'):print(json.dumps(row),flush=True)
    line=bytearray();drop=False
-   def wait_for(expected):
+   def wait_for(expected_line):
     nonlocal drop,line
     deadline=time.monotonic()+20
     while time.monotonic()<deadline:
@@ -42,7 +42,7 @@ def main():
       if byte==10:
        data=bytes(line);line.clear();bad=drop;drop=False
        if bad:continue
-       if data==expected:return
+       if data==expected_line:return
        if data.startswith(b'I9CHC1 READY ') and data!=('I9CHC1 READY '+expected).encode():raise RuntimeError('Charger build differs; action not sent')
       elif byte<32 or byte>126 or len(line)>=160:drop=True
       elif not drop:line.append(byte)
