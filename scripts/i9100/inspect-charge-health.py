@@ -20,7 +20,7 @@ CPU_FIELDS=('sequence','time_lo','time_hi','polls','api_valid','api_result',
 CLIENT_FIELDS=('sequence','time_lo','time_hi','requested_state','hardware_result',
     'client','owner_pid','vsync_requested','vsync_enabled','closed','port_present',
     'callback_present','generation_lo','generation_hi','send_count_lo','send_count_hi',
-    'diag_enabled','reserved','graphics_diagnostic_losses','graphics_diagnostic_unknown')
+    'diag_enabled','vsync_paused','graphics_diagnostic_losses','graphics_diagnostic_unknown')
 IDLE_FIELDS=('version','sequence','irq','waits','mct_low','mct_high','wait_low','wait_high','last','maximum',
     'frequency','map_ready')
 
@@ -56,6 +56,23 @@ def idle_interval(before,after):
         elapsed_ns=(elapsed*1000)//24,wait_ns=(wait*1000)//24,wfi_wait_percent=100*wait/elapsed)
     return result
 
+def decode_vsync_power(raw,header_after=None):
+    if len(raw)!=64:raise ValueError('Display Vsync power snapshot size differs')
+    words=struct.unpack('<16I',raw)
+    fields=('version','sequence','requests','requested_state','hardware_result','domain_paused',
+        'clients','paused_clients','enabled_clients','requested_clients','closed_clients',
+        'timer_errors','request_pid','faulted_clients','reserved0','reserved1')
+    if words[0]!=1 or words[3]>2 or words[5]>1 or any(words[n]>words[6] for n in (7,8,9,10,13)):
+        raise ValueError('Malformed display Vsync power snapshot')
+    result=dict(zip(fields,words));result['consistent']=not words[1]&1
+    if header_after is not None:
+        if len(header_after)!=8:raise ValueError('Display Vsync publication header size differs')
+        version,sequence=struct.unpack('<2I',header_after)
+        result.update(producer_version_after=version,producer_sequence_after=sequence)
+        result['consistent']=result['consistent'] and (version,sequence)==words[:2]
+    result['limit']='Whole physical display domain at the last power request; not measured refresh or electrical suspend'
+    return result
+
 
 def decode_budget(raw,kind):
     if kind not in ('cpu','display_clients') or len(raw)!=4*(4+16*20):
@@ -80,6 +97,7 @@ def decode_budget(raw,kind):
         else:
             row['generation']=(row['generation_hi']<<32)|row['generation_lo']
             row['send_count']=(row['send_count_hi']<<32)|row['send_count_lo']
+            if row['vsync_paused']>1:raise ValueError('Malformed display client paused state')
         samples.append(row)
     samples.sort(key=lambda row:((count-row['sequence'])&0xffffffff),reverse=True)
     result=dict(version=version,count=count,samples=samples)
@@ -217,6 +235,12 @@ def capture(kernel,symbols,out):
         after_paired=kernel.read(paired_address,8)
         (out/'idle-paired-after.bin').write_bytes(after_paired)
         result['idle_paired']=decode_idle_paired(raw_paired,after_paired)
+    if '_i9100_display_vsync_power_diag' in symbols.values:
+        address_vsync=symbols['_i9100_display_vsync_power_diag']
+        raw_vsync=kernel.read(address_vsync,64);after_vsync=kernel.read(address_vsync,8)
+        (out/'display-vsync-power.bin').write_bytes(raw_vsync)
+        (out/'display-vsync-power-after.bin').write_bytes(after_vsync)
+        result['display_vsync_power']=decode_vsync_power(raw_vsync,after_vsync)
     for symbol,kind in (('_i9100_cpu_load_diag','cpu'),('_i9100_display_client_power_diag','display_clients')):
         if symbol in symbols.values:
             result[kind]=capture_budget(kernel,symbols[symbol],out,kind)
