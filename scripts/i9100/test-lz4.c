@@ -8,7 +8,7 @@
 static unsigned charge_service_calls;
 void i9100_boot_charge_service(void){charge_service_calls++;}
 void i9100_boot_charge_stage(unsigned stage){(void)stage;}
-void i9100_boot_charge_finish(void){}
+void i9100_boot_charge_finish(void *tree,unsigned bytes){(void)tree;(void)bytes;}
 void i9100_boot_charge_failure(unsigned reason){(void)reason;}
 #endif
 void fb_mark_asm(unsigned int o, unsigned int c) { (void)o; (void)c; }

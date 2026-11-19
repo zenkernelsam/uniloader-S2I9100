@@ -936,14 +936,18 @@ void usbcdc4210_charge_fimd_report(const unsigned values[8])
  }
  line[at]=0;usbcon_write(KERN_INFO,"",line);
 }
-static void charge_words_report(const char tag[6],const unsigned values[8])
+static void charge_words_format(char line[80],const char tag[6],const unsigned values[8])
 {
- char line[80];unsigned at=6;memcpy(line,tag,6);
+ unsigned at=6;memcpy(line,tag,6);
  for(unsigned n=0;n<8;n++){
   for(unsigned d=0;d<8;d++)line[at++]="0123456789abcdef"[(values[n]>>((7U-d)*4))&15U];
   line[at++]=n==7?'\n':' ';
  }
- line[at]=0;usbcon_write(KERN_INFO,"",line);
+ line[at]=0;
+}
+static void charge_words_report(const char tag[6],const unsigned values[8])
+{
+ char line[80];charge_words_format(line,tag,values);usbcon_write(KERN_INFO,"",line);
 }
 void usbcdc4210_charge_render_report(const unsigned values[8])
 {charge_words_report("I9CR1 ",values);}
@@ -951,6 +955,14 @@ void usbcdc4210_charge_start_report(const unsigned values[8])
 {charge_words_report("I9BT1 ",values);}
 void usbcdc4210_charge_boot_report(const unsigned values[8])
 {charge_words_report("I9BS1 ",values);}
+void usbcdc4210_charge_boot_report_passive(const unsigned values[8])
+{
+ /* Tail after the final charger stop: enqueue the complete line only.
+  * Never enter an EP0 FIFO wait or poll before the actual kernel jump. */
+ char line[80];charge_words_format(line,"I9BS1 ",values);
+ if(((tx_tail-tx_head-1U)&(TXRING-1U))<80U){charge_log_dropped++;return;}
+ ring_push(line);ring_push("\r\n");
+}
 void usbcdc4210_charge_fault_report(const unsigned values[8])
 {charge_words_report("I9BF1 ",values);}
 void usbcdc4210_charge_transport_report(void)

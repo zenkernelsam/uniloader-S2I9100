@@ -1058,7 +1058,7 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 		*(volatile unsigned int *)0x10020818 = 0x77660004U;
 		__asm__ __volatile__("dsb sy" ::: "memory");
 #endif
-		i9100_boot_charge_finish();
+        i9100_boot_charge_finish((void *)dt_pa,dtsize);
 		jump_to_xnu(load_pa + entry_off, ba_pa);
 	}
 

@@ -8,12 +8,12 @@
 #if defined(CONFIG_SAMSUNG_I9100) && defined(I9100_STANDALONE_CHARGE_BUILD)
 void i9100_boot_charge_service(void);
 void i9100_boot_charge_stage(unsigned stage);
-void i9100_boot_charge_finish(void);
+void i9100_boot_charge_finish(void *tree,unsigned bytes);
 void i9100_boot_charge_failure(unsigned reason);
 #else
 static inline void i9100_boot_charge_service(void){}
 static inline void i9100_boot_charge_stage(unsigned stage){(void)stage;}
-static inline void i9100_boot_charge_finish(void){}
+static inline void i9100_boot_charge_finish(void *tree,unsigned bytes){(void)tree;(void)bytes;}
 static inline void i9100_boot_charge_failure(unsigned reason){(void)reason;}
 #endif
 #endif

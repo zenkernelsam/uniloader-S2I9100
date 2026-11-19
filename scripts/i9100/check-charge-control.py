@@ -33,7 +33,7 @@ static uint32_t rxpop(unsigned ep){assert(ep==0 && fifo_index<32);return receive
 static unsigned supervisor_calls,console_calls;
 void i9100_boot_charge_service(void){supervisor_calls++;}
 void i9100_boot_charge_stage(unsigned stage){(void)stage;}
-void i9100_boot_charge_finish(void){}
+void i9100_boot_charge_finish(void *tree,unsigned bytes){(void)tree;(void)bytes;}
 void i9100_boot_charge_failure(unsigned reason){(void)reason;}
 void printk(int level,const char*fmt,...){(void)level;(void)fmt;console_calls++;}
 #include "driver.c"
@@ -54,6 +54,11 @@ int main(void){
  for(unsigned n=0;n<999;n++)udelay(1);
  assert(!supervisor_calls);udelay(1);assert(supervisor_calls==1);
  udelay(2500);assert(supervisor_calls==3 && charge_delay_quanta==500);
+ reset();unsigned passive[8]={7,11,1,50,4000,0,0,0};
+ GINTSTS=GINTSTS_USBRST;unsigned before_poll=GINTSTS,console_before=console_calls,service_before=supervisor_calls;
+ usbcdc4210_charge_boot_report_passive(passive);
+ assert(GINTSTS==before_poll && console_calls==console_before && supervisor_calls==service_before);
+ assert(!ep1_busy && tx_written_total==80 && !memcmp(txring,"I9BS1 ",6));
  /* A late opener must drain the queued status and READY over multiple
   * short packets, not lose its second packet after the initial 64 bytes. */
  reset();host_open=0;

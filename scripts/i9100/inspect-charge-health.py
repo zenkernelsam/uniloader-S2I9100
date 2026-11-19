@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Decode retained native charging measurements on the existing CDC owner."""
-import json, struct
+import json, struct, importlib.util
 from pathlib import Path
 
 FIELDS=('sequence','polls','time_lo','time_hi','revision','sub_charger',
@@ -207,6 +207,12 @@ def capture(kernel,symbols,out):
     if '_i9100_boot_source' in symbols.values:
         words=struct.unpack('<8I',kernel.read(symbols['_i9100_boot_source'],32))
         result['boot_source']=dict(zip(('magic','version','flags','inform2','inform3','sboot_mode','r1','r2'),words))
+    spec=importlib.util.spec_from_file_location('charge_takeover',Path(__file__).with_name('charge-handoff.py'))
+    handoff=importlib.util.module_from_spec(spec);spec.loader.exec_module(handoff)
+    observed=handoff.capture(kernel,symbols,out)
+    if observed is not None:
+        result['charger_handoff']=observed
+        result['charger_takeover_observation']=handoff.first_kernel_sample(observed,result['samples'])
     if '_i9100_setup_dev_finish_diag' in symbols.values:
         finish_address=symbols['_i9100_setup_dev_finish_diag']
         words=struct.unpack('<12I',kernel.read(finish_address,48))

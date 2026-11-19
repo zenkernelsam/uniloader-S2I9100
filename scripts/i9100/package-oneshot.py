@@ -236,6 +236,7 @@ def main():
     build = output/'loader'
     charger_tag=None;charger_sources={}
     if args.standalone_charge:
+        charger_sources['scripts/i9100/prepare-payloads.py']=sha(helpers/'prepare-payloads.py')
         for directory in ('arch','board','drivers','lib','include','main','soc'):
             for path in sorted((loader/directory).rglob('*')):
                 if path.is_file() and path.suffix in ('.c','.h','.S','.s','.lds'):
@@ -358,7 +359,7 @@ def main():
     assert lz4.block.decompress(packed_blob, uncompressed_size=len(raw_data)) == raw_data
     raw_end = 0x40001000 + len(raw_data)
     dt_pa = raw_end + 0x1000000
-    assert dt_pa + (loader/'blob/dtb').stat().st_size + 2112 < 0x43e00000
+    assert dt_pa + dt_blob.stat().st_size + 2112 < 0x43e00000
     assert raw_end < sym['__payload_start']
     spec = importlib.util.spec_from_file_location('identity', loader/'scripts/build-i9100.py')
     identity_module = importlib.util.module_from_spec(spec)
@@ -407,6 +408,8 @@ def main():
         'standalone_charge_transport': args.standalone_charge and b'I9UT1 ' in data,
         'standalone_charge_boot_supervision': args.standalone_charge and b'I9BS1 ' in data,
         'standalone_charge_boot_fault_hold': args.standalone_charge and b'I9BF1 ' in data,
+        'standalone_charge_handoff': args.standalone_charge and b'i9100-charge-handoff\0' in dt_blob.read_bytes(),
+        'standalone_charge_handoff_tree': {'bytes':dt_blob.stat().st_size,'sha256':sha(dt_blob)} if args.standalone_charge else None,
         'standalone_charge_control': args.standalone_charge and b'I9CHC2 READY ' in data,
         'standalone_charge_control_version': 2 if args.standalone_charge and b'I9CHC2 READY ' in data else None,
         'standalone_charge_control_tag': charger_tag,

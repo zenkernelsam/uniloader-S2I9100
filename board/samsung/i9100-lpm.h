@@ -12,6 +12,7 @@
 #include "i9100-charge-report.h"
 #include "i9100-charge-start.h"
 #include <main/i9100-boot-charge.h>
+#include <main/i9100-charge-handoff.h>
 #include "charge/i9100_panel_spi.h"
 #include "charge/i9100_panel_sleep.h"
 #ifndef LPM_BARRIER
@@ -26,6 +27,7 @@ static unsigned i9100_lpm_boot_active,i9100_lpm_boot_owned,i9100_lpm_resume_char
 static unsigned i9100_lpm_boot_polls,i9100_lpm_boot_phase;
 static unsigned i9100_lpm_boot_fault,i9100_lpm_fault_phase;
 static uint64_t i9100_lpm_boot_next;
+static uint64_t i9100_lpm_boot_sample_ticks;
 static int lpm_boot_requested(const struct I9100BootSource *source)
 {return source && source->magic==I9100_BOOT_SOURCE_MAGIC && source->version==1 &&
  source->flags==3 && source->sboot_mode==1 && source->inform2==1;}
@@ -188,6 +190,7 @@ void i9100_boot_charge_service(void)
  i9100_lpm_boot_in_service=1;
  unsigned result=i9100_power_poll(&i9100_lpm_battery);
  uint64_t sampled=lpm_ticks();
+ i9100_lpm_boot_sample_ticks=sampled;
  i9100_charge_start_update(&i9100_lpm_boot_gate,&i9100_lpm_battery,result,(sampled/24U)*1000U);
  i9100_lpm_boot_polls++;i9100_lpm_boot_next=sampled+24000000U;
  i9100_lpm_boot_in_service=0;
@@ -197,10 +200,12 @@ static void lpm_boot_report(unsigned stage)
  i9100_lpm_boot_phase=stage;
 #if defined(CONFIG_EXYNOS_CDCACM4210)
  extern void usbcdc4210_charge_boot_report(const unsigned[8]);
+ extern void usbcdc4210_charge_boot_report_passive(const unsigned[8]);
  unsigned fields[8]={stage,i9100_lpm_boot_polls,i9100_lpm_battery.valid,
   i9100_lpm_battery.percent,i9100_lpm_battery.millivolts,i9100_lpm_battery.charging,
   (unsigned)i9100_lpm_battery.reason,i9100_lpm_battery.timeout};
- usbcdc4210_charge_boot_report(fields);
+ if(stage==7U)usbcdc4210_charge_boot_report_passive(fields);
+ else usbcdc4210_charge_boot_report(fields);
 #endif
 }
 void i9100_boot_charge_stage(unsigned stage)
@@ -414,15 +419,37 @@ void i9100_standalone_charge_gate(void)
 #endif
 }
 #ifdef I9100_STANDALONE_CHARGE_BUILD
-void i9100_boot_charge_finish(void)
+void i9100_boot_charge_finish(void *tree,unsigned bytes)
 {
  if(!i9100_lpm_boot_active)return;
+ uint8_t *slot=i9100_charge_handoff_slot(tree,bytes);
+ if(!slot){i9100_boot_charge_failure(11);return;}
+ struct I9100ChargeHandoff record={0};
  for(;;){
   /* Force one fresh supervised sample immediately before the actual jump,
    * after staging/decode and the host wait, not before either operation. */
   i9100_lpm_boot_next=0;i9100_boot_charge_service();
-  if(i9100_charge_start_ready(&i9100_lpm_boot_gate,lpm_now(0)) &&
-     i9100_power_stop(&i9100_lpm_battery))break;
+  if(i9100_charge_start_ready(&i9100_lpm_boot_gate,lpm_now(0))){
+   const struct i9100_power_state *battery=&i9100_lpm_battery;
+   record.magic=I9100_CHARGE_HANDOFF_MAGIC;record.version=1;record.bytes=sizeof(record);record.flags=7;
+   record.revision=battery->revision;record.sub_charger=battery->use_sub;record.polls=i9100_lpm_boot_polls;
+   record.valid=battery->valid;record.present=battery->present;record.connected=battery->connected;
+   record.percent=battery->percent;record.millivolts=battery->millivolts;
+   record.temperature_deci_c=(uint32_t)battery->temperature_deci_c;record.reason=(uint32_t)battery->reason;
+   record.full=battery->full;record.timeout=battery->timeout;record.recharging=battery->recharging;
+   record.enabled_before=battery->enabled;record.charging_before=battery->charging;
+   record.sampled_low=(uint32_t)i9100_lpm_boot_sample_ticks;record.sampled_high=(uint32_t)(i9100_lpm_boot_sample_ticks>>32);
+   uint64_t now_ns=(i9100_lpm_boot_sample_ticks/24U)*1000U;
+   record.elapsed_seconds=battery->charge_start && now_ns>=battery->charge_start?
+    (uint32_t)((now_ns-battery->charge_start)/1000000000ULL):0;
+   record.qualified_samples=i9100_lpm_boot_gate.samples;
+   record.recovery_seconds=(uint32_t)((i9100_lpm_boot_gate.last_ns-i9100_lpm_boot_gate.first_ns)/1000000000ULL);
+   record.fault=i9100_lpm_boot_fault;
+   if(i9100_power_stop(&i9100_lpm_battery)){
+    uint64_t stopped=lpm_ticks();record.stopped_low=(uint32_t)stopped;record.stopped_high=(uint32_t)(stopped>>32);
+    record.enabled_after=battery->enabled;record.charging_after=battery->charging;break;
+   }
+  }
   /* No low-cell reset loop: return to the same charging policy and wait for
    * another qualified Power/remote boot. The cell's deadline is not reset. */
   i9100_boot_charge_stage(8);i9100_lpm_resume_charge=1;
@@ -434,6 +461,13 @@ void i9100_boot_charge_finish(void)
  /* No callback may re-enable the charger after the final checked stop. */
  lpm_write(0x10050000U,0x248,0);lpm_write(0x10490000U,0x188,1U<<25);
  i9100_lpm_boot_active=0;lpm_boot_report(7);
+ /* A queued status does not poll USB or call hardware after the stop.
+  * Publish the owned DT slot last, then return directly to jump_to_xnu. */
+ uint64_t published=lpm_ticks();record.published_low=(uint32_t)published;record.published_high=(uint32_t)(published>>32);
+ record.checksum=i9100_charge_handoff_checksum(&record);
+ *(volatile uint32_t*)slot=0;LPM_BARRIER();
+ memcpy(slot+4,(const uint8_t*)&record+4,sizeof(record)-4U);LPM_BARRIER();
+ *(volatile uint32_t*)slot=record.magic;LPM_BARRIER();
 }
 void i9100_boot_charge_failure(unsigned reason)
 {

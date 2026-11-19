@@ -9,7 +9,7 @@ if os.environ.get('I9100_CPU_CAPPED')!='1':
     os.execvpe('taskset',['taskset','-c','0-13','nice','-n10','ionice','-c2','-n7',sys.executable,'-B',__file__],dict(os.environ,I9100_CPU_CAPPED='1'))
 from pathlib import Path
 from datetime import datetime
-import subprocess
+import subprocess,importlib.util
 repo=Path(__file__).resolve().parents[2];out=repo/'out'/('charge-gate-check-'+datetime.now().strftime('%Y%m%d-%H%M%S'));out.mkdir()
 text=(repo/'board/samsung/i9100-lpm.h').read_text();start=text.index('void i9100_standalone_charge_gate(void)');begin=text.index('{',start);depth=1;end=begin+1
 while depth:
@@ -25,6 +25,9 @@ finish=function('i9100_boot_charge_finish')
 boot_report=function('lpm_boot_report')
 stage=function('i9100_boot_charge_stage')
 failure=function('i9100_boot_charge_failure')
+spec=importlib.util.spec_from_file_location('charge_gate_tree',Path(__file__).with_name('prepare-payloads.py'))
+dt=importlib.util.module_from_spec(spec);spec.loader.exec_module(dt)
+tree=dt.device_tree();(out/'tree.bin').write_bytes(tree)
 code=r'''
 #include <stdint.h>
 #include <stdlib.h>
@@ -37,6 +40,7 @@ code=r'''
 #include "i9100-charge-screen.h"
 #include "i9100-charge-report.h"
 #include "i9100-charge-start.h"
+#include "main/i9100-charge-handoff.h"
 #include "charge/i9100_panel_spi.h"
 #include "charge/i9100_panel_sleep.h"
 #define I9100_STANDALONE_CHARGE_BUILD 1
@@ -49,6 +53,7 @@ static unsigned i9100_lpm_boot_active,i9100_lpm_boot_owned,i9100_lpm_resume_char
 static unsigned i9100_lpm_boot_polls,i9100_lpm_boot_phase;
 static unsigned i9100_lpm_boot_fault,i9100_lpm_fault_phase;
 static uint64_t i9100_lpm_boot_next;
+static uint64_t i9100_lpm_boot_sample_ticks;
 static unsigned power_init_calls,failed_stop;
 static unsigned stop_sequence,last_boot_stage,fault_reports,boot_admission,slow_sample;
 static uint64_t first_key_seen,last_key_seen,unblank_ticks,last_blank_ticks;
@@ -56,6 +61,9 @@ static unsigned i9100_boot_source,scenario,draws,late_draws,blanked,last_unblank
 static uint64_t ticks,last_draw_ticks,reset_ticks,action_taken_ticks;static uint32_t fb[480*800];static jmp_buf escaped;
 static unsigned pmu2,pmu3,wait_ticks,panel_mode=0x9c,panel_scan=0x1003,panel_commands;
 static unsigned i9100_lpm_timer_rearms,i9100_lpm_timer_faults;
+static uint8_t device_tree[4096] __attribute__((aligned(4)));
+static unsigned device_tree_bytes;
+void i9100_boot_charge_failure(unsigned);
 static int lpm_boot_requested(const unsigned*p){return *p==1;}
 static int lpm_timer_init(void){return 1;}
 static int lpm_mct_write(unsigned offset,uint32_t value,uint32_t mask){assert(offset==0x240 && value==256 && mask==65536);return 1;}
@@ -111,7 +119,7 @@ static void lpm_hw_write(void*c,unsigned r,unsigned o,uint32_t v){(void)c;(void)
 static void lpm_delay(void*c,unsigned n){(void)c;(void)n;}
 static void lpm_enter(void*c){(void)c;}static void lpm_leave(void*c){(void)c;}
 static uint64_t lpm_now(void*c){(void)c;return ticks*1000/24;}
-int i9100_power_init(struct i9100_power_state*s,const struct i9100_power_io*io,unsigned r){power_init_calls++;assert(r==14);memset(s,0,sizeof(*s));s->io=*io;s->ready=s->enabled=s->valid=s->present=s->connected=s->charging=1;s->millivolts=scenario==4?3400:4000;s->percent=50;s->temperature_deci_c=250;s->charge_start=12345;return 0;}
+int i9100_power_init(struct i9100_power_state*s,const struct i9100_power_io*io,unsigned r){power_init_calls++;assert(r==14);memset(s,0,sizeof(*s));s->io=*io;s->revision=14;s->use_sub=1;s->ready=s->enabled=s->valid=s->present=s->connected=s->charging=1;s->millivolts=scenario==4?3400:4000;s->percent=50;s->temperature_deci_c=250;s->charge_start=12345;return 0;}
 int i9100_power_poll(struct i9100_power_state*s){assert(s->io.cookie==&i9100_lpm_hw);
  if(scenario>=11)ticks+=2400U; /* Each real bus sample advances the MCT. */
  if((scenario==17 || scenario==18) && seconds()>=35 && !slow_sample){ticks+=9600000U;slow_sample=1;}
@@ -146,7 +154,14 @@ void usbcdc4210_charge_fault_report(const unsigned p[8]){
 }
 void usbcdc4210_charge_boot_report(const unsigned p[8]){
  assert(p[0]>=1 && p[0]<=9 && p[2]<=1 && p[7]<=1);last_boot_stage=p[0];
- if(p[0]==7)assert(stops && !i9100_lpm_boot_active && !i9100_lpm_battery.enabled);
+ if(p[0]==7){
+  assert(stops && !i9100_lpm_boot_active && !i9100_lpm_battery.enabled);
+  ticks+=9600000ULL; /* Host control IO can delay a synchronous status report. */
+ }
+}
+void usbcdc4210_charge_boot_report_passive(const unsigned p[8]){
+ assert(p[0]==7 && stops && !i9100_lpm_boot_active && !i9100_lpm_battery.enabled);
+ last_boot_stage=7; /* Enqueue-only status: zero simulated time/hardware calls. */
 }
 void usbcdc_poll(void){usb_calls++;
  if(scenario==10 && seconds()>=35 && !remote_issued)ticks+=7200000ULL;
@@ -207,7 +222,10 @@ void usbcdc4210_charge_panel_recovery_report(const unsigned values[4]){
  assert(values[0]<=1 && values[1]<=2 && values[3]<=4);
 }
 '''+service+'\n'+boot_report+'\n'+stage+'\n'+gate+'\n'+finish+'\n'+failure+r'''
-int main(void){
+int main(int argc,char **argv){
+ assert(argc==3);FILE *tree_file=fopen(argv[1],"rb");assert(tree_file);
+ device_tree_bytes=fread(device_tree,1,sizeof(device_tree),tree_file);fclose(tree_file);
+ assert(i9100_charge_handoff_slot(device_tree,device_tree_bytes));
  alarm(20); /* A stuck offline model cannot hold a CPU indefinitely. */
  for(scenario=1;scenario<=
 #ifdef I9100_PANEL_SLEEP_BUILD
@@ -233,7 +251,7 @@ int main(void){
    if(scenario>=11 && scenario<=16){
     ticks=40ULL*24000000;
     if(scenario>=14){i9100_lpm_boot_phase=5;i9100_boot_charge_failure(1);assert(0);}
-    else i9100_boot_charge_finish();
+    else i9100_boot_charge_finish(device_tree,device_tree_bytes);
    }
   }
   assert(late_draws==0 && draws>=30 && usb_calls>1000 && reports>=2);
@@ -244,8 +262,23 @@ int main(void){
    unsigned previous_polls=i9100_lpm_boot_polls;
    ticks+=24000000ULL;i9100_boot_charge_service();assert(stops==0 && i9100_lpm_battery.enabled && i9100_lpm_boot_polls>previous_polls);
    previous_polls=i9100_lpm_boot_polls;i9100_boot_charge_service();assert(i9100_lpm_boot_polls==previous_polls);
-   ticks+=24000000ULL;i9100_boot_charge_finish();
+   ticks+=24000000ULL;uint64_t finish_began=ticks;i9100_boot_charge_finish(device_tree,device_tree_bytes);
+   assert(ticks-finish_began<=2400U); /* Only the modeled fresh cell sample, no USB wait after stop. */
    assert(stops==1 && !i9100_lpm_boot_active && !i9100_lpm_battery.enabled && i9100_lpm_boot_phase==7 && last_boot_stage==7);
+   struct I9100ChargeHandoff *record=(void*)i9100_charge_handoff_slot(device_tree,device_tree_bytes);
+   assert(record && record->magic==I9100_CHARGE_HANDOFF_MAGIC && record->bytes==128 && record->flags==7);
+   assert(record->checksum==i9100_charge_handoff_checksum(record) && !record->enabled_after && !record->charging_after);
+   assert(record->qualified_samples==11 && record->recovery_seconds>=10 && record->millivolts==4000);
+   assert(record->revision==14 && record->sub_charger==1);
+   if(scenario==1){
+    char output[4096];snprintf(output,sizeof(output),"%s/%s-handoff.bin",argv[2],
+#ifdef I9100_PANEL_SLEEP_BUILD
+     "panel"
+#else
+     "legacy"
+#endif
+    );FILE *saved=fopen(output,"wb");assert(saved && fwrite(record,1,128,saved)==128);fclose(saved);
+   }
   }
   if(scenario==1){assert(result==1 && ticks>=37ULL*24000000 && last_unblank==35);assert(pmu2==0x12345678 && pmu3==0x12345670 && stops==1);}
   if(scenario==2){assert(result==1 && ticks>=35ULL*24000000+12000000ULL && pmu3==0x12345670 && stops==1);}
@@ -296,8 +329,12 @@ int main(void){
 for variant in ('legacy','panel'):
     actual=code if variant=='legacy' else code.replace('#define I9100_STANDALONE_CHARGE_BUILD 1','#define I9100_STANDALONE_CHARGE_BUILD 1\n#define I9100_PANEL_SLEEP_BUILD 1')
     (out/(variant+'.c')).write_text(actual)
-    for n,cmd in enumerate((['clang','-O1','-g','-fno-pie','-no-pie','-Wno-pointer-to-int-cast','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(repo/'board/samsung'),str(out/(variant+'.c')),'-o',str(out/variant)],[str(out/variant)])):
+    for n,cmd in enumerate((['clang','-O1','-g','-fno-pie','-no-pie','-Wno-pointer-to-int-cast','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(repo/'board/samsung'),'-I'+str(repo/'include'),str(out/(variant+'.c')),'-o',str(out/variant)],[str(out/variant),str(out/'tree.bin'),str(out)])):
         r=subprocess.run(cmd,text=True,capture_output=True);(out/f'{variant}-command-{n}.log').write_text(r.stdout+r.stderr)
         if r.returncode:print((r.stdout+r.stderr)[-3000:],file=sys.stderr);r.check_returncode()
         if r.stdout:print(variant,r.stdout.strip(),flush=True)
+    spec=importlib.util.spec_from_file_location('production_gate_handoff',Path(__file__).with_name('charge-handoff.py'))
+    decoder=importlib.util.module_from_spec(spec);spec.loader.exec_module(decoder)
+    decoded=decoder.decode((out/(variant+'-handoff.bin')).read_bytes())
+    assert decoded['valid'] and decoded['enabled_before']==1 and decoded['enabled_after']==0
 print('EVIDENCE',out,flush=True)

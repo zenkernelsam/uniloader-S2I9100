@@ -17,6 +17,7 @@ def module(name,file):
 r=module('charge_roundtrip_resume','resume-on-device.py')
 o=r.o
 s=module('charge_roundtrip_summary','summarize-charge-loader.py')
+h=module('charge_roundtrip_handoff','charge-handoff.py')
 
 def rows(path):
     return r.read_events(path)
@@ -218,8 +219,25 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         '--output',out/'returned-xnu-evidence','--seconds','120','--charge-on-ready','--on-ready','diagnostics'],
         out/'returned-xnu-process',300,record)
     owner_complete(out/'returned-xnu-evidence',tag)
+    require_handoff=manifest.get('standalone_charge_handoff') is True
+    if require_handoff:
+        task=out/'returned-xnu-evidence/task-0000'
+        o.require((task/'result.json').is_file() and (task/'charge-handoff.bin').is_file(),
+            'Returned XNU lacks its actual charger handoff observation')
+        charge=json.loads((task/'result.json').read_text(encoding='utf-8')).get('charge',{})
+        observed=charge.get('charger_handoff',{})
+        raw=(task/'charge-handoff.bin').read_bytes();decoded=h.decode(raw)
+        import hashlib
+        o.require(decoded.get('valid') is True and observed.get('valid') is True and
+            observed.get('root_stable') is True and observed.get('kernel_tag')==tag and
+            observed.get('raw_sha256')==hashlib.sha256(raw).hexdigest(),
+            'Returned XNU did not prove a complete same-BUILD charger stop record')
+        o.save(out/'boot-handoff-verified.json',dict(record=decoded,
+            kernel_tag=tag,takeover_observation=charge.get('charger_takeover_observation'),
+            limit='Checked loader stop retained in XNU; first-sample timing is optional and never proves net charging'))
     record('DONE',meaning='Normal shutdown, timed new charger UI/blank records, one remote boot and same XNU BUILD verified',
         native_artwork_verified=require_art,
+        charger_handoff_verified=require_handoff,
         writes_to_flash=0,physical_power_key_verified=False,energy_balance_verified=False)
 
 def main():
