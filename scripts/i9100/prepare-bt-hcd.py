@@ -78,12 +78,16 @@ def controller_proof(data):
 def prepare(args):
     if not args.source_note.strip():raise ValueError('Original asset/controller/RAM provenance note required')
     image,im=source(args.hcd,MAX_HCD);proof,pm=source(args.controller_proof,16384)
-    controller=controller_proof(json.loads(proof));records=parse_hcd(image,args.ram_base,args.ram_bytes,args.launch_address)
+    controller_data=json.loads(proof)
+    if args.mark_reviewed and controller_data.get('model_fixture'):
+        raise ValueError('Model controller evidence cannot become hardware reviewed')
+    controller=controller_proof(controller_data);records=parse_hcd(image,args.ram_base,args.ram_bytes,args.launch_address)
     if not 5000<=args.timeout_ms<=300000:raise ValueError('Timeout outside bootstrap range')
     output=args.output.resolve() if args.output else REPO/'out'/('bt-hcd-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
     if not output.is_relative_to((REPO/'out').resolve()) or output.exists():raise ValueError('Use a fresh loader out directory')
     manifest=dict(schema=1,kind='i9100-bcm-bluetooth-ram-bootstrap',hardware_tested=False,device_contacted=False,
-        board_data_reviewed=bool(args.mark_reviewed),source_note=args.source_note,inputs=dict(hcd=im,controller_proof=pm),
+        board_data_reviewed=bool(args.mark_reviewed),model_fixture=bool(controller_data.get('model_fixture')),
+        source_note=args.source_note,inputs=dict(hcd=im,controller_proof=pm),
         profile=dict(**controller,ram_base=args.ram_base,ram_bytes=args.ram_bytes,launch_address=args.launch_address,
             timeout_ms=args.timeout_ms,hcd_sha256=im['sha256']),records=records,
         requirements='Actual U1 power/rails/LPO and fresh UART0 generation, identity/BDADDR/RAM/launch reviewed separately; no on-device write by this tool')
