@@ -58,10 +58,19 @@ int main(void){
  assert(mct[0x208/4]==240000&&mct[0x248/4]==1&&mct[0x240/4]==259);
  assert(((dist[(0x800+88)/4]>>8)&255)==1);
  lpm_sleep_tick();assert(waits==1&&acks==1);
+ /* Real rendering/USB work can exceed 10ms. The old helper WFI waited
+  * against an expired compare. Verify a future match before each wait. */
+ ticks=2000000ULL;mct[0x200/4]=1000;mct[0x204/4]=0;
+ lpm_sleep_tick();assert(waits==2 && i9100_lpm_timer_rearms==1 && mct[0x200/4]>2000000U);
+ stall=1;mct[0x200/4]=1000;unsigned before_waits=waits;
+ lpm_sleep_tick();assert(waits==before_waits && i9100_lpm_timer_faults==1);
+ lpm_sleep_tick();assert(waits==before_waits && !i9100_lpm_timer_ready);
+ stall=0;lpm_sleep_tick();assert(waits==before_waits+1 && i9100_lpm_timer_ready);
+ mct[0x248/4]=0;lpm_sleep_tick();assert(waits==before_waits+2 && mct[0x248/4]==1);
  reset();stall=1;assert(!lpm_timer_init());
  reset();stuck=1;assert(!lpm_timer_init());
  reset();dist[1]=31;assert(!lpm_timer_init());
- puts("PASS production MCT/GIC: only INTID89 enabled, 10ms cadence, CPU wait/ACK, stalled handshake/counter and invalid-controller refusal");
+ puts("PASS production MCT/GIC: IRQ89/10ms, wait/ACK, expired-draw compare rebased, failed rearm stays awake, handshake/counter/controller refusal");
 }
 '''
 (out/'check.c').write_text(source)

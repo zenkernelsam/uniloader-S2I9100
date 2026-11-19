@@ -32,6 +32,7 @@ int main(int argc,char**argv){assert(argc==2);
  for(unsigned bpp=16;bpp<=32;bpp+=16){unsigned bytes=480*800*bpp/8;
   uint8_t*allocation=malloc(bytes+128);assert(allocation);memset(allocation,0xa5,bytes+128);
   struct i9100_charge_screen s={allocation+64,bytes,480*bpp/8,bpp};
+  i9100_charge_renderer_reset();
   for(unsigned percent=0;percent<=100;percent+=25){assert(i9100_charge_draw(&s,1,percent,1,1,0,0,3));
    if(percent==75 && bpp==32){char name[512];snprintf(name,sizeof(name),"%s/frame.bin",argv[1]);FILE*f=fopen(name,"wb");assert(f&&fwrite(s.pixels,1,bytes,f)==bytes);fclose(f);}
    for(unsigned n=0;n<64;n++)assert(allocation[n]==0xa5 && allocation[64+bytes+n]==0xa5);

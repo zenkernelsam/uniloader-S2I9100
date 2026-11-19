@@ -1,6 +1,7 @@
 #ifndef I9100_CHARGE_SCREEN_H
 #define I9100_CHARGE_SCREEN_H
 #include <stdint.h>
+#include "i9100-charge-art.h"
 /* Standalone charger visuals. The caller supplies the observed window buffer,
  * exact pixel format, valid state and actual SOC; drawing has no hardware API. */
 struct i9100_charge_screen{void*pixels;unsigned bytes,stride,bpp;};
@@ -28,8 +29,50 @@ static void i9100_charge_pixel(const struct i9100_charge_screen*s,unsigned x,uns
  else *(volatile uint16_t*)((uint8_t*)s->pixels+index)=
   (uint16_t)(((color>>8)&0xf800U)|((color>>5)&0x07e0U)|((color>>3)&0x001fU));
 }
+struct i9100_charge_render_stats { unsigned frames, stores, last_stores, unchanged, art_frame, art_ok; };
+static struct i9100_charge_render_stats i9100_charge_render;
+/* Private RAM is part of loader BSS, never a guessed free physical address.
+ * The live scanout receives final pixels only, never a blank intermediate. */
+#define I9SCREEN_TOP 284U
+#define I9SCREEN_HEIGHT 320U
+static uint32_t i9100_charge_composed[480U*I9SCREEN_HEIGHT];
+#ifdef I9100_CHARGE_ART_BLOB
+static uint16_t i9100_charge_sprite[I9ART_PIXELS];
+static unsigned i9100_charge_sprite_key=~0U;
+#endif
+static void *i9100_charge_previous_buffer;
+static unsigned i9100_charge_previous_bpp, i9100_charge_previous_key=~0U;
+static inline void i9100_charge_renderer_reset(void)
+{
+ i9100_charge_previous_buffer=0;i9100_charge_previous_bpp=0;i9100_charge_previous_key=~0U;
+ i9100_charge_render=(struct i9100_charge_render_stats){0};
+#ifdef I9100_CHARGE_ART_BLOB
+ i9100_charge_sprite_key=~0U;
+#endif
+}
+static uint32_t i9100_charge_get(const struct i9100_charge_screen*s,unsigned x,unsigned y)
+{
+ const uint8_t*p=(const uint8_t*)s->pixels+y*s->stride+x*(s->bpp/8U);
+ if(s->bpp==32U)return *(const volatile uint32_t*)p;
+ return *(const volatile uint16_t*)p;
+}
+static uint32_t i9100_charge_encode(unsigned bpp,uint32_t c)
+{
+ if(bpp==32U)return c|0xff000000U;
+ return ((c>>8)&0xf800U)|((c>>5)&0x07e0U)|((c>>3)&0x001fU);
+}
+static void i9100_charge_final_pixel(const struct i9100_charge_screen*s,unsigned x,unsigned y,uint32_t c)
+{
+ c=i9100_charge_encode(s->bpp,c);
+ if(i9100_charge_get(s,x,y)==c)return;
+ uint8_t*p=(uint8_t*)s->pixels+y*s->stride+x*(s->bpp/8U);
+ if(s->bpp==32U)*(volatile uint32_t*)p=c;
+ else *(volatile uint16_t*)p=(uint16_t)c;
+ i9100_charge_render.stores++;i9100_charge_render.last_stores++;
+}
 static void i9100_charge_rect(const struct i9100_charge_screen*s,unsigned x,unsigned y,unsigned w,unsigned h,uint32_t c)
 {for(unsigned j=0;j<h && y+j<800;j++)for(unsigned i=0;i<w && x+i<480;i++)i9100_charge_pixel(s,x+i,y+j,c);}
+#ifndef I9100_CHARGE_ART_BLOB
 static unsigned i9100_charge_corner(unsigned dy,unsigned height,unsigned radius)
 {
  unsigned edge=dy<height/2?dy:height-1-dy;
@@ -38,6 +81,7 @@ static unsigned i9100_charge_corner(unsigned dy,unsigned height,unsigned radius)
  for(unsigned x=0;x<radius;x++)if((radius-x)*(radius-x)+distance*distance<=radius*radius)return x;
  return radius;
 }
+#endif
 static const uint8_t i9100_charge_digits[12][7]={
  {14,17,19,21,25,17,14},{4,12,4,4,4,4,14},{14,17,1,2,4,8,31},
  {30,1,1,14,1,1,30},{2,6,10,18,31,2,2},{31,16,16,30,1,1,30},
@@ -53,52 +97,78 @@ static int i9100_charge_draw(const struct i9100_charge_screen*s,unsigned valid,u
  unsigned connected,unsigned charging,int reason,unsigned full,unsigned frame)
 {
  if(!i9100_charge_screen_valid(s) || soc>100 || charging>1 || connected>1 || full>1 || valid>1)return 0;
- i9100_charge_rect(s,0,0,480,800,0);
+ (void)frame; /* Artwork follows measured state, never a fictitious fill sweep. */
+ unsigned visual_reason=reason==I9100_POWER_TEMPERATURE || reason==I9100_POWER_TIMEOUT;
+ unsigned key=soc|(valid<<8)|(connected<<9)|(charging<<10)|(full<<11)|(visual_reason<<12);
+ unsigned first=s->pixels!=i9100_charge_previous_buffer || s->bpp!=i9100_charge_previous_bpp ||
+   i9100_charge_previous_key==~0U;
+ i9100_charge_render.last_stores=0;
+ if(!first && key==i9100_charge_previous_key){i9100_charge_render.unchanged++;return 1;}
+ for(unsigned n=0;n<480U*I9SCREEN_HEIGHT;n++)i9100_charge_composed[n]=0;
+ struct i9100_charge_screen layer={i9100_charge_composed,sizeof(i9100_charge_composed),1920U,32U};
+ const struct i9100_charge_screen*destination=s;s=&layer;
+#ifdef I9100_CHARGE_ART_BLOB
+ unsigned art=i9100_charge_art_frame(valid,soc,full);
+ if(art!=i9100_charge_sprite_key){
+  unsigned bytes=(unsigned)(i9100_charge_art_end-i9100_charge_art_start);
+  if(!i9100_charge_art_decode(i9100_charge_art_start,bytes,art,i9100_charge_sprite,I9ART_PIXELS))return 0;
+  i9100_charge_sprite_key=art;
+ }
+ for(unsigned y=0;y<I9ART_HEIGHT;y++)for(unsigned x=0;x<I9ART_WIDTH;x++){
+  unsigned c=i9100_charge_sprite[y*I9ART_WIDTH+x],r=(c>>11)&31U,g=(c>>5)&63U,b=c&31U;
+  i9100_charge_pixel(s,42U+x,y,((r*255U/31U)<<16)|((g*255U/63U)<<8)|(b*255U/31U));
+ }
+ i9100_charge_render.art_frame=art;i9100_charge_render.art_ok=1;
+#else
  /* Restrained silver body and a real fill level, on black AMOLED background. */
- for(unsigned y=304;y<480;y++){
-  unsigned d=y<392?y-304:479-y;
+ for(unsigned y=20;y<196;y++){
+  unsigned d=y<108?y-20:195-y;
   uint32_t g=90U+d*120U/88U,c=(g<<16)|(g<<8)|g;
-  unsigned inset=i9100_charge_corner(y-304,176,16);
+  unsigned inset=i9100_charge_corner(y-20,176,16);
   i9100_charge_rect(s,74+inset,y,318-2*inset,1,c);
  }
- for(unsigned y=314;y<469;y++){
-  unsigned inset=i9100_charge_corner(y-314,155,9);
+ for(unsigned y=30;y<185;y++){
+  unsigned inset=i9100_charge_corner(y-30,155,9);
   i9100_charge_rect(s,83+inset,y,299-2*inset,1,0x00060606U);
  }
- i9100_charge_rect(s,392,352,17,80,0x00777777U);
- i9100_charge_rect(s,396,361,10,62,0x00999999U);
+ i9100_charge_rect(s,392,68,17,80,0x00777777U);
+ i9100_charge_rect(s,396,77,10,62,0x00999999U);
  unsigned length=valid?287U*soc/100U:0;
- for(unsigned y=322;y<462;y++){
-  unsigned dy=y-322,brightness=dy<70?220U-dy:110U+(dy-70U)/2U;
+ for(unsigned y=38;y<178;y++){
+  unsigned dy=y-38,brightness=dy<70?220U-dy:110U+(dy-70U)/2U;
   uint32_t color=(charging || full) ? (brightness<<8)|0x00080008U :
    reason==I9100_POWER_TEMPERATURE || reason==I9100_POWER_TIMEOUT ? (brightness<<16)|0x00004000U :0x004c4c4cU;
-  unsigned inset=i9100_charge_corner(y-322,140,5);
+  unsigned inset=i9100_charge_corner(y-38,140,5);
   if(length>inset)i9100_charge_rect(s,89+inset,y,length-inset,1,color);
  }
- if(valid && charging && !full && length>12){
-  unsigned band=12U+(frame%8U)*(length-12U)/8U;
-  i9100_charge_rect(s,89+band-8U,322,5,140,0x003df26bU);
- }
- unsigned digits=valid?(soc>=100?3U:soc>=10?2U:1U):2U;
- unsigned width=(digits+1U)*30U,x=(480U-width)/2U;
- if(!valid){i9100_charge_digit(s,11,x,523,5,0x00b0b0b0);i9100_charge_digit(s,11,x+30,523,5,0x00b0b0b0);}
- else{
-  if(digits==3){i9100_charge_digit(s,1,x,523,5,0x00e8e8e8);x+=30;}
-  if(digits>=2){i9100_charge_digit(s,(soc/10)%10,x,523,5,0x00e8e8e8);x+=30;}
-  i9100_charge_digit(s,soc%10,x,523,5,0x00e8e8e8);x+=30;
- }
- i9100_charge_digit(s,10,x,523,5,0x00e8e8e8);
- /* Dim static reflection below the glass body; no independent animation. */
- if(valid)for(unsigned y=481;y<502;y++){
-  unsigned glow=(502-y)*2U;
+ if(valid)for(unsigned y=197;y<218;y++){
+  unsigned glow=(218-y)*2U;
   uint32_t c=(charging||full)?glow<<8:(glow<<16)|(glow<<8)|glow;
   i9100_charge_rect(s,89,y,length,1,c);
  }
- if(valid && connected && (charging || full)){
-  /* Small charge bolt; amber pause mark for a protected/offline state. */
-  for(unsigned y=597;y<621;y++)i9100_charge_rect(s,242-(y-597)/2,y,7,1,0x0074bc7aU);
-  for(unsigned y=611;y<636;y++)i9100_charge_rect(s,230+(y-611)/2,y,7,1,0x0074bc7aU);
- }else{i9100_charge_rect(s,228,603,7,28,0x00826a38U);i9100_charge_rect(s,245,603,7,28,0x00826a38U);}
+#endif
+ unsigned digits=valid?(soc>=100?3U:soc>=10?2U:1U):2U;
+ unsigned width=(digits+1U)*24U,x=(480U-width)/2U;
+ uint32_t ink=visual_reason?0x00ce9f59U:valid && soc<=10U?0x00c98480U:0x00bdbdbdU;
+ if(!valid){i9100_charge_digit(s,11,x,280,4,ink);i9100_charge_digit(s,11,x+24,280,4,ink);x+=48;}
+ else{
+  if(digits==3){i9100_charge_digit(s,1,x,280,4,ink);x+=24;}
+  if(digits>=2){i9100_charge_digit(s,(soc/10)%10,x,280,4,ink);x+=24;}
+  i9100_charge_digit(s,soc%10,x,280,4,ink);x+=24;
+ }
+ i9100_charge_digit(s,10,x,280,4,ink);
+ /* Final row spans replace only pixels which changed; unchanged static
+  * glass and the black background are never cleared for a later redraw. */
+ for(unsigned y=0;y<800U;y++){
+  if(!first && (y<I9SCREEN_TOP || y>=I9SCREEN_TOP+I9SCREEN_HEIGHT))continue;
+  for(unsigned x=0;x<480U;x++){
+   uint32_t c=y>=I9SCREEN_TOP && y<I9SCREEN_TOP+I9SCREEN_HEIGHT?
+     i9100_charge_composed[(y-I9SCREEN_TOP)*480U+x]:0;
+   i9100_charge_final_pixel(destination,x,y,c);
+  }
+ }
+ i9100_charge_previous_buffer=destination->pixels;i9100_charge_previous_bpp=destination->bpp;
+ i9100_charge_previous_key=key;i9100_charge_render.frames++;
  return 1;
 }
 #endif

@@ -58,6 +58,7 @@ def main():
     parser.add_argument('--panel-sleep',action='store_true',help='Qualify real LD9040 state before retained-gamma panel and scanout sleep')
     parser.add_argument('--charge-probe', action='store_true', help='One guarded 1-second charger-disable contrast on the Power owner')
     parser.add_argument('--standalone-charge', action='store_true', help='Keep the original charging picture and supervise U1 charging before XNU')
+    parser.add_argument('--charge-art',type=Path,help='Local extracted iOS6 battery sprite pack for standalone charging')
     parser.add_argument('--reboot-download-fallback', action='store_true',
                         help='Recover normal iOS reboot requests into Download after filesystem shutdown')
     parser.add_argument('--tcc-development', action='store_true',
@@ -120,6 +121,17 @@ def main():
         parser.error('--charge-probe requires --charge-diag')
     if args.standalone_charge and not args.control:
         parser.error('--standalone-charge requires --control')
+    if args.charge_art and not args.standalone_charge:
+        parser.error('--charge-art requires the standalone charger')
+    art_record=None
+    if args.charge_art:
+        args.charge_art=args.charge_art.resolve()
+        if not args.charge_art.is_relative_to(loader.parent/'assets') or not args.charge_art.is_file():
+            parser.error('Local artwork must stay inside project assets')
+        art_bytes=args.charge_art.read_bytes()
+        if len(art_bytes)<176 or len(art_bytes)>2*1024*1024 or struct.unpack_from('<4s7I',art_bytes)!=(b'I9B1',1,396,258,18,396*258*2,176,len(art_bytes)):
+            parser.error('Exact qualified I9B1 artwork pack required')
+        art_record=dict(path=str(args.charge_art.relative_to(loader.parent)),bytes=len(art_bytes),sha256=sha(args.charge_art))
     if args.reboot_download_fallback and not args.control:
         parser.error('--reboot-download-fallback requires --control')
     if args.tcc_development and not args.control:
@@ -230,8 +242,9 @@ def main():
         for name in ('.config','include/generated/autoconf.h'):
             path=loader/name
             if path.is_file():charger_sources[name]=sha(path)
+        if art_record:charger_sources['../'+art_record['path']]=art_record['sha256']
         charger_identity=dict(schema=2,kernel_sha256=sha(kernel),sources=charger_sources,
-            flags={key:value for key,value in vars(args).items() if key not in ('kernel','output')})
+            flags={key:(str(value) if isinstance(value,Path) else value) for key,value in vars(args).items() if key not in ('kernel','output')})
         charger_tag=hashlib.sha256(json.dumps(charger_identity,sort_keys=True,separators=(',',':')).encode()).hexdigest()[:16]
         (output/'charger-identity.json').write_text(json.dumps(dict(schema=2,tag=charger_tag,
             kernel_sha256=sha(kernel),sources=charger_sources,flags=charger_identity['flags']),indent=2)+'\n')
@@ -260,6 +273,7 @@ def main():
         *(['--panel-sleep'] if args.panel_sleep else []),
         *(['--charge-probe'] if args.charge_probe else []),
         *(['--standalone-charge'] if args.standalone_charge else []),
+        *(['--charge-art',args.charge_art] if args.charge_art else []),
         *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
         *(['--tcc-development'] if args.tcc_development else []),
         *(['--mdns-development'] if args.mdns_development else []),
@@ -331,6 +345,10 @@ def main():
     (output/'loader-symbols.txt').write_text(symbols)
     sym = {row.split()[2]: int(row.split()[0],16) for row in symbols.splitlines()
         if len(row.split()) == 3 and row.split()[0][0] in '0123456789abcdef'}
+    if art_record:
+        embedded=data[sym['i9100_charge_art_start']-0x48000000:sym['i9100_charge_art_end']-0x48000000]
+        assert embedded==art_bytes and sha(args.charge_art)==art_record['sha256'],'Embedded local artwork differs'
+        assert b'I9CR1 ' in data and b'I9BT1 ' in data,'Charger render/start qualification records missing'
     packed_blob = data[sym['_kernel_start']-0x48000000:sym['_kernel_end']-0x48000000]
     assert packed_blob == blob.read_bytes()
     assert lz4.block.decompress(packed_blob, uncompressed_size=len(raw_data)) == raw_data
@@ -381,6 +399,7 @@ def main():
         'standalone_panel_recovery': args.standalone_charge and args.panel_sleep and b'I9PR1 ' in data,
         'charge_probe': args.charge_probe,
         'standalone_charge': args.standalone_charge,
+        'standalone_charge_art': art_record,
         'standalone_charge_control': args.standalone_charge and b'I9CHC2 READY ' in data,
         'standalone_charge_control_version': 2 if args.standalone_charge and b'I9CHC2 READY ' in data else None,
         'standalone_charge_control_tag': charger_tag,

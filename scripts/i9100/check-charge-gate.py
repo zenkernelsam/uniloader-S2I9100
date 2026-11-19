@@ -25,6 +25,7 @@ code=r'''
 #include "charge/i9100_power.h"
 #include "i9100-charge-screen.h"
 #include "i9100-charge-report.h"
+#include "i9100-charge-start.h"
 #include "charge/i9100_panel_spi.h"
 #include "charge/i9100_panel_sleep.h"
 #define I9100_STANDALONE_CHARGE_BUILD 1
@@ -34,6 +35,7 @@ static struct i9100_power_state i9100_lpm_battery;
 static unsigned i9100_boot_source,scenario,draws,late_draws,blanked,last_unblank,remote_issued,stops,reports,usb_calls;
 static uint64_t ticks,last_draw_ticks,reset_ticks,action_taken_ticks;static uint32_t fb[480*800];static jmp_buf escaped;
 static unsigned pmu2,pmu3,wait_ticks,panel_mode=0x9c,panel_scan=0x1003,panel_commands;
+static unsigned i9100_lpm_timer_rearms,i9100_lpm_timer_faults;
 static int lpm_boot_requested(const unsigned*p){return *p==1;}
 static int lpm_timer_init(void){return 1;}
 static uint64_t lpm_ticks(void){return ticks;}
@@ -78,7 +80,7 @@ static void lpm_hw_write(void*c,unsigned r,unsigned o,uint32_t v){(void)c;(void)
 static void lpm_delay(void*c,unsigned n){(void)c;(void)n;}
 static void lpm_enter(void*c){(void)c;}static void lpm_leave(void*c){(void)c;}
 static uint64_t lpm_now(void*c){(void)c;return ticks*1000/24;}
-int i9100_power_init(struct i9100_power_state*s,const struct i9100_power_io*io,unsigned r){(void)io;assert(r==14);memset(s,0,sizeof(*s));s->valid=s->connected=s->charging=1;s->millivolts=scenario==4?3400:4000;s->percent=50;return 0;}
+int i9100_power_init(struct i9100_power_state*s,const struct i9100_power_io*io,unsigned r){(void)io;assert(r==14);memset(s,0,sizeof(*s));s->valid=s->present=s->connected=s->charging=1;s->millivolts=scenario==4?3400:4000;s->percent=50;s->temperature_deci_c=250;return 0;}
 int i9100_power_poll(struct i9100_power_state*s){if(scenario==5 && seconds()>=35)s->connected=0;return 0;}
 int i9100_power_stop(struct i9100_power_state*s){(void)s;stops++;return 0;}
 int i9100_power_pmic_read(void*c,unsigned r,uint8_t*v){(void)c;(void)r;(void)v;return 0;}
@@ -95,15 +97,17 @@ void usbcdc4210_charge_timed_report(const struct i9100_charge_report *r){
 }
 void usbcdc4210_charge_screen_report(unsigned d,unsigned b,unsigned s,unsigned p){(void)d;(void)b;assert(s==1920 && p==32);}
 void usbcdc4210_charge_fimd_report(const unsigned p[8]){assert(p[1]==0x8035 && p[6]==(blanked?0x1000000:0));}
+void usbcdc4210_charge_render_report(const unsigned p[8]){assert(p[0]<=1 && p[4]<=480*800);}
+void usbcdc4210_charge_start_report(const unsigned p[8]){assert(p[0]<=1 && p[1]<=11 && p[3]==1);}
 void usbcdc_poll(void){usb_calls++;
  if(scenario==10 && seconds()>=35 && !remote_issued)ticks+=7200000ULL;
 }
 void usbcdc4210_charge_set_boot_ready(unsigned available){
 #ifdef I9100_PANEL_SLEEP_BUILD
- assert(available==(scenario!=4 && !(scenario==6 && seconds()>=31 && seconds()<36) &&
+ assert(available==(seconds()>=11 && scenario!=4 && !(scenario==6 && seconds()>=31 && seconds()<36) &&
   !((scenario==8 || scenario==9) && seconds()>=31)));
 #else
- assert(available==(scenario!=4));
+ assert(available==(seconds()>=11 && scenario!=4));
 #endif
 }
 unsigned usbcdc4210_charge_take_action(void){
@@ -161,7 +165,7 @@ int main(void){
   if(scenario>=6 && scenario<=9)continue;
 #endif
   panel_mode=0x9c;panel_scan=0x1003;panel_commands=0;
-  ticks=action_taken_ticks=draws=late_draws=blanked=last_unblank=remote_issued=stops=reports=usb_calls=pmu2=pmu3=wait_ticks=0;i9100_boot_source=1;
+  ticks=action_taken_ticks=draws=late_draws=blanked=last_unblank=remote_issued=stops=reports=usb_calls=pmu2=pmu3=wait_ticks=0;i9100_boot_source=1;i9100_charge_renderer_reset();
   unsigned result=setjmp(escaped);if(!result){i9100_standalone_charge_gate();result=1;}
   assert(late_draws==0 && draws>=30 && usb_calls>1000 && reports>=2);
   if(scenario!=6 && scenario!=8 && scenario!=10)assert(panel_scan==0x1003 || scenario>=3 && scenario<=5);

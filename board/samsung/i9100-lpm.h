@@ -10,6 +10,7 @@
 #include "charge/i9100_power_bus.c"
 #include "i9100-charge-screen.h"
 #include "i9100-charge-report.h"
+#include "i9100-charge-start.h"
 #include "charge/i9100_panel_spi.h"
 #include "charge/i9100_panel_sleep.h"
 #ifndef LPM_BARRIER
@@ -22,6 +23,7 @@ static int lpm_boot_requested(const struct I9100BootSource *source)
 {return source && source->magic==I9100_BOOT_SOURCE_MAGIC && source->version==1 &&
  source->flags==3 && source->sboot_mode==1 && source->inform2==1;}
 static unsigned i9100_lpm_timer_ready;
+static unsigned i9100_lpm_timer_rearms,i9100_lpm_timer_faults;
 static uint32_t lpm_read(unsigned base,unsigned off)
 {return readl((void*)(base+off));}
 static void lpm_write(unsigned base,unsigned off,uint32_t value)
@@ -75,10 +77,36 @@ static int lpm_timer_init(void)
 }
 static void lpm_sleep_tick(void)
 {
+ /* A large first draw or a USB setup can outlast the comparator period.
+  * Never enter WFI against a comparator which is already behind the MCT.
+  * Rebase only that expired comparator; the charge/USB/Power loop remains
+  * live even if a write handshake fails. IRQ89 is still the only wake IRQ. */
+ uint64_t now=lpm_ticks();
+ uint32_t high=lpm_read(0x10050000U,0x204),low=lpm_read(0x10050000U,0x200);
+ uint64_t match=((uint64_t)high<<32)|low;
+ if(!i9100_lpm_timer_ready || match<=now+24000U ||
+    !(lpm_read(0x10050000U,0x248)&1U) || (lpm_read(0x10050000U,0x240)&259U)!=259U){
+  i9100_lpm_timer_rearms++;
+  lpm_write(0x10050000U,0x248,0);
+  if(!lpm_mct_write(0x240,256,1U<<16))goto no_wait;
+  lpm_write(0x10050000U,0x244,1);lpm_write(0x10490000U,0x288,1U<<25);
+  match=lpm_ticks()+240000U;
+  if(!lpm_mct_write(0x200,(uint32_t)match,1) ||
+     !lpm_mct_write(0x204,(uint32_t)(match>>32),2) ||
+     !lpm_mct_write(0x240,259,1U<<16))goto no_wait;
+  lpm_write(0x10050000U,0x248,1);
+  if(lpm_ticks()>=match)goto no_wait;
+  i9100_lpm_timer_ready=1;
+ }
  LPM_BARRIER();LPM_WAIT();
  unsigned token=lpm_read(0x10480000U,0x0c),irq=token&1023U;
  if(irq==89)lpm_write(0x10050000U,0x244,1);
  if(irq<1020)lpm_write(0x10480000U,0x10,token);
+ return;
+no_wait:
+ i9100_lpm_timer_ready=0;i9100_lpm_timer_faults++;
+ /* Fail awake: future main-loop iterations still monitor temperature,
+  * timeout, cable and USB. Do not reset the cell's charging deadline. */
 }
 #ifdef I9100_PANEL_SLEEP_BUILD
 static uint32_t lpm_panel_gpio_read(void *cookie,unsigned off)
@@ -160,6 +188,8 @@ void i9100_standalone_charge_gate(void)
  io.muic_write=i9100_power_muic_write;io.now_ns=lpm_now;
  if(i9100_power_init(&i9100_lpm_battery,&io,lpm_revision()))lpm_download();
 #if defined(CONFIG_EXYNOS_CDCACM4210)
+   extern void usbcdc4210_charge_render_report(const unsigned[8]);
+   extern void usbcdc4210_charge_start_report(const unsigned[8]);
  extern void usbcdc4210_charge_identity(int);
  extern void usbcdc4210_charge_timed_report(const struct i9100_charge_report *);
  extern void usbcdc4210_charge_screen_report(unsigned,unsigned,unsigned,unsigned);
@@ -185,11 +215,13 @@ void i9100_standalone_charge_gate(void)
  if(!screen_ok && (lpm_read(0x11c00000U,0x28)&1U))window=2;
  unsigned winmap=0x180+window*4,saved_map=lpm_read(0x11c00000U,winmap);
  uint64_t next_draw=0,remote_deadline=0;unsigned remote_action=0;
+ struct i9100_charge_start start_gate={0};unsigned denied_press=0;
  for(;;){
   uint64_t now=lpm_ticks();
-  if(now>=next){i9100_power_poll(&i9100_lpm_battery);next=now+24000000U;
+  if(now>=next){unsigned poll_result=i9100_power_poll(&i9100_lpm_battery);next=now+24000000U;
+   i9100_charge_start_update(&start_gate,&i9100_lpm_battery,poll_result,lpm_now(0));
 #if defined(CONFIG_EXYNOS_CDCACM4210)
-   unsigned boot_ready=i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500;
+   unsigned boot_ready=i9100_charge_start_ready(&start_gate,lpm_now(0));
 #ifdef I9100_PANEL_SLEEP_BUILD
    if(panel.qualified && panel.stage==I9P_FAULT)boot_ready=0;
 #endif
@@ -211,6 +243,14 @@ void i9100_standalone_charge_gate(void)
       lpm_read(0x11c00000U,0x64),lpm_read(0x11c00000U,0xe0),
       lpm_read(0x11c00000U,0x188),blanked};
     usbcdc4210_charge_fimd_report(fb);
+    unsigned render[8]={i9100_charge_render.art_ok,i9100_charge_render.art_frame,
+      i9100_charge_render.frames,i9100_charge_render.stores,i9100_charge_render.last_stores,
+      i9100_charge_render.unchanged,i9100_lpm_timer_rearms,i9100_lpm_timer_faults};
+    usbcdc4210_charge_render_report(render);
+    unsigned startup[8]={start_gate.ready,start_gate.samples,start_gate.blocked_presses,
+      i9100_lpm_battery.present,i9100_lpm_battery.millivolts,i9100_lpm_battery.percent,
+      i9100_lpm_battery.errors,(unsigned)i9100_lpm_battery.reason};
+    usbcdc4210_charge_start_report(startup);
 #ifdef I9100_PANEL_SLEEP_BUILD
     extern void usbcdc4210_charge_panel_report(const unsigned[8]);
     extern void usbcdc4210_charge_panel_identity_report(const unsigned[4]);
@@ -239,13 +279,16 @@ void i9100_standalone_charge_gate(void)
     }
 #endif
    }
-   if(now-pressed>=48000000U && i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500){
+   if(now-pressed>=48000000U && i9100_charge_start_ready(&start_gate,lpm_now(0)) && !denied_press){
 #ifdef I9100_PANEL_SLEEP_BUILD
     if(!lpm_panel_awake(&panel))lpm_download(); /* Power requested boot but panel is faulted. */
 #endif
     break;
    }
-  }else pressed=0;
+   if(now-pressed>=48000000U && !i9100_charge_start_ready(&start_gate,lpm_now(0)) && !denied_press){
+    start_gate.blocked_presses++;denied_press=1;
+   }
+  }else{pressed=0;denied_press=0;}
   if(!blanked && now>=show_until){
    lpm_write(0x11c00000U,winmap,(saved_map&~0x01ffffffU)|0x01000000U);blanked=1;
 #ifdef I9100_PANEL_SLEEP_BUILD
@@ -259,7 +302,9 @@ void i9100_standalone_charge_gate(void)
    if(i9100_charge_draw(&screen,i9100_lpm_battery.valid,i9100_lpm_battery.percent,
       i9100_lpm_battery.connected,i9100_lpm_battery.charging,i9100_lpm_battery.reason,
       i9100_lpm_battery.full,animation++)){
-    LPM_BARRIER();lpm_write(0x11c00000U,0x1a4,3);drawn=1;
+    /* Refresh only after actual final-pixel changes. No transfer is needed
+     * for an unchanged SOC/charger state or a sleeping display. */
+    if(i9100_charge_render.last_stores){LPM_BARRIER();lpm_write(0x11c00000U,0x1a4,3);}drawn=1;
    }else screen_ok=0;
    next_draw=now+24000000U; /* At most 1Hz and no framebuffer work while blanked. */
   }
@@ -277,7 +322,7 @@ void i9100_standalone_charge_gate(void)
   if(received_action && !remote_action){remote_action=received_action;remote_deadline=now+12000000U;}
   if(remote_action && now>=remote_deadline){
    if(remote_action==2)lpm_download();
-   if(remote_action==1 && i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500){
+   if(remote_action==1 && i9100_charge_start_ready(&start_gate,lpm_now(0))){
 #ifdef I9100_PANEL_SLEEP_BUILD
     if(lpm_panel_awake(&panel))break;
 #else

@@ -51,6 +51,7 @@ def main():
     parser.add_argument('--panel-sleep',action='store_true')
     parser.add_argument('--charge-probe', action='store_true')
     parser.add_argument('--standalone-charge', action='store_true')
+    parser.add_argument('--charge-art',type=Path,help='Qualified local iOS6 battery sprite pack in project assets')
     parser.add_argument('--reboot-download-fallback', action='store_true')
     parser.add_argument('--tcc-development', action='store_true')
     parser.add_argument('--mdns-development', action='store_true')
@@ -112,6 +113,12 @@ def main():
         parser.error('--standalone-charge requires --control')
     if args.standalone_charge and not re.fullmatch('[0-9a-f]{16}',args.charger_tag or ''):
         parser.error('--standalone-charge requires its source-qualified --charger-tag')
+    if args.charge_art and not args.standalone_charge:
+        parser.error('--charge-art requires the standalone charger')
+    if args.charge_art:
+        args.charge_art=args.charge_art.resolve()
+        if not args.charge_art.is_relative_to(repo.parent/'assets') or not args.charge_art.is_file():
+            parser.error('Charging artwork must be a local project assets file')
     if args.reboot_download_fallback and not args.control:
         parser.error('--reboot-download-fallback requires --control')
     if args.tcc_development and not args.control:
@@ -234,6 +241,12 @@ def main():
         if source_name == 'board/samsung/board-i9100.c' and args.standalone_charge:
             command.append('-DI9100_STANDALONE_CHARGE_BUILD=1')
             if args.panel_sleep:command.append('-DI9100_PANEL_SLEEP_BUILD=1')
+            if args.charge_art:command.append('-DI9100_CHARGE_ART_BLOB="'+str(args.charge_art)+'"')
+            # The old captured command has no optimization. Visible DRAM
+            # writes cannot call the per-pixel helpers hundreds of thousands
+            # of times while EP0 and the charge supervisor are waiting.
+            command=[arg for arg in command if not re.fullmatch(r'-O(?:[0-3sg]|fast)',arg)]
+            command.append('-O1')
         if source_name == 'drivers/samsung/dwc2cdc4210.c' and args.control and args.standalone_charge:
             command.append('-DI9100_CONTROL_TAG="'+args.control_tag+'"')
             command.append('-DI9100_CHARGER_TAG="'+args.charger_tag+'"')

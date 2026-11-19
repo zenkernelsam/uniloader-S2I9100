@@ -915,6 +915,19 @@ void usbcdc4210_charge_fimd_report(const unsigned values[8])
  }
  line[at]=0;usbcon_write(KERN_INFO,"",line);
 }
+static void charge_words_report(const char tag[6],const unsigned values[8])
+{
+ char line[80];unsigned at=6;memcpy(line,tag,6);
+ for(unsigned n=0;n<8;n++){
+  for(unsigned d=0;d<8;d++)line[at++]="0123456789abcdef"[(values[n]>>((7U-d)*4))&15U];
+  line[at++]=n==7?'\n':' ';
+ }
+ line[at]=0;usbcon_write(KERN_INFO,"",line);
+}
+void usbcdc4210_charge_render_report(const unsigned values[8])
+{charge_words_report("I9CR1 ",values);}
+void usbcdc4210_charge_start_report(const unsigned values[8])
+{charge_words_report("I9BT1 ",values);}
 void usbcdc4210_charge_panel_report(const unsigned values[8])
 {
  char line[88];unsigned at=0;memcpy(line,"I9PL1 ",6);at=6;
