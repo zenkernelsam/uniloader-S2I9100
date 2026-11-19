@@ -21,6 +21,40 @@ CLIENT_FIELDS=('sequence','time_lo','time_hi','requested_state','hardware_result
     'client','owner_pid','vsync_requested','vsync_enabled','closed','port_present',
     'callback_present','generation_lo','generation_hi','send_count_lo','send_count_hi',
     'diag_enabled','reserved','graphics_diagnostic_losses','graphics_diagnostic_unknown')
+IDLE_FIELDS=('version','sequence','irq','waits','mct_low','mct_high','wait_low','wait_high','last','maximum',
+    'frequency','map_ready')
+
+def decode_idle_paired(raw,header_after=None):
+    if len(raw)!=48:raise ValueError('Paired WFI size differs')
+    words=struct.unpack('<12I',raw)
+    if words[0] not in (0,1) or (words[0]==1 and (words[10]!=24000000 or words[11]>1)):
+        raise ValueError('Unknown paired WFI schema')
+    paired=dict(zip(IDLE_FIELDS,words))
+    paired['consistent']=words[0]==1 and not words[1]&1 and words[11]==1
+    if header_after is not None:
+        if len(header_after)!=8:raise ValueError('Paired WFI publication header size differs')
+        version,sequence=struct.unpack('<2I',header_after)
+        paired['producer_version_after']=version;paired['producer_sequence_after']=sequence
+        paired['consistent']=paired['consistent'] and (version,sequence)==words[:2]
+        paired['publication_rechecked']=True
+    if paired['consistent']:
+        paired['mct_ticks']=(words[5]<<32)|words[4];paired['wait_ticks']=(words[7]<<32)|words[6]
+    paired['limit']='Same-IRQ MCT and completed WFI waits; interval interpretation requires two qualified observations'
+    return paired
+
+def idle_interval(before,after):
+    result=dict(usable=False,measurement='Measured WFI wait fraction; not processor_info idle percent')
+    if not before.get('consistent') or not after.get('consistent'):
+        result['reason']='Missing, inactive or partial paired sample';return result
+    if before['frequency']!=after['frequency'] or before['frequency']!=24000000:
+        result['reason']='MCT frequency changed';return result
+    elapsed=after['mct_ticks']-before['mct_ticks'];wait=after['wait_ticks']-before['wait_ticks']
+    irq=(after['irq']-before['irq'])&0xffffffff;waits=(after['waits']-before['waits'])&0xffffffff
+    if elapsed<=0 or elapsed>before['frequency']*3600 or wait<0 or wait>elapsed or not 0<irq<0x80000000 or waits>=0x80000000:
+        result['reason']='Clock/cumulative waits/IRQ counters reset or do not cover one valid interval';return result
+    result.update(usable=True,elapsed_ticks=elapsed,wait_ticks=wait,irq_count=irq,wait_count=waits,
+        elapsed_ns=(elapsed*1000)//24,wait_ns=(wait*1000)//24,wfi_wait_percent=100*wait/elapsed)
+    return result
 
 
 def decode_budget(raw,kind):
@@ -173,6 +207,16 @@ def capture(kernel,symbols,out):
         result['idle_wait'].update(consistent=not words[1]&1,
             limit='Masked WFI wall-time modulo one 32-bit MCT wrap per wait; not processor_info CPU attribution')
         if not words[1]&1:result['idle_wait']['wait_ns']=(((words[4]<<32)|words[3])*1000)//24
+    if '_i9100_idle_observation' in symbols.values:
+        paired_address=symbols['_i9100_idle_observation']
+        raw_paired=kernel.read(paired_address,48)
+        (out/'idle-paired.bin').write_bytes(raw_paired)
+        # A virtual read may span physical pages and therefore two USB
+        # snapshots. Qualify that original read; a changed publisher is
+        # retained as partial instead of re-reading until it looks stable.
+        after_paired=kernel.read(paired_address,8)
+        (out/'idle-paired-after.bin').write_bytes(after_paired)
+        result['idle_paired']=decode_idle_paired(raw_paired,after_paired)
     for symbol,kind in (('_i9100_cpu_load_diag','cpu'),('_i9100_display_client_power_diag','display_clients')):
         if symbol in symbols.values:
             result[kind]=capture_budget(kernel,symbols[symbol],out,kind)
