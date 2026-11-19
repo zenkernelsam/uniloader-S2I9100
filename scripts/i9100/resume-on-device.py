@@ -12,6 +12,13 @@ here=Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location('resume_odin',here/'odin-loop.py')
 o=importlib.util.module_from_spec(spec);spec.loader.exec_module(o)
 
+def read_events(path):
+    # Journals are written as UTF-8, including Windows device names. JSON
+    # accepts UTF-8 bytes directly; never apply Windows' locale default.
+    data=path.read_bytes()
+    o.require(data and data.endswith(b'\n'),'Unfinished event journal; preserve its process')
+    return [json.loads(line) for line in data.splitlines() if line.strip()]
+
 def device_mode(devices,profile):
     cdc=o.cdc(devices);downloads=o.samsung(devices)
     chargers=[d for d in devices if d['instance'].upper().endswith('\\S2I9100-CHG')]
@@ -74,7 +81,7 @@ def main():
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--wait-seconds',type=int,default=1800);p.add_argument('--capture-seconds',type=int,default=180)
     a=p.parse_args();o.require(60<=a.wait_seconds<=3600 and 60<=a.capture_seconds<=600,'Bounded wait/capture required')
-    package=o.confined(a.package,o.REPO/'out');manifest=json.loads((package/'manifest.json').read_text())
+    package=o.confined(a.package,o.REPO/'out');manifest=json.loads((package/'manifest.json').read_text(encoding='utf-8'))
     plan=o.Plan(a.plan,a.approve_plan)
     o.require(plan.data['profile'] is not None and plan.data['validation']=='control','One approved normal KERNEL plan required')
     o.require(a.confirm_kernel==plan.data['files']['zImage']==manifest['artifacts']['zImage']['sha256'],
@@ -101,7 +108,7 @@ def main():
             run_child([sys.executable,'-B',here/'odin-loop.py','execute','--plan',plan.path,
                 '--approve-plan',a.approve_plan,'--mode',mode,'--confirm-kernel',a.confirm_kernel],
                 output/'deployment',900,record)
-            timeline=[json.loads(line) for line in (plan.parent/'timeline.jsonl').read_text().splitlines()]
+            timeline=read_events(plan.parent/'timeline.jsonl')
             o.require(timeline and timeline[-1]['phase']=='DONE','Plan did not prove deployment success; no post-opener')
             run_child([sys.executable,'-B',here/'ui-session.py','serve','--kernel',package/'mach_kernel',
                 '--output',output/'boot-evidence','--seconds',str(a.capture_seconds),'--charge-on-ready',

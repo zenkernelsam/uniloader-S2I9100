@@ -19,12 +19,10 @@ o=r.o
 s=module('charge_roundtrip_summary','summarize-charge-loader.py')
 
 def rows(path):
-    data=path.read_bytes()
-    o.require(data.endswith(b'\n'),'Incomplete event stream; preserve owner, no subsequent action')
-    return [json.loads(line) for line in data.splitlines() if line.strip()]
+    return r.read_events(path)
 
 def owner_complete(path,tag):
-    metadata=json.loads((path/'owner.json').read_text())
+    metadata=json.loads((path/'owner.json').read_text(encoding='utf-8'))
     o.require(metadata.get('tag')==tag and type(metadata.get('process_created_100ns')) is int,
         'Owner identity differs from expected BUILD')
     events=rows(path/'events.jsonl');ready=[row for row in events if row['phase']=='READY']
@@ -96,20 +94,20 @@ def wait_resumed(directory,seconds,record,clock=time.monotonic,sleep=time.sleep)
         sleep(min(20,deadline-clock()))
 
 def verify_deployment(directory,package,manifest):
-    armed=json.loads((directory/'armed.json').read_text())
+    armed=json.loads((directory/'armed.json').read_text(encoding='utf-8'))
     o.require(Path(armed['package']).resolve()==package and armed['kernel_sha']==manifest['artifacts']['zImage']['sha256'],
         'Deployment relay package differs')
     plan=o.Plan(armed['plan'],armed['plan_sha']);timeline=rows(plan.parent/'timeline.jsonl')
     o.require(plan.data['control_tag']==manifest['control_tag'] and (plan.parent/'started.json').is_file() and
         timeline[-1]['phase']=='DONE','Reviewed one-time deployment did not finish successfully')
     for name in ('deployment','capture-process'):
-        finished=json.loads((directory/name/'finished.json').read_text())
+        finished=json.loads((directory/name/'finished.json').read_text(encoding='utf-8'))
         o.require(finished.get('exit_code')==0,'Deployment/capture process is not finished normally')
     owner_complete(directory/'boot-evidence',manifest['control_tag'])
 
 def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
     tag=manifest['control_tag'];charger_tag=manifest['standalone_charge_control_tag']
-    host=host or o.Host();profile=json.loads((o.OUT/'inventory-20261106-211114-download-profile.json').read_text())
+    host=host or o.Host();profile=json.loads((o.OUT/'inventory-20261106-211114-download-profile.json').read_text(encoding='utf-8'))
     mode,_=r.device_mode(host.inventory(),profile)
     o.require(mode=='cycle','Expected running reviewed XNU, no shutdown attempted')
     record('SHUTDOWN_BEGIN',writes_to_flash=0)
@@ -117,7 +115,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         '--output',out/'shutdown-evidence','--seconds','240','--allow-poweroff-charge','--poweroff-on-ready'],
         out/'shutdown-process',420,record)
     events=owner_complete(out/'shutdown-evidence',tag)
-    result=json.loads((out/'shutdown-evidence/task-0001/result.json').read_text())
+    result=json.loads((out/'shutdown-evidence/task-0001/result.json').read_text(encoding='utf-8'))
     o.require(result.get('reply')=='OK poweroff-charge' and result.get('shutdown_disconnect_observed') is True and
         any(row.get('phase')=='TASK_DONE' and row.get('action')=='poweroff-charge' for row in events),
         'Normal shutdown ACK/disconnect missing; no subsequent opener')
@@ -149,7 +147,7 @@ def main():
     p.add_argument('--resume-evidence',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--wait-seconds',type=int,default=3600);a=p.parse_args()
     o.require(60<=a.wait_seconds<=3600,'Bounded wait required')
-    package=o.confined(a.package,o.REPO/'out');manifest=json.loads((package/'manifest.json').read_text())
+    package=o.confined(a.package,o.REPO/'out');manifest=json.loads((package/'manifest.json').read_text(encoding='utf-8'))
     o.require(manifest.get('standalone_charge_control_version')==2 and manifest.get('standalone_charge') is True,
         'Only the reviewed new charger capability is eligible')
     for name in ('zImage','mach_kernel'):
@@ -157,7 +155,7 @@ def main():
         o.require(path.stat().st_size==artifact['bytes'] and o.sha(path)==artifact['sha256'],'Reviewed package changed')
     o.require(manifest['control_tag']==manifest['artifacts']['mach_kernel']['sha256'][:16],
         'Manifest control identity differs from actual kernel')
-    identity=json.loads((package/'charger-identity.json').read_text())
+    identity=json.loads((package/'charger-identity.json').read_text(encoding='utf-8'))
     identity_input={key:identity[key] for key in ('schema','kernel_sha256','sources','flags')}
     import hashlib
     o.require(identity_input['schema']==2 and identity_input['kernel_sha256']==manifest['artifacts']['mach_kernel']['sha256'] and

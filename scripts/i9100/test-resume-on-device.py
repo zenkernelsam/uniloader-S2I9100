@@ -12,6 +12,14 @@ repo=here.parents[1];out=repo/'out'/('resume-device-check-'+datetime.now().strft
 normal=dict(instance=m.o.CDC,status='OK',port='COM12',service='usbser',location=profile['location'])
 charger=dict(normal,instance=normal['instance'].replace('OS6','CHG'),port='COM14')
 download=dict(profile,status='OK',port='')
+journal=out/'utf8-timeline.jsonl'
+records=[dict(phase='DEVICE_STATE',name='USB 串行设备 (COM12)',location='原连接口'),dict(phase='DONE')]
+journal.write_text(''.join(json.dumps(row,ensure_ascii=False)+'\n' for row in records),encoding='utf-8')
+assert m.read_events(journal)==records
+partial=out/'unfinished.jsonl';partial.write_bytes(b'{"phase":"DONE"}')
+try:m.read_events(partial)
+except ValueError:pass
+else:raise AssertionError('Unfinished journal accepted')
 assert m.device_mode([charger],profile)==(None,'old-charger')
 assert m.device_mode([normal],profile)[0]=='cycle'
 assert m.device_mode([download],profile)[0]=='bootstrap'
