@@ -8,6 +8,7 @@
  * userspace launch. MCT/GIC addresses and handshake match the verified kernel. */
 #include "charge/i9100_power.c"
 #include "charge/i9100_power_bus.c"
+#include "i9100-charge-screen.h"
 #ifndef LPM_BARRIER
 #define LPM_BARRIER() __asm__ volatile("dsb sy" ::: "memory")
 #define LPM_MASK_IRQ() __asm__ volatile("cpsid if" ::: "memory")
@@ -104,6 +105,14 @@ static void lpm_download(void)
  lpm_write(0x10020000U,0x808,0x12345678U);lpm_write(0x10020000U,0x80c,0x12345671U);
  lpm_write(0x10020000U,0x400,1);for(;;)LPM_WAIT();
 }
+static int lpm_screen_bind(struct i9100_charge_screen *screen)
+{
+ unsigned con=lpm_read(0x11c00000U,0x20),mode=(con>>2)&15U;
+ unsigned base=lpm_read(0x11c00000U,0xa0),pitch=lpm_read(0x11c00000U,0x100);
+ unsigned xy=lpm_read(0x11c00000U,0x44),end=lpm_read(0x11c00000U,0xd0);
+ (void)mode;
+ return i9100_charge_bind(screen,con,base,pitch,xy,end) && i9100_charge_screen_valid(screen);
+}
 void i9100_standalone_charge_gate(void)
 {
 #ifdef I9100_STANDALONE_CHARGE_BUILD
@@ -121,17 +130,23 @@ void i9100_standalone_charge_gate(void)
 #if defined(CONFIG_EXYNOS_CDCACM4210)
  extern void usbcdc4210_charge_identity(int);
  extern void usbcdc4210_charge_report(unsigned,unsigned,unsigned,int,unsigned,int);
+ extern void usbcdc4210_charge_screen_report(unsigned,unsigned,unsigned,unsigned);
  usbcdc4210_charge_identity(1);usbcdc4210_init();
 #endif
  uint64_t next=0,pressed=0,show_until=lpm_ticks()+720000000U;unsigned polls=0;
  unsigned saved_map=lpm_read(0x11c00000U,0x180),blanked=0;
+ struct i9100_charge_screen screen={0};unsigned screen_ok=lpm_screen_bind(&screen),animation=0,drawn=0;
+ uint64_t next_draw=0;
  for(;;){
   uint64_t now=lpm_ticks();
   if(now>=next){i9100_power_poll(&i9100_lpm_battery);next=now+24000000U;
 #if defined(CONFIG_EXYNOS_CDCACM4210)
-   if((polls++%30)==0)usbcdc4210_charge_report(i9100_lpm_battery.valid,
-    i9100_lpm_battery.percent,i9100_lpm_battery.millivolts,
-    i9100_lpm_battery.temperature_deci_c,i9100_lpm_battery.charging,i9100_lpm_battery.reason);
+   if((polls++%30)==0){
+    usbcdc4210_charge_report(i9100_lpm_battery.valid,
+     i9100_lpm_battery.percent,i9100_lpm_battery.millivolts,
+     i9100_lpm_battery.temperature_deci_c,i9100_lpm_battery.charging,i9100_lpm_battery.reason);
+    usbcdc4210_charge_screen_report(drawn,(unsigned)screen.pixels,screen.stride,screen.bpp);
+   }
 #endif
   }
   unsigned keys=lpm_read(0x11000000U,0xc44),home=lpm_read(0x11000000U,0xc64);
@@ -141,6 +156,14 @@ void i9100_standalone_charge_gate(void)
    if(blanked){lpm_write(0x11c00000U,0x180,saved_map);blanked=0;}
    if(now-pressed>=48000000U && i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500)break;
   }else pressed=0;
+  if(screen_ok && !blanked && now>=next_draw){
+   if(i9100_charge_draw(&screen,i9100_lpm_battery.valid,i9100_lpm_battery.percent,
+      i9100_lpm_battery.connected,i9100_lpm_battery.charging,i9100_lpm_battery.reason,
+      i9100_lpm_battery.full,animation++)){
+    LPM_BARRIER();lpm_write(0x11c00000U,0x1a4,3);drawn=1;
+   }else screen_ok=0;
+   next_draw=now+24000000U; /* At most 1Hz and no framebuffer work while blanked. */
+  }
   if(!blanked && now>=show_until){
    lpm_write(0x11c00000U,0x180,(saved_map&~0x01ffffffU)|0x01000000U);blanked=1;
   }

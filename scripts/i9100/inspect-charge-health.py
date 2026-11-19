@@ -145,6 +145,25 @@ def capture(kernel,symbols,out):
     if '_i9100_power_key_observation' in symbols.values:
         words=struct.unpack('<7I',kernel.read(symbols['_i9100_power_key_observation'],28))
         result['power_key']=dict(zip(('enabled','down','opened','edges','enqueued','head','tail'),words))
+    if '_i9100_irq_pc_sample' in symbols.values:
+        raw_pc=kernel.read(symbols['_i9100_irq_pc_sample'],4*(7+64*4))
+        (out/'irq-pc-sample.bin').write_bytes(raw_pc)
+        version,sequence,samples,used,overflow,period,epoch=struct.unpack_from('<7I',raw_pc)
+        if version!=2 or used>64 or period!=37 or samples>512:raise ValueError('Unknown PC histogram schema')
+        table=dict(version=version,sequence=sequence,samples=samples,used=used,overflow=overflow,period=period,epoch=epoch,
+            consistent=not sequence&1,limit='Up to 512 interrupted-PC samples in this epoch; not an exact causal profile or per-process accounting')
+        if table['consistent']:
+            rows=[]
+            for n in range(used):
+                page,pc,mode,count=struct.unpack_from('<4I',raw_pc,28+n*16)
+                if pc&~255!=page or mode not in (16,18,19):raise ValueError('Malformed PC histogram bin')
+                row=dict(page=hex(page),last_pc=hex(pc),mode=mode,count=count)
+                if 0x80000000<=pc<=0xfffffff0:
+                    nearest=max(((v,k) for k,v in symbols.values.items() if v<=pc),default=(0,'unknown'))
+                    row.update(nearest_symbol=nearest[1],displacement=hex(pc-nearest[0]))
+                rows.append(row)
+            table['bins']=sorted(rows,key=lambda x:x['count'],reverse=True)
+        result['irq_pc_sample']=table
     for symbol,kind in (('_i9100_cpu_load_diag','cpu'),('_i9100_display_client_power_diag','display_clients')):
         if symbol in symbols.values:
             result[kind]=capture_budget(kernel,symbols[symbol],out,kind)
