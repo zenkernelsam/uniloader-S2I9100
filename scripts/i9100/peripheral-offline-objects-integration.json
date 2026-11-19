@@ -1,5 +1,5 @@
 {
-  "source_sha256": "bbc706df783adfbda791f4775f811b412875c49cefcd74d0134d7a65ece62d70",
+  "source_sha256": "4e1cf082355a20c9ad77ffda16c586bacaf51278e136e6fcb189ca1e30734ee9",
   "new_objects": [
     "iokit/i9100_gpio_broker.o",
     "iokit/i9100_i2c_gpio.o",
@@ -45,6 +45,7 @@
     "iokit/i9100_pl330_ring.o",
     "iokit/i9100_sensor_hid_wire.o",
     "iokit/i9100_sensor_hid_queue.o",
+    "iokit/i9100_bt_boot.o",
     "iokit/i9100_dma_native.cpo",
     "iokit/i9100_peripheral_native.cpo",
     "iokit/IOS7I9100EMMC.cpo",
@@ -63,9 +64,10 @@
     "iokit/i9100_pl330_ring_mmio.cpo",
     "iokit/i9100_audio_gated.cpo",
     "iokit/i9100_sensor_hid.cpo",
-    "iokit/i9100_sensor_hid_endpoint.cpo"
+    "iokit/i9100_sensor_hid_endpoint.cpo",
+    "iokit/i9100_bt_worker.cpo"
   ],
-  "patch_sha256": "182186cdfbfb37458c4af343e1af6869049694128ea8c0658caf288b3c1a68f5",
+  "patch_sha256": "b6e367a14a2bc7e09efd77b88f724be457e1550f4ea64cf43e3f6712c3bf6ef7",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first",
