@@ -164,6 +164,15 @@ def capture(kernel,symbols,out):
                 rows.append(row)
             table['bins']=sorted(rows,key=lambda x:x['count'],reverse=True)
         result['irq_pc_sample']=table
+    if '_i9100_idle_wait_diag' in symbols.values:
+        raw_idle=kernel.read(symbols['_i9100_idle_wait_diag'],32)
+        (out/'idle-wait.bin').write_bytes(raw_idle)
+        words=struct.unpack('<8I',raw_idle)
+        if words[0]!=1:raise ValueError('Unknown WFI timing schema')
+        result['idle_wait']=dict(zip(('version','sequence','waits','ticks_low','ticks_high','last_ticks','maximum_ticks','reserved'),words))
+        result['idle_wait'].update(consistent=not words[1]&1,
+            limit='Masked WFI wall-time modulo one 32-bit MCT wrap per wait; not processor_info CPU attribution')
+        if not words[1]&1:result['idle_wait']['wait_ns']=(((words[4]<<32)|words[3])*1000)//24
     for symbol,kind in (('_i9100_cpu_load_diag','cpu'),('_i9100_display_client_power_diag','display_clients')):
         if symbol in symbols.values:
             result[kind]=capture_budget(kernel,symbols[symbol],out,kind)
