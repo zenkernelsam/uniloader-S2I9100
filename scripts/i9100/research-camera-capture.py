@@ -45,12 +45,23 @@ MFC_FILES = (
     "drivers/media/video/samsung/mfc5x/mfc_cmd.c",
     "arch/arm/mach-exynos/dev-pd-exynos4.c",
 )
+EMMC_NATIVE_FILES = (
+    "arch/arm/mach-exynos/setup-mshci-gpio.c",
+    "arch/arm/mach-exynos/setup-mshci.c",
+    "arch/arm/mach-exynos/include/mach/gpio-u1.h",
+    "arch/arm/plat-samsung/include/plat/cpu.h",
+    "drivers/mmc/host/mshci.h",
+    "drivers/mmc/host/mshci.c",
+    "drivers/mmc/host/mshci-s3c.c",
+    "include/linux/mmc/mmc.h",
+)
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--include-mfc", action="store_true")
+    p.add_argument("--include-emmc", action="store_true")
     a = p.parse_args()
     out = a.output.resolve()
     if not out.is_relative_to(ROOT / "research") or out.exists():
@@ -65,7 +76,7 @@ def main():
         raise RuntimeError("Source inventory was truncated")
     indexed = {x["path"]: x for x in tree["tree"] if x.get("type") == "blob"}
     sources = {}
-    for name in FILES + (MFC_FILES if a.include_mfc else ()):
+    for name in FILES + (MFC_FILES if a.include_mfc else ()) + (EMMC_NATIVE_FILES if a.include_emmc else ()):
         path = BASE / name
         raw = path.read_bytes()
         git_blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
@@ -108,6 +119,15 @@ def main():
             picture_readback="width0x2008,height0x2004,dpb0x200c,consumed0x2018,channel0x2000",
             banks="Luma and H264 MV in bankB; chroma/neighbor scratch in bankA",
             hardware_tested=False, original_firmware_available=False)
+    if a.include_emmc:
+        facts["emmc_native"] = dict(host_physical="0x12550000",gic_intid=109,
+            ip_clock_gate="CMU0xc940 bit9",source_clock_gate="CMU0xc340 bit16",
+            source_mux="CMU0xc240[19:16]",source_divider="CMU0xc54c[3:0],[15:8]",
+            clksel="host0x9c; inherited and independently measured/reviewed CIU before CLKDIV",
+            legacy_pins="GPK0.0/1/3 AF3=clock/command/data0; GPK0.2 power GPIO output/high, no peripheral AF",
+            status="FIFO full bit3, count[29:17], CMD_FSM[7:4], DATA_BUSY9, MCBUSY10",
+            safeguards="Keep outer hardware/card reservation through true CMD/FIFO/data idle; no SDHCI2/3 writes; raw whole remainsRO",
+            clock_verified=False,pins_verified=False,hardware_tested=False)
     result = dict(result="PASS", hardware_tested=False, device_contacted=False, source_reference_only=True,
                   repository=pin["repository"], commit=PIN, sources=sources, facts=facts,
                   verifier_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
