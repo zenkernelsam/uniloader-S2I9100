@@ -31,10 +31,17 @@ def owner(path,shutdown=False,handoff=None):
         raw=struct.pack('<32I',*words);words[31]=m.h.checksum(raw);raw=struct.pack('<32I',*words)
         decoded=m.h.decode(raw)
         observed=dict(decoded,root_stable=True,kernel_tag=tag)
+        charge=dict(charger_handoff=observed)
+        if handoff.startswith('deadline-') and handoff!='deadline-missing':
+            start=max(1,decoded['sampled_ticks']*1000//24-(decoded['elapsed_seconds']+1)*1000000000)
+            charge['charger_deadline_adoption']=dict(consistent=True,state=1,revision=14,enabled_after_init=0,
+                full=0,recharging=0,timeout=0,charge_start_ns=start,deadline_seconds=18000)
+            if handoff=='deadline-rejected':charge['charger_deadline_adoption'].update(state=3,timeout=1)
+            if handoff=='deadline-extended':charge['charger_deadline_adoption']['charge_start_ns']+=1000000000
         if handoff=='handoff-corrupt':
             raw=bytes((raw[0]^1,))+raw[1:]
         if handoff!='handoff-missing':(task/'charge-handoff.bin').write_bytes(raw)
-        (task/'result.json').write_text(json.dumps(dict(charge=dict(charger_handoff=observed)))+'\n')
+        (task/'result.json').write_text(json.dumps(dict(charge=charge))+'\n')
         events.append(dict(phase='TASK_DONE',id='0000',action='charge'))
     events.extend([dict(phase='DONE'),dict(phase='CLOSED')]);write_events(path/'events.jsonl',events)
 
@@ -103,7 +110,8 @@ def charger(path,scenario):
 for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format','wrong-end','shutdown-failure','boot-timeout',
                  'art-success','art-missing','art-redrew-asleep','art-start-not-ready','art-transport-success','art-transport-missing',
                  'bootstrap-fault','bootstrap-fault-partial','art-bootstrap-fault',
-                 'handoff-success','handoff-missing','handoff-corrupt'):
+                 'handoff-success','handoff-missing','handoff-corrupt',
+                 'deadline-success','deadline-missing','deadline-rejected','deadline-extended'):
     directory=out/scenario;directory.mkdir();calls=[];records=[]
     class Host:
         def inventory(self):return [device]
@@ -116,7 +124,7 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
             if '--poweroff-on-ready' in argv:
                 if scenario=='shutdown-failure':raise RuntimeError('modeled shutdown child STOP')
                 owner(target,True)
-            else:owner(target,handoff=scenario if scenario.startswith('handoff-') else None)
+            else:owner(target,handoff=scenario if scenario.startswith(('handoff-','deadline-')) else None)
         elif tool=='capture-charge-loader.py':charger(target,scenario)
         elif tool=='charge-command.py':
             assert argv[argv.index('--action')+1]=='boot'
@@ -126,20 +134,22 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
     actual_manifest=dict(manifest,standalone_charge_art=dict(local_asset=True),
         standalone_charge_transport='transport-' in scenario) if scenario.startswith('art-') else manifest
     if scenario.startswith('handoff-'):actual_manifest=dict(manifest,standalone_charge_handoff=True)
-    expected_success=scenario in ('success','art-success','art-transport-success','handoff-success')
+    if scenario.startswith('deadline-'):actual_manifest=dict(manifest,standalone_charge_handoff=True,standalone_charge_deadline_adoption=True)
+    expected_success=scenario in ('success','art-success','art-transport-success','handoff-success','deadline-success')
     try:m.run_roundtrip(package,actual_manifest,directory,lambda phase,**row:records.append(dict(phase=phase,**row)),child,Host())
     except (ValueError,RuntimeError):assert not expected_success
     else:
         assert expected_success and records[-1]['phase']=='DONE' and records[-1]['writes_to_flash']==0
         assert records[-1]['native_artwork_verified']==scenario.startswith('art-')
-        assert records[-1]['charger_handoff_verified']==scenario.startswith('handoff-')
+        assert records[-1]['charger_handoff_verified']==scenario.startswith(('handoff-','deadline-'))
+        assert records[-1]['charger_deadline_verified']==scenario.startswith('deadline-')
     assert all('odin-loop.py' not in call and 'flash' not in call for call in calls)
     if scenario in ('no-draw','no-blank','wrong-tag','gap','wrong-format','wrong-end'):assert len(calls)==2
     if scenario=='shutdown-failure':assert len(calls)==1
     if scenario=='boot-timeout':assert len(calls)==3
     if scenario=='success':assert len(calls)==4
     if scenario.startswith('bootstrap-fault'):assert len(calls)==2
-    if scenario.startswith('handoff-'):assert len(calls)==4
+    if scenario.startswith(('handoff-','deadline-')):assert len(calls)==4
     if scenario.startswith('art-'):
         capture=calls[1];assert capture[capture.index('--seconds')+1]=='180'
         assert len(calls)==(4 if expected_success else 2)
