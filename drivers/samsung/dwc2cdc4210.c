@@ -860,6 +860,15 @@ void usbcdc4210_charge_screen_report(unsigned drawn,unsigned base,unsigned strid
  }
  line[at]=0;usbcon_write(KERN_INFO,"",line);
 }
+void usbcdc4210_charge_fimd_report(const unsigned values[8])
+{
+ char line[88];unsigned at=0;memcpy(line,"I9FB1 ",6);at=6;
+ for(unsigned n=0;n<8;n++){
+  for(unsigned digit=0;digit<8;digit++)line[at++]="0123456789abcdef"[(values[n]>>((7U-digit)*4))&15U];
+  line[at++]=n==7?'\n':' ';
+ }
+ line[at]=0;usbcon_write(KERN_INFO,"",line);
+}
 
 /* ---------------- init ---------------- */
 

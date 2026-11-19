@@ -138,6 +138,7 @@ void i9100_standalone_charge_gate(void)
  extern void usbcdc4210_charge_identity(int);
  extern void usbcdc4210_charge_report(unsigned,unsigned,unsigned,int,unsigned,int);
  extern void usbcdc4210_charge_screen_report(unsigned,unsigned,unsigned,unsigned);
+ extern void usbcdc4210_charge_fimd_report(const unsigned[8]);
  extern unsigned usbcdc4210_charge_take_action(void);
  usbcdc4210_charge_identity(1);usbcdc4210_init();
 #endif
@@ -156,6 +157,11 @@ void i9100_standalone_charge_gate(void)
      i9100_lpm_battery.percent,i9100_lpm_battery.millivolts,
      i9100_lpm_battery.temperature_deci_c,i9100_lpm_battery.charging,i9100_lpm_battery.reason);
     usbcdc4210_charge_screen_report(drawn,(unsigned)screen.pixels,screen.stride,screen.bpp);
+    unsigned fb[8]={lpm_read(0x11c00000U,0x20),lpm_read(0x11c00000U,0x28),
+      lpm_read(0x11c00000U,0xb0),lpm_read(0x11c00000U,0x108),
+      lpm_read(0x11c00000U,0x64),lpm_read(0x11c00000U,0xe0),
+      lpm_read(0x11c00000U,0x188),blanked};
+    usbcdc4210_charge_fimd_report(fb);
    }
 #endif
   }
@@ -166,6 +172,9 @@ void i9100_standalone_charge_gate(void)
    if(blanked){lpm_write(0x11c00000U,winmap,saved_map);blanked=0;}
    if(now-pressed>=48000000U && i9100_lpm_battery.valid && i9100_lpm_battery.millivolts>=3500)break;
   }else pressed=0;
+  if(!blanked && now>=show_until){
+   lpm_write(0x11c00000U,winmap,(saved_map&~0x01ffffffU)|0x01000000U);blanked=1;
+  }
   if(screen_ok && !blanked && now>=next_draw){
    if(i9100_charge_draw(&screen,i9100_lpm_battery.valid,i9100_lpm_battery.percent,
       i9100_lpm_battery.connected,i9100_lpm_battery.charging,i9100_lpm_battery.reason,
@@ -173,9 +182,6 @@ void i9100_standalone_charge_gate(void)
     LPM_BARRIER();lpm_write(0x11c00000U,0x1a4,3);drawn=1;
    }else screen_ok=0;
    next_draw=now+24000000U; /* At most 1Hz and no framebuffer work while blanked. */
-  }
-  if(!blanked && now>=show_until){
-   lpm_write(0x11c00000U,winmap,(saved_map&~0x01ffffffU)|0x01000000U);blanked=1;
   }
   if(i9100_lpm_battery.valid && !i9100_lpm_battery.connected){
    i9100_power_stop(&i9100_lpm_battery);

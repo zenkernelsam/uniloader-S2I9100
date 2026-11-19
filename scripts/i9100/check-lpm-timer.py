@@ -11,7 +11,7 @@ source=r'''
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
-static uint32_t mct[1024],dist[1024],cpu[1024],enabled[8];
+static uint32_t mct[1024],dist[1024],cpu[1024],enabled[8],fimd[1024];
 static uint64_t ticks;static unsigned stall,stuck,masked,waits,acks;
 unsigned boot_reg_r2;
 static uint32_t model_read32(void*a){uintptr_t p=(uintptr_t)a;
@@ -20,6 +20,7 @@ static uint32_t model_read32(void*a){uintptr_t p=(uintptr_t)a;
   return mct[o/4];}
  if(p>=0x10490000 && p<0x10491000)return dist[(p-0x10490000)/4];
  if(p>=0x10480000 && p<0x10481000){if(p==0x1048000c)return 89;return cpu[(p-0x10480000)/4];}
+ if(p>=0x11c00000 && p<0x11c01000)return fimd[(p-0x11c00000)/4];
  assert(0);return 0;}
 static void model_write32(uint32_t v,void*a){uintptr_t p=(uintptr_t)a;
  if(p>=0x10050000 && p<0x10051000){unsigned o=p-0x10050000;
@@ -41,6 +42,13 @@ static void model_write32(uint32_t v,void*a){uintptr_t p=(uintptr_t)a;
 static void reset(void){memset(mct,0,sizeof(mct));memset(dist,0,sizeof(dist));memset(cpu,0,sizeof(cpu));
  memset(enabled,255,sizeof(enabled));dist[1]=4;ticks=10;stall=stuck=masked=waits=acks=0;}
 int main(void){
+ struct i9100_charge_screen screen={0};unsigned window=0;
+ memset(fimd,0,sizeof(fimd));fimd[0x28/4]=0x8035;fimd[0xb0/4]=0x5ec00000;
+ fimd[0x108/4]=1920;fimd[0x64/4]=(479U<<11)|799U;fimd[0xe0/4]=0x5ed77000;
+ assert(lpm_screen_bind(&screen,&window) && window==2 && screen.bpp==32 && screen.bytes==1536000);
+ fimd[0x20/4]=1;assert(!lpm_screen_bind(&screen,&window));fimd[0x20/4]=0;
+ fimd[0x108/4]|=4U<<13;assert(!lpm_screen_bind(&screen,&window));fimd[0x108/4]=1920;
+ fimd[0xb0/4]=0x5ed00000;assert(!lpm_screen_bind(&screen,&window));
  struct I9100BootSource s={I9100_BOOT_SOURCE_MAGIC,1,3,1,0,1,0xb16,0x40000100};
  assert(lpm_boot_requested(&s));s.sboot_mode=0;assert(!lpm_boot_requested(&s));
  s.sboot_mode=1;s.flags=1;assert(!lpm_boot_requested(&s));
