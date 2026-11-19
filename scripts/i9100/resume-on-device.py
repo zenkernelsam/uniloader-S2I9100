@@ -105,7 +105,8 @@ def main():
             o.require(timeline and timeline[-1]['phase']=='DONE','Plan did not prove deployment success; no post-opener')
             run_child([sys.executable,'-B',here/'ui-session.py','serve','--kernel',package/'mach_kernel',
                 '--output',output/'boot-evidence','--seconds',str(a.capture_seconds),'--charge-on-ready',
-                '--on-ready','diagnostics','--on-ready','frame','--allow-reboot-download','--allow-poweroff-charge'],
+                '--on-ready','diagnostics','--on-ready','frame','--on-ready','charge',
+                '--allow-reboot-download','--allow-poweroff-charge'],
                 output/'capture-process',a.capture_seconds+180,record)
             record('DONE',meaning='One KERNEL plan and one bounded post-boot owner completed; final UI/charger tests remain')
         except BaseException as error:record('STOP',error=str(error),retry=False);raise
