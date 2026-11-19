@@ -1,5 +1,5 @@
 {
-  "source_sha256": "5b45c5d10a4d9731823bfdecb8e1f3c8d8eae64d692d02939441611ea712333c",
+  "source_sha256": "1554df9d6c1001595869c6d307b833fabd3ec97c62711bfa787369a1346ae418",
   "new_objects": [
     "iokit/i9100_gpio_broker.o",
     "iokit/i9100_i2c_gpio.o",
@@ -21,6 +21,7 @@
     "iokit/i9100_bluetooth_h4.o",
     "iokit/i9100_camera_protocol.o",
     "iokit/i9100_mfc.o",
+    "iokit/i9100_mfc_layout.o",
     "iokit/i9100_video_layout.o",
     "iokit/i9100_camera_engine_io.o",
     "iokit/i9100_csis.o",
@@ -74,9 +75,10 @@
     "iokit/i9100_bt_worker.cpo",
     "iokit/i9100_bt_control.cpo",
     "iokit/i9100_camera_native.cpo",
-    "iokit/i9100_camera_mmio.cpo"
+    "iokit/i9100_camera_mmio.cpo",
+    "iokit/i9100_mfc_native.cpo"
   ],
-  "patch_sha256": "900c2fd6eac1b66bcb2614fee4e3a85ff1dbc65981fd20e929db180c22da8265",
+  "patch_sha256": "b79ca6ac71af6847322efdc07964e0ef0ed4e599af02416384066220b581072e",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first",

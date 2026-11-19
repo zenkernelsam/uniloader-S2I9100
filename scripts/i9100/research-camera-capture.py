@@ -33,11 +33,24 @@ FILES = (
     "drivers/media/video/s5p-fimc/fimc-core.h",
     "drivers/media/video/s5p-fimc/fimc-core.c",
 )
+MFC_FILES = (
+    "drivers/media/video/s5p-mfc/regs-mfc-v5.h",
+    "drivers/media/video/s5p-mfc/s5p_mfc.c",
+    "drivers/media/video/s5p-mfc/s5p_mfc_cmd_v5.c",
+    "drivers/media/video/s5p-mfc/s5p_mfc_ctrl.c",
+    "drivers/media/video/s5p-mfc/s5p_mfc_opr_v5.c",
+    "drivers/media/video/s5p-mfc/s5p_mfc_shm.c",
+    "drivers/media/video/s5p-mfc/s5p_mfc_shm.h",
+    "drivers/media/video/samsung/mfc5x/mfc_buf.h",
+    "drivers/media/video/samsung/mfc5x/mfc_cmd.c",
+    "arch/arm/mach-exynos/dev-pd-exynos4.c",
+)
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--include-mfc", action="store_true")
     a = p.parse_args()
     out = a.output.resolve()
     if not out.is_relative_to(ROOT / "research") or out.exists():
@@ -52,7 +65,7 @@ def main():
         raise RuntimeError("Source inventory was truncated")
     indexed = {x["path"]: x for x in tree["tree"] if x.get("type") == "blob"}
     sources = {}
-    for name in FILES:
+    for name in FILES + (MFC_FILES if a.include_mfc else ()):
         path = BASE / name
         raw = path.read_bytes()
         git_blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
@@ -85,6 +98,16 @@ def main():
                         "A CSIS non-image interrupt cannot prove a FIMC frame or DMA completion",
                         "Polled single slot freezes a completed buffer; not guaranteed exactly one exposure"],
     }
+    if a.include_mfc:
+        facts["mfcv51"] = dict(physical="0x13400000", sysmmu=["0x13620000", "0x13630000"],
+            gic_intid=126, cmu_gate="0xc928 bits0/1/2 = MFC/left-MMU/right-MMU", pmu_configuration="0x3c40/status+4",
+            bank_base_alignment=131072, register_address_shift=11, host_shared_address_unit="bytes",
+            system_reservation_candidates=[0x60000, 0x80000], reservation_rule="Profile follows original matching firmware; not file length",
+            h264_context=0x96000, cpb=0x400000, descriptor=0x20000, shared=0x1000,
+            header_command="0x2040=(1<<16)|instance", sequence_reply=4,
+            picture_readback="width0x2008,height0x2004,dpb0x200c,consumed0x2018,channel0x2000",
+            banks="Luma and H264 MV in bankB; chroma/neighbor scratch in bankA",
+            hardware_tested=False, original_firmware_available=False)
     result = dict(result="PASS", hardware_tested=False, device_contacted=False, source_reference_only=True,
                   repository=pin["repository"], commit=PIN, sources=sources, facts=facts,
                   verifier_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
