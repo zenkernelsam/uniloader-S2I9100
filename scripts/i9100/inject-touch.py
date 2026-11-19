@@ -41,6 +41,7 @@ def main():
                    help='Bounded follow-up duration; 80ms can retain the first Down in the execution ring')
     p.add_argument('--wait-language',action='store_true',
                    help='Before the follow-up, observe the actual language-list card in bounded scanout samples')
+    p.add_argument('--wait-desktop',type=Path,help='Before the one follow-up tap, require icon samples from this retained coherent desktop frame/result.json')
     p.add_argument('--ui-layout',type=Path,help='Read Setup application state on this same awake handle before the follow-up')
     p.add_argument('--require-ui-trace',action='store_true',help='Before the follow-up require the actual Setup observer installation')
     p.add_argument('--trace',action='store_true',help='Retain current HID/GS execution immediately after the gesture on the same handle')
@@ -52,6 +53,8 @@ def main():
     if a.wake_first and a.home:p.error('--wake-first requires a touch gesture')
     if a.follow_tap and not a.swipe:p.error('--follow-tap requires --swipe')
     if a.wait_language and not a.follow_tap:p.error('--wait-language requires --follow-tap')
+    if a.wait_desktop and (not a.follow_tap or a.wait_language or a.ui_layout or a.require_ui_trace):
+        p.error('--wait-desktop requires one follow-up tap and cannot share a language gate')
     if a.ui_layout and not a.wait_language:p.error('--ui-layout requires --wait-language')
     if a.require_ui_trace and not a.wait_language:p.error('--require-ui-trace requires --wait-language')
     if a.awake_check_layout and not a.wake_first:p.error('--awake-check-layout requires --wake-first')
@@ -61,6 +64,10 @@ def main():
     command=('hid-home '+format(ms,'x') if a.home else 'hid-swipe '+' '.join(format(n,'x') for n in [*points,ms]))
     f.validate_command(command,allow_input_test=True)
     symbols=m.Symbols(a.kernel)
+    desktop_gate=desktop_reference=None
+    if a.wait_desktop:
+        desktop_gate=module('desktop_gate','ui-frame-gate.py')
+        desktop_reference=desktop_gate.load_reference(a.wait_desktop,f.REPO)
     o.require('_i9100_input_test' in symbols.values,'Kernel has no input mailbox')
     out=o.confined(a.output,f.REPO/'out');o.require(not out.exists(),'Fresh output directory required')
     profile=json.loads((f.REPO/'out/automation/inventory-20261109-panic-download.json').read_text())
@@ -105,7 +112,7 @@ def main():
                         o.require(time.monotonic()<deadline,'Input queue completion timeout; no resend')
                         time.sleep(.1)
                     step=dict(command=step_command,sequence=state[2],enqueued=state[8],samples=samples)
-                    if '_i9100_hid_execution_diag' in symbols.values:
+                    if '_i9100_hid_execution_diag' in symbols.values and not (a.wait_desktop and a.follow_tap and step_command==command):
                         raw=kernel.read(symbols['_i9100_hid_execution_diag'],96);diag=struct.unpack('<24I',raw)
                         step['hid_counts']=dict(callback=diag[16],digitizer=diag[17],gs=diag[18],sequence=diag[19])
                     completed.append(step)
@@ -122,7 +129,9 @@ def main():
                             o.require(all(app['flags'][name]==0 for name in ('isSuspended','isSuspendedEventsOnly','blockInteractionEvents')),
                                 'Native SpringBoard still blocks interaction; swipe not sent')
                     if a.follow_tap and not home and step_command==command:
-                        if a.wait_language:
+                        if a.wait_desktop:
+                            step['desktop_qualification']=desktop_gate.wait_desktop(kernel,symbols,desktop_reference,out/'desktop-ready',record)
+                        elif a.wait_language:
                             physical=kernel.u32(symbols['_i9100_fb_physical'])
                             o.require(0x40000000<=physical and physical+1536000<=0x80000000,'Scanout outside DRAM')
                             deadline=time.monotonic()+12;samples=[]
