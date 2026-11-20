@@ -41,6 +41,7 @@ code=r'''
 #include "i9100-charge-report.h"
 #include "i9100-charge-start.h"
 #include "main/i9100-charge-handoff.h"
+#include "main/i9100-boot-source.h"
 #include "charge/i9100_charge_epoch.h"
 #include "charge/i9100_panel_spi.h"
 #include "charge/i9100_panel_sleep.h"
@@ -61,7 +62,7 @@ static uint64_t i9100_lpm_epoch_rtc;
 static unsigned power_init_calls,failed_stop;
 static unsigned stop_sequence,last_boot_stage,fault_reports,boot_admission,slow_sample;
 static uint64_t first_key_seen,last_key_seen,unblank_ticks,last_blank_ticks;
-static struct I9100BootSource i9100_boot_source;
+struct I9100BootSource i9100_boot_source;
 static unsigned scenario,draws,late_draws,blanked,last_unblank,remote_issued,stops,reports,usb_calls;
 static uint64_t ticks,last_draw_ticks,reset_ticks,action_taken_ticks;static uint32_t fb[480*800];static jmp_buf escaped;
 static unsigned pmu2,pmu3,wait_ticks,panel_mode=0x9c,panel_scan=0x1003,panel_commands;
