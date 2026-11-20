@@ -24,6 +24,26 @@ CLIENT_FIELDS=('sequence','time_lo','time_hi','requested_state','hardware_result
 IDLE_FIELDS=('version','sequence','irq','waits','mct_low','mct_high','wait_low','wait_high','last','maximum',
     'frequency','map_ready')
 
+CDC_FIELDS=('mode','in_poll','polls','interrupt_history','rx_status_count','rx_bytes','tx_arms',
+    'in_busy','configured','host_open','reply_flight','reply_bytes','commands','gintsts','daint',
+    'in_ctl','reconnects','last_tx_age_seconds','out_ctl','out_size','out_rearms','control_started',
+    'init_attempts','init_gate','out_arms','reset_errors','timebase_ready')
+
+def decode_cdc_liveness(raw,header_after=None):
+    if len(raw)!=140:raise ValueError('CDC liveness snapshot size differs')
+    words=struct.unpack('<35I',raw)
+    if (words[0],words[2])!=(1,27) or words[5]&~0x1f1f:
+        raise ValueError('Unknown CDC liveness schema/reason')
+    value=dict(version=words[0],sequence=words[1],emitted=words[3],suppressed=words[4],
+        last_reason=words[5]&255,faults=words[5]>>8,time_ns=(words[7]<<32)|words[6],
+        consistent=not bool(words[1]&1),stats=dict(zip(CDC_FIELDS,words[8:])))
+    if header_after is not None:
+        if len(header_after)!=8:raise ValueError('CDC liveness publication header size differs')
+        value['publication_rechecked']=True
+        value['consistent']=value['consistent'] and struct.unpack('<2I',header_after)==words[:2]
+    value['limit']='Complete Power-workloop USB snapshot and log decisions; no opener, wire token, phone energy or physical display measurement'
+    return value
+
 def decode_charge_adopt(raw):
     if len(raw) not in (48,64):raise ValueError('Charge deadline adoption size differs')
     words=struct.unpack('<'+str(len(raw)//4)+'I',raw)
@@ -220,6 +240,12 @@ def capture(kernel,symbols,out):
     (out/'charge-diag.bin').write_bytes(raw)
     result=decode(raw)
     (out/'charge-diag.json').write_text(json.dumps(result,indent=2)+'\n')
+    if '_i9100_cdc_liveness_diag' in symbols.values:
+        cdc_address=symbols['_i9100_cdc_liveness_diag']
+        cdc=kernel.read(cdc_address,140);cdc_after=kernel.read(cdc_address,8)
+        (out/'cdc-liveness.bin').write_bytes(cdc)
+        (out/'cdc-liveness-after.bin').write_bytes(cdc_after)
+        result['cdc_liveness']=decode_cdc_liveness(cdc,cdc_after)
     if '_do_power_save' in symbols.values:
         result['do_power_save']=kernel.u32(symbols['_do_power_save'])
     if '_i9100_display_power_diag' in symbols.values:
