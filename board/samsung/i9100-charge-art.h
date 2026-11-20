@@ -7,6 +7,37 @@
 #define I9ART_HEIGHT 258U
 #define I9ART_PIXELS (I9ART_WIDTH * I9ART_HEIGHT)
 
+/* Runtime clips the native full liquid over the native empty shell.
+ * This is our continuous SOC composition, not an algorithm from the PNGs. */
+static inline void i9100_charge_art_levels(unsigned valid,unsigned soc,unsigned full,
+    unsigned *low,unsigned *high,unsigned *weight)
+{
+ *low=0U;*high=16U;*weight=valid?(full?100U:soc):0U;
+}
+
+static inline unsigned i9100_charge_liquid_weight(unsigned x,unsigned percent)
+{
+ if(!percent)return 0U;if(percent>=100U)return 100U;
+ /* Native 3/4-scaled chamber spans roughly x64..334. A two-pixel edge
+  * smooths motion without crossfading two complete visible fill fronts. */
+ int edge=6400+(int)percent*270-(int)x*100+100;
+ return edge<=0?0U:edge>=200?100U:(unsigned)edge/2U;
+}
+
+static inline uint16_t i9100_charge_art_mix(uint16_t low,uint16_t high,unsigned weight,unsigned red)
+{
+ unsigned r=(((low>>11)&31U)*(100U-weight)+((high>>11)&31U)*weight+50U)/100U;
+ unsigned g=(((low>>5)&63U)*(100U-weight)+((high>>5)&63U)*weight+50U)/100U;
+ unsigned b=((low&31U)*(100U-weight)+(high&31U)*weight+50U)/100U;
+ if(red){
+  /* Only the native green liquid contribution changes hue. Glass/black and
+   * silver highlights stay original. Green is 6bit; red/blue are 5bit. */
+  unsigned green=(g*31U+31U)/63U,grey=r>b?r:b;
+  if(green>grey+2U){unsigned liquid=green-grey;r=grey+liquid;g=grey*2U+liquid/5U;b=grey+liquid/12U;}
+ }
+ return (uint16_t)((r<<11)|(g<<5)|b);
+}
+
 /* Only local, qualified firmware resources are embedded. No filesystem, PNG
  * parser, display API or dynamic allocation runs in the charger. */
 #ifdef I9100_CHARGE_ART_BLOB

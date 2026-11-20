@@ -47,7 +47,10 @@ static inline void i9100_charge_render_progress(void)
 static uint32_t i9100_charge_composed[480U*I9SCREEN_HEIGHT];
 #ifdef I9100_CHARGE_ART_BLOB
 static uint16_t i9100_charge_sprite[I9ART_PIXELS];
+static uint16_t i9100_charge_sprite_next[I9ART_PIXELS];
 static unsigned i9100_charge_sprite_key=~0U;
+static unsigned i9100_charge_sprite_next_key=~0U,i9100_charge_body_key=~0U;
+const uint32_t i9100_charge_continuous_fill_version=1;
 #endif
 static void *i9100_charge_previous_buffer;
 static unsigned i9100_charge_previous_bpp, i9100_charge_previous_key=~0U;
@@ -57,6 +60,7 @@ static inline void i9100_charge_renderer_reset(void)
  i9100_charge_render=(struct i9100_charge_render_stats){0};
 #ifdef I9100_CHARGE_ART_BLOB
  i9100_charge_sprite_key=~0U;
+ i9100_charge_sprite_next_key=i9100_charge_body_key=~0U;
 #endif
 }
 static uint32_t i9100_charge_get(const struct i9100_charge_screen*s,unsigned x,unsigned y)
@@ -128,22 +132,34 @@ static int i9100_charge_draw(const struct i9100_charge_screen*s,unsigned valid,u
  const struct i9100_charge_screen*destination=s;s=&layer;
 #ifdef I9100_CHARGE_ART_BLOB
  unsigned art=i9100_charge_art_frame(valid,soc,full);
- unsigned body_dirty=first || art!=i9100_charge_sprite_key;
- if(body_dirty && art!=i9100_charge_sprite_key){
-  unsigned bytes=(unsigned)(i9100_charge_art_end-i9100_charge_art_start);
+ unsigned low,high,weight;
+ i9100_charge_art_levels(valid,soc,full,&low,&high,&weight);
+ unsigned red=valid && !full && soc<=10U;
+ unsigned body_key=(valid?(full?100U:soc):0U)|(red<<8);
+ unsigned body_dirty=first || body_key!=i9100_charge_body_key;
+ unsigned bytes=(unsigned)(i9100_charge_art_end-i9100_charge_art_start);
+ if(body_dirty && low!=i9100_charge_sprite_key){
   i9100_charge_render_progress();
-  if(!i9100_charge_art_decode(i9100_charge_art_start,bytes,art,i9100_charge_sprite,I9ART_PIXELS))return 0;
-  i9100_charge_sprite_key=art;
+  if(!i9100_charge_art_decode(i9100_charge_art_start,bytes,low,i9100_charge_sprite,I9ART_PIXELS))return 0;
+  i9100_charge_sprite_key=low;
+ }
+ if(body_dirty && high!=low && high!=i9100_charge_sprite_next_key){
+  i9100_charge_render_progress();
+  if(!i9100_charge_art_decode(i9100_charge_art_start,bytes,high,i9100_charge_sprite_next,I9ART_PIXELS))return 0;
+  i9100_charge_sprite_next_key=high;
  }
  if(body_dirty){
   for(unsigned y=0;y<I9ART_HEIGHT;y++){
    for(unsigned x=0;x<I9ART_WIDTH;x++){
-    unsigned c=i9100_charge_sprite[y*I9ART_WIDTH+x],r=(c>>11)&31U,g=(c>>5)&63U,b=c&31U;
+    unsigned index=y*I9ART_WIDTH+x;
+    unsigned c=i9100_charge_art_mix(i9100_charge_sprite[index],i9100_charge_sprite_next[index],i9100_charge_liquid_weight(x,weight),red);
+    unsigned r=(c>>11)&31U,g=(c>>5)&63U,b=c&31U;
     i9100_charge_pixel(s,42U+x,y,((r*255U/31U)<<16)|((g*255U/63U)<<8)|(b*255U/31U));
    }
    if(!(y&7U))i9100_charge_render_progress();
   }
   i9100_charge_render.body_rebuilds++;
+  i9100_charge_body_key=body_key;
  }
  i9100_charge_render.art_frame=art;i9100_charge_render.art_ok=1;
 #else

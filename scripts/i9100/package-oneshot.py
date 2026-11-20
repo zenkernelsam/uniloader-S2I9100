@@ -428,6 +428,7 @@ def main():
         'charge_probe': args.charge_probe,
         'standalone_charge': args.standalone_charge,
         'standalone_charge_art': art_record,
+        'standalone_charge_continuous_fill_version': 1 if args.standalone_charge and b'i9100_charge_continuous_fill_version' in (output/'loader-symbols.txt').read_bytes() else None,
         'standalone_charge_transport': args.standalone_charge and b'I9UT1 ' in data,
         'standalone_charge_sense': args.standalone_charge and b'I9CS1 ' in data and b'I9RG1 ' in data,
         'standalone_charge_dirty_regions': args.standalone_charge and b'I9DR1 ' in data,

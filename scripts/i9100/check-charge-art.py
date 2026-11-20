@@ -46,6 +46,15 @@ static void save(const char *directory,const char *name, const void *p,unsigned 
 }
 int main(int argc,char**argv){
  assert(argc==2);unsigned bytes=(unsigned)(i9100_charge_art_end-i9100_charge_art_start);
+ for(unsigned level=0;level<=100;level++)for(unsigned x=0;x<I9ART_WIDTH;x++){
+  unsigned weight=i9100_charge_liquid_weight(x,level);assert(weight<=100);
+  if(!level)assert(!weight);if(level==100)assert(weight==100);
+  if(level)assert(weight>=i9100_charge_liquid_weight(x,level-1));
+ }
+ for(unsigned value=0;value<65536;value++){
+  uint16_t rgb=(uint16_t)value;
+  assert(i9100_charge_art_mix(rgb,rgb,0,0)==rgb && i9100_charge_art_mix(rgb,rgb,100,0)==rgb);
+ }
  uint16_t*decoded=malloc((I9ART_PIXELS+64)*2);assert(decoded);
  for(unsigned n=0;n<18;n++){
   for(unsigned i=0;i<64;i++)decoded[I9ART_PIXELS+i]=0xa5a5;
@@ -76,16 +85,15 @@ int main(int argc,char**argv){
   assert(!memcmp(snapshot,s.pixels,capacity) && !i9100_charge_render.last_stores);
   assert(!i9100_charge_render.last_compared && progress_calls==progress_before);
   assert(i9100_charge_draw(&s,1,6,1,1,0,0,2));
-  assert(i9100_charge_render.last_stores<4000); /* Percentage only, body unchanged. */
-  assert(i9100_charge_render.last_compared==96U*28U && i9100_charge_render.body_rebuilds==body_before);
+  assert(i9100_charge_render.last_stores<70000); /* Real SOC also changes the continuous liquid. */
+  assert(i9100_charge_render.last_compared==396U*258U+96U*28U && i9100_charge_render.body_rebuilds==body_before+1U);
   assert(i9100_charge_draw(&s,1,50,1,1,0,0,3));
   assert(i9100_charge_render.art_frame==9 && i9100_charge_render.last_stores<70000);
   assert(i9100_charge_render.last_compared==396U*258U+96U*28U);
   memcpy(snapshot,s.pixels,capacity);
   assert(i9100_charge_draw(&s,1,51,1,1,0,0,4));
-  for(unsigned y=284;y<542;y++)assert(!memcmp(snapshot+y*s.stride,(uint8_t*)s.pixels+y*s.stride,s.stride));
-  assert(i9100_charge_render.last_stores<4000); /* No glass erase in next percentage. */
-  assert(i9100_charge_render.last_compared==96U*28U);
+  assert(i9100_charge_render.last_stores<70000); /* No whole-screen clear for the next percentage. */
+  assert(i9100_charge_render.last_compared==396U*258U+96U*28U);
   assert(i9100_charge_draw(&s,1,50,1,0,I9100_POWER_TEMPERATURE,0,5));
   assert(i9100_charge_render.last_stores<4000); /* Keep actual battery level while protected. */
   memcpy(snapshot,s.pixels,capacity);
