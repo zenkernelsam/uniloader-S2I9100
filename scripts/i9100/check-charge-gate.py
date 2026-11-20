@@ -25,6 +25,10 @@ finish=function('i9100_boot_charge_finish')
 boot_report=function('lpm_boot_report')
 stage=function('i9100_boot_charge_stage')
 failure=function('i9100_boot_charge_failure')
+render_progress=text[text.index('static void lpm_charge_render_progress(void)\n'):]
+begin=render_progress.index('{');depth=1;end=begin+1
+while depth:depth+=(render_progress[end]=='{')-(render_progress[end]=='}');end+=1
+render_progress=render_progress[:end]
 spec=importlib.util.spec_from_file_location('charge_gate_tree',Path(__file__).with_name('prepare-payloads.py'))
 dt=importlib.util.module_from_spec(spec);spec.loader.exec_module(dt)
 tree=dt.device_tree();(out/'tree.bin').write_bytes(tree)
@@ -36,6 +40,8 @@ code=r'''
 #include <assert.h>
 #include <setjmp.h>
 #include <unistd.h>
+static void lpm_charge_render_progress(void);
+#define I9100_CHARGE_RENDER_PROGRESS() lpm_charge_render_progress()
 #include "charge/i9100_power.h"
 #include "i9100-charge-screen.h"
 #include "i9100-charge-report.h"
@@ -60,7 +66,7 @@ static uint64_t i9100_lpm_boot_sample_ticks;
 static struct I9100ChargeEpoch i9100_lpm_prior_epoch;
 static unsigned i9100_lpm_epoch_marked,i9100_lpm_epoch_match,i9100_lpm_epoch_result;
 static uint64_t i9100_lpm_epoch_rtc;
-static unsigned power_init_calls,failed_stop,sense_sequence;
+static unsigned power_init_calls,failed_stop,sense_sequence,slow_render;
 static unsigned stop_sequence,last_boot_stage,fault_reports,boot_admission,slow_sample;
 static uint64_t first_key_seen,last_key_seen,unblank_ticks,last_blank_ticks;
 struct I9100BootSource i9100_boot_source;
@@ -107,7 +113,7 @@ static uint32_t lpm_read(unsigned base,unsigned off){
 }
 static void lpm_write(unsigned base,unsigned off,uint32_t value){
  if(base==0x11c00000){
-  if(off==0x1a4){assert(value==3);return;}
+  if(off==0x1a4){assert(value==3 && !blanked);return;}
   assert(off==0x188);blanked=value&0x1000000;
   if(!blanked){last_unblank=seconds();unblank_ticks=ticks;}else last_blank_ticks=ticks;
   return;
@@ -163,6 +169,10 @@ void usbcdc4210_charge_sense_report(const unsigned timing[8],const unsigned regi
 void usbcdc4210_charge_screen_report(unsigned d,unsigned b,unsigned s,unsigned p){(void)d;(void)b;assert(s==1920 && p==32);}
 void usbcdc4210_charge_fimd_report(const unsigned p[8]){assert(p[1]==0x8035 && p[6]==(blanked?0x1000000:0));}
 void usbcdc4210_charge_render_report(const unsigned p[8]){assert(p[0]<=1 && p[4]<=480*800);}
+void usbcdc4210_charge_dirty_report(const unsigned p[8]){
+ assert(p[2]<=396U*258U+96U*28U && p[5]<=1 && p[6]<=1 && p[7]<=1);
+ if(p[6])assert(p[5] && p[7]);
+}
 void usbcdc4210_charge_start_report(const unsigned p[8]){assert(p[0]<=1 && p[1]<=11 && p[3]==1);}
 void usbcdc4210_charge_transport_report(void){}
 void usbcdc4210_charge_fault_report(const unsigned p[8]){
@@ -204,7 +214,7 @@ unsigned usbcdc4210_charge_release_action(unsigned action){assert(action==1);ret
 static void lpm_download(void){reset_ticks=ticks;longjmp(escaped,2);}
 static int lpm_screen_bind(struct i9100_charge_screen*s,unsigned*w){s->pixels=fb;s->bytes=sizeof(fb);s->stride=1920;s->bpp=32;*w=2;return 1;}
 static int wrapped_draw(const struct i9100_charge_screen*s,unsigned valid,unsigned percent,unsigned connected,unsigned charging,int reason,unsigned full,unsigned frame){
- assert(!blanked);if(draws)assert(ticks-last_draw_ticks>=24000000ULL);last_draw_ticks=ticks;draws++;
+ assert(!!blanked==(i9100_charge_previous_buffer==0));if(draws)assert(ticks-last_draw_ticks>=24000000ULL);last_draw_ticks=ticks;draws++;
  if(seconds()>=30 && seconds()<35)late_draws++;
  return i9100_charge_draw(s,valid,percent,connected,charging,reason,full,frame);
 }
@@ -238,7 +248,8 @@ void usbcdc4210_charge_panel_identity_report(const unsigned values[4]){
 void usbcdc4210_charge_panel_recovery_report(const unsigned values[4]){
  assert(values[0]<=1 && values[1]<=2 && values[3]<=4);
 }
-'''+service+'\n'+boot_report+'\n'+stage+'\n'+gate+'\n'+finish+'\n'+failure+r'''
+'''+service+'\n'+boot_report+'\n'+stage+'\n'+render_progress.replace(
+ ' i9100_boot_charge_service();',' if(scenario==20 && !slow_render){ticks+=24000000ULL;slow_render=1;}\n i9100_boot_charge_service();')+'\n'+gate+'\n'+finish+'\n'+failure+r'''
 int main(int argc,char **argv){
  assert(argc==3);FILE *tree_file=fopen(argv[1],"rb");assert(tree_file);
  device_tree_bytes=fread(device_tree,1,sizeof(device_tree),tree_file);fclose(tree_file);
@@ -246,9 +257,9 @@ int main(int argc,char **argv){
  alarm(20); /* A stuck offline model cannot hold a CPU indefinitely. */
  for(scenario=1;scenario<=
 #ifdef I9100_PANEL_SLEEP_BUILD
- 19
+ 20
 #else
- 19
+ 20
 #endif
  ;scenario++){
   fprintf(stderr,"SCENARIO %u begin\n",scenario);fflush(stderr);
@@ -260,7 +271,7 @@ int main(int argc,char **argv){
   i9100_lpm_boot_active=i9100_lpm_boot_owned=i9100_lpm_resume_charge=i9100_lpm_boot_in_service=i9100_lpm_boot_polls=0;
   i9100_lpm_boot_fault=i9100_lpm_fault_phase=0;
   i9100_lpm_boot_next=0;
-  power_init_calls=failed_stop=stop_sequence=last_boot_stage=fault_reports=boot_admission=slow_sample=0;
+  power_init_calls=failed_stop=stop_sequence=last_boot_stage=fault_reports=boot_admission=slow_sample=slow_render=0;
   first_key_seen=last_key_seen=unblank_ticks=last_blank_ticks=0;
   i9100_boot_charge_failure(99);assert(!i9100_lpm_boot_fault && !power_init_calls); /* ordinary boot */
   unsigned result=setjmp(escaped);if(!result){
@@ -271,7 +282,7 @@ int main(int argc,char **argv){
     else i9100_boot_charge_finish(device_tree,device_tree_bytes);
    }
   }
-  assert(late_draws==0 && draws>=30 && usb_calls>1000 && reports>=2);
+  assert((scenario==20 || late_draws==0) && draws>=30 && usb_calls>1000 && reports>=2);
   if(scenario!=6 && scenario!=8 && scenario!=10 && scenario<18)assert(panel_scan==0x1003 || scenario>=3 && scenario<=5);
   if(scenario==1 || scenario==2 || scenario==6 || scenario==7){
    assert(i9100_lpm_boot_active && stops==0 && i9100_lpm_battery.enabled);
@@ -337,6 +348,11 @@ int main(int argc,char **argv){
 #else
    assert(panel_scan==0x1003);
 #endif
+  }
+  if(scenario==20){
+   assert(result==3 && slow_render && i9100_lpm_boot_polls>=2 && stops==1);
+   assert(i9100_charge_render.initial_hidden==1 && i9100_charge_render.initial_committed==1);
+   assert(i9100_charge_render.progress_calls>100 && !pmu2 && !pmu3);
   }
   fprintf(stderr,"SCENARIO %u done\n",scenario);fflush(stderr);
  }

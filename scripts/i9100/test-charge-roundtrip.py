@@ -93,6 +93,8 @@ def charger(path,scenario):
             # reports keep frames/stores fixed while device time advances.
             lines.append('I9CR1 00000001 0000000c 00000002 0004e200 00000000 0000001c 00000001 00000000\n')
             lines.append('I9BT1 00000001 0000000b 00000000 00000001 00000fa0 0000004b 00000000 00000000\n')
+            if 'dirty-' in scenario and scenario!='art-dirty-missing':
+                lines.append('I9DR1 00000002 00000a80 00000a80 00000001 000000a0 00000001 00000001 00000001\n')
             if 'transport-' in scenario and scenario!='art-transport-missing':
                 lines.append('I9UT1 00040000 80488200 20080040 00000000 00000180 000000a0 00000001 00000000\n')
         if scenario in ('panel-success','panel-unqualified','panel-scanout-running','panel-id-mismatch','panel-id-partial') or scenario.startswith('recovery-'):
@@ -154,6 +156,11 @@ def charger(path,scenario):
     if scenario=='sense-duplicate':text=text.replace('I9RG1 00000004','I9CS1 00000004 00015f8d 00000000 000007d0 000003ff 000003ce 00000001 00000000\nI9RG1 00000004')
     if scenario=='sense-readback':text=text.replace('00000100 00000004','00000100 00000000')
     if scenario=='sense-newline':text=text[:text.index('\n',text.rfind('I9RG1 '))]
+    if scenario=='art-dirty-unhidden':text=text.replace('000000a0 00000001 00000001 00000001','000000a0 00000000 00000001 00000001')
+    if scenario=='art-dirty-too-wide':text=text.replace('I9DR1 00000002 00000a80 00000a80','I9DR1 00000002 00000a80 000fffff')
+    if scenario=='art-dirty-no-progress':text=text.replace('000000a0 00000001 00000001 00000001','00000000 00000001 00000001 00000001')
+    if scenario=='art-dirty-redrew':
+        at=text.rfind('I9DR1 ');text=text[:at]+text[at:].replace('00000a80','00000a81',1)
     raw=text.encode();(path/'received.bin').write_bytes(raw)
     write_events(path/'events.jsonl',[dict(phase='CHARGER_IDENTITY',device=dict(device,instance=m.o.CDC.replace('OS6','CHG'))),
         dict(phase='DTR_OK',time='2026-11-19T01:00:00+00:00'),
@@ -168,7 +175,8 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
                  'epoch-success','epoch-full','epoch-missing','epoch-rejected','epoch-extended','epoch-missing-log',
                  'stop-success','stop-uncertain','stop-invalid','stop-missing','stop-monitor-dead',
                  'sense-success','sense-missing','sense-uncertain','sense-no-adc','sense-stale',
-                 'sense-wrong-sequence','sense-partial','sense-duplicate','sense-readback','sense-newline'):
+                 'sense-wrong-sequence','sense-partial','sense-duplicate','sense-readback','sense-newline',
+                 'art-dirty-success','art-dirty-missing','art-dirty-unhidden','art-dirty-too-wide','art-dirty-no-progress','art-dirty-redrew'):
     directory=out/scenario;directory.mkdir();calls=[];records=[]
     class Host:
         def inventory(self):return [device]
@@ -189,13 +197,13 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
             target.mkdir();write_events(target/'events.jsonl',[dict(phase='SEND'),dict(phase='ACK'),dict(phase='DONE'),dict(phase='CLOSED')])
         else:raise AssertionError('Unexpected child '+tool)
     actual_manifest=dict(manifest,standalone_charge_art=dict(local_asset=True),
-        standalone_charge_transport='transport-' in scenario) if scenario.startswith('art-') else manifest
+        standalone_charge_transport='transport-' in scenario,standalone_charge_dirty_regions='dirty-' in scenario) if scenario.startswith('art-') else manifest
     if scenario.startswith('handoff-'):actual_manifest=dict(manifest,standalone_charge_handoff=True)
     if scenario.startswith('deadline-'):actual_manifest=dict(manifest,standalone_charge_handoff=True,standalone_charge_deadline_adoption=True)
     if scenario.startswith('epoch-'):actual_manifest=dict(manifest,standalone_charge_handoff=True,standalone_charge_deadline_adoption=True,standalone_charge_shutdown_epoch=True)
     if scenario.startswith('stop-'):actual_manifest=dict(manifest,standalone_charge_handoff=True,charge_stop_confirmation=True)
     if scenario.startswith('sense-'):actual_manifest=dict(manifest,standalone_charge_sense=True)
-    expected_success=scenario in ('success','art-success','art-transport-success','handoff-success','deadline-success','epoch-success','epoch-full','stop-success','sense-success')
+    expected_success=scenario in ('success','art-success','art-transport-success','art-dirty-success','handoff-success','deadline-success','epoch-success','epoch-full','stop-success','sense-success')
     try:m.run_roundtrip(package,actual_manifest,directory,lambda phase,**row:records.append(dict(phase=phase,**row)),child,Host())
     except (ValueError,RuntimeError):assert not expected_success
     else:

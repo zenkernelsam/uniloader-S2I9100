@@ -1,6 +1,9 @@
 #ifndef I9100_CHARGE_SCREEN_H
 #define I9100_CHARGE_SCREEN_H
 #include <stdint.h>
+#ifndef I9100_CHARGE_RENDER_PROGRESS
+#define I9100_CHARGE_RENDER_PROGRESS() do{}while(0)
+#endif
 #include "i9100-charge-art.h"
 /* Standalone charger visuals. The caller supplies the observed window buffer,
  * exact pixel format, valid state and actual SOC; drawing has no hardware API. */
@@ -29,8 +32,13 @@ static void i9100_charge_pixel(const struct i9100_charge_screen*s,unsigned x,uns
  else *(volatile uint16_t*)((uint8_t*)s->pixels+index)=
   (uint16_t)(((color>>8)&0xf800U)|((color>>5)&0x07e0U)|((color>>3)&0x001fU));
 }
-struct i9100_charge_render_stats { unsigned frames, stores, last_stores, unchanged, art_frame, art_ok; };
+struct i9100_charge_render_stats {
+ unsigned frames, stores, last_stores, unchanged, art_frame, art_ok;
+ unsigned compared,last_compared,body_rebuilds,progress_calls,initial_hidden,initial_committed;
+};
 static struct i9100_charge_render_stats i9100_charge_render;
+static inline void i9100_charge_render_progress(void)
+{i9100_charge_render.progress_calls++;I9100_CHARGE_RENDER_PROGRESS();}
 /* Private RAM is part of loader BSS, never a guessed free physical address.
  * The live scanout receives final pixels only, never a blank intermediate. */
 #define I9SCREEN_TOP 284U
@@ -61,10 +69,13 @@ static uint32_t i9100_charge_encode(unsigned bpp,uint32_t c)
  if(bpp==32U)return c|0xff000000U;
  return ((c>>8)&0xf800U)|((c>>5)&0x07e0U)|((c>>3)&0x001fU);
 }
-static void i9100_charge_final_pixel(const struct i9100_charge_screen*s,unsigned x,unsigned y,uint32_t c)
+static void i9100_charge_final_pixel(const struct i9100_charge_screen*s,unsigned x,unsigned y,uint32_t c,unsigned first)
 {
  c=i9100_charge_encode(s->bpp,c);
- if(i9100_charge_get(s,x,y)==c)return;
+ if(!first){
+  i9100_charge_render.compared++;i9100_charge_render.last_compared++;
+  if(i9100_charge_get(s,x,y)==c)return;
+ }
  uint8_t*p=(uint8_t*)s->pixels+y*s->stride+x*(s->bpp/8U);
  if(s->bpp==32U)*(volatile uint32_t*)p=c;
  else *(volatile uint16_t*)p=(uint16_t)c;
@@ -102,24 +113,38 @@ static int i9100_charge_draw(const struct i9100_charge_screen*s,unsigned valid,u
  unsigned key=soc|(valid<<8)|(connected<<9)|(charging<<10)|(full<<11)|(visual_reason<<12);
  unsigned first=s->pixels!=i9100_charge_previous_buffer || s->bpp!=i9100_charge_previous_bpp ||
    i9100_charge_previous_key==~0U;
- i9100_charge_render.last_stores=0;
+ i9100_charge_render.last_stores=i9100_charge_render.last_compared=0;
  if(!first && key==i9100_charge_previous_key){i9100_charge_render.unchanged++;return 1;}
- for(unsigned n=0;n<480U*I9SCREEN_HEIGHT;n++)i9100_charge_composed[n]=0;
+ if(first)for(unsigned y=0;y<I9SCREEN_HEIGHT;y++){
+  for(unsigned x=0;x<480U;x++)i9100_charge_composed[y*480U+x]=0;
+  if(!(y&7U))i9100_charge_render_progress();
+ }
  struct i9100_charge_screen layer={i9100_charge_composed,sizeof(i9100_charge_composed),1920U,32U};
  const struct i9100_charge_screen*destination=s;s=&layer;
 #ifdef I9100_CHARGE_ART_BLOB
  unsigned art=i9100_charge_art_frame(valid,soc,full);
- if(art!=i9100_charge_sprite_key){
+ unsigned body_dirty=first || art!=i9100_charge_sprite_key;
+ if(body_dirty && art!=i9100_charge_sprite_key){
   unsigned bytes=(unsigned)(i9100_charge_art_end-i9100_charge_art_start);
+  i9100_charge_render_progress();
   if(!i9100_charge_art_decode(i9100_charge_art_start,bytes,art,i9100_charge_sprite,I9ART_PIXELS))return 0;
   i9100_charge_sprite_key=art;
  }
- for(unsigned y=0;y<I9ART_HEIGHT;y++)for(unsigned x=0;x<I9ART_WIDTH;x++){
-  unsigned c=i9100_charge_sprite[y*I9ART_WIDTH+x],r=(c>>11)&31U,g=(c>>5)&63U,b=c&31U;
-  i9100_charge_pixel(s,42U+x,y,((r*255U/31U)<<16)|((g*255U/63U)<<8)|(b*255U/31U));
+ if(body_dirty){
+  for(unsigned y=0;y<I9ART_HEIGHT;y++){
+   for(unsigned x=0;x<I9ART_WIDTH;x++){
+    unsigned c=i9100_charge_sprite[y*I9ART_WIDTH+x],r=(c>>11)&31U,g=(c>>5)&63U,b=c&31U;
+    i9100_charge_pixel(s,42U+x,y,((r*255U/31U)<<16)|((g*255U/63U)<<8)|(b*255U/31U));
+   }
+   if(!(y&7U))i9100_charge_render_progress();
+  }
+  i9100_charge_render.body_rebuilds++;
  }
  i9100_charge_render.art_frame=art;i9100_charge_render.art_ok=1;
 #else
+ unsigned body_dirty=1;
+ if(!first)for(unsigned y=20;y<218;y++)for(unsigned x=74;x<410;x++)
+  i9100_charge_composed[y*480U+x]=0;
  /* Restrained silver body and a real fill level, on black AMOLED background. */
  for(unsigned y=20;y<196;y++){
   unsigned d=y<108?y-20:195-y;
@@ -146,7 +171,12 @@ static int i9100_charge_draw(const struct i9100_charge_screen*s,unsigned valid,u
   uint32_t c=(charging||full)?glow<<8:(glow<<16)|(glow<<8)|glow;
   i9100_charge_rect(s,89,y,length,1,c);
  }
+ i9100_charge_render.body_rebuilds++;
 #endif
+ /* The largest previous/new percentage occupies exactly this rectangle.
+  * Keep the decoded body/reflection for a same-level percentage change. */
+ for(unsigned y=280;y<308;y++)for(unsigned x=192;x<288;x++)
+  i9100_charge_composed[y*480U+x]=0;
  unsigned digits=valid?(soc>=100?3U:soc>=10?2U:1U):2U;
  unsigned width=(digits+1U)*24U,x=(480U-width)/2U;
  uint32_t ink=visual_reason?0x00ce9f59U:valid && soc<=10U?0x00c98480U:0x00bdbdbdU;
@@ -157,15 +187,26 @@ static int i9100_charge_draw(const struct i9100_charge_screen*s,unsigned valid,u
   i9100_charge_digit(s,soc%10,x,280,4,ink);x+=24;
  }
  i9100_charge_digit(s,10,x,280,4,ink);
- /* Final row spans replace only pixels which changed; unchanged static
-  * glass and the black background are never cleared for a later redraw. */
+ /* Compare only changed visual regions after the hidden initial fill.
+  * At the same sprite level, at most 96x28 live pixels are inspected. */
  for(unsigned y=0;y<800U;y++){
-  if(!first && (y<I9SCREEN_TOP || y>=I9SCREEN_TOP+I9SCREEN_HEIGHT))continue;
-  for(unsigned x=0;x<480U;x++){
+  unsigned left=0,right=480U;
+  if(!first){
+   unsigned local=y>=I9SCREEN_TOP?y-I9SCREEN_TOP:~0U;
+#ifdef I9100_CHARGE_ART_BLOB
+   if(body_dirty && local<I9ART_HEIGHT){left=42U;right=438U;}
+#else
+   if(body_dirty && local>=20U && local<218U){left=74U;right=410U;}
+#endif
+   else if(local>=280U && local<308U){left=192U;right=288U;}
+   else continue;
+  }
+  for(unsigned x=left;x<right;x++){
    uint32_t c=y>=I9SCREEN_TOP && y<I9SCREEN_TOP+I9SCREEN_HEIGHT?
      i9100_charge_composed[(y-I9SCREEN_TOP)*480U+x]:0;
-   i9100_charge_final_pixel(destination,x,y,c);
+   i9100_charge_final_pixel(destination,x,y,c,first);
   }
+  if(!(y&7U))i9100_charge_render_progress();
  }
  i9100_charge_previous_buffer=destination->pixels;i9100_charge_previous_bpp=destination->bpp;
  i9100_charge_previous_key=key;i9100_charge_render.frames++;

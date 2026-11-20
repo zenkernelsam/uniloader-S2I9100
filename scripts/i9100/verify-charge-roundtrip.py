@@ -34,7 +34,7 @@ def owner_complete(path,tag):
         not any(row['phase']=='STOP' for row in events),'Owner did not complete normally; no next opener')
     return events
 
-def qualify_art_records(raw,timed,require_transport=False):
+def qualify_art_records(raw,timed,require_transport=False,require_dirty=False):
     """Match complete native render/start records to measured charger groups.
 
     The image remains static while blanked, so its sprite level must NOT be
@@ -52,9 +52,9 @@ def qualify_art_records(raw,timed,require_transport=False):
         end=timed[index+1]['end_offset'] if index+1<len(timed) else len(raw)
         block=raw[sample['end_offset']:end]
         records={}
-        tags=('I9CR1','I9BT1','I9FB1')+(('I9UT1',) if require_transport else ())
+        tags=('I9CR1','I9BT1','I9FB1')+(('I9UT1',) if require_transport else ())+(('I9DR1',) if require_dirty else ())
         for tag in tags:
-            matches=re.findall(rb'^'+tag.encode()+rb' ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?$',block,re.MULTILINE)
+            matches=re.findall(rb'^'+tag.encode()+rb' ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?\n',block,re.MULTILINE)
             o.require(len(matches)==1,'Exactly one '+tag+' record must belong to each timed charger group')
             records[tag]=[int(word,16) for word in matches[0].split()]
         groups.append(dict(sequence=sample['sequence'],measured_ms=sample['measured_ms'],sample=sample,**records))
@@ -75,6 +75,11 @@ def qualify_art_records(raw,timed,require_transport=False):
             transport=group['I9UT1']
             o.require(transport[5]<16384 and transport[6] in (0,1),
                 'Charger endpoint snapshot has an impossible ring/busy state')
+        if require_dirty:
+            dirty=group['I9DR1']
+            o.require(dirty[0]==render[2] and dirty[2]<=396*258+96*28 and dirty[3]>0 and
+                dirty[4]>=100 and dirty[5:]==[1,1,1],
+                'Hidden initial frame or bounded dirty-region rendering did not qualify')
     first=recent[0]['I9CR1']
     o.require(all(group['I9CR1'][:4]==first[:4] and group['I9CR1'][4]==first[4] for group in recent[1:]),
         'Artwork frame/store counters advanced while the display was blanked')
@@ -84,6 +89,10 @@ def qualify_art_records(raw,timed,require_transport=False):
         drops=[group['I9UT1'][7] for group in recent]
         o.require(all(drops[n]>=drops[n-1] for n in (1,2)),
             'Transport dropped-log count reset within the measured interval')
+    if require_dirty:
+        initial_dirty=recent[0]['I9DR1']
+        o.require(all(group['I9DR1']==initial_dirty for group in recent[1:]),
+            'Dirty-region comparison or progress counters advanced while display was blanked')
     last=recent[-1]
     o.require(last['I9BT1'][0]==1 and last['I9BT1'][1]==11 and last['sample']['millivolts']>=3600,
         'Native low-voltage startup admission is not ready')
@@ -91,9 +100,10 @@ def qualify_art_records(raw,timed,require_transport=False):
         interval_ms=last['measured_ms']-recent[0]['measured_ms'],
         artwork_level_during_sleep=first[1],startup_ready=True,
         transport_snapshots=[group['I9UT1'] for group in recent] if require_transport else None,
+        dirty_region_snapshots=[group['I9DR1'] for group in recent] if require_dirty else None,
         limit='Production render/start counters and matched device measurements; no physical keypress or pixel capture inferred')
 
-def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False):
+def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False,require_dirty=False):
     summary=s.summarize(path)
     raw=(path/'received.bin').read_bytes()
     # A failed payload stays in a healthy supervised charger, but that does
@@ -135,7 +145,8 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
         50<=timed[-1]['temperature_deci_c']<=400 and timed[-1]['reason'] in (0,-4) and
         not timed[-1]['timeout'],'Latest battery state does not qualify a boot contrast')
     o.require(not require_transport or require_art,'Transport groups require native artwork reports')
-    art=qualify_art_records(raw,timed,require_transport) if require_art else None
+    o.require(not require_dirty or require_art,'Dirty-region records require native artwork')
+    art=qualify_art_records(raw,timed,require_transport,require_dirty) if require_art else None
     panel_values=None
     panel_identity=None;panel_recovery=None
     if require_panel_sleep:
@@ -274,7 +285,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         '--seconds','180' if require_art else '120','--wait','180'],out/'charger-process',480 if require_art else 420,record)
     evidence=qualify_charger(out/'charger-evidence',tag+' '+charger_tag,manifest.get('panel_sleep') is True,
         manifest.get('standalone_panel_recovery') is True,require_art,manifest.get('standalone_charge_transport') is True,
-        manifest.get('standalone_charge_sense') is True)
+        manifest.get('standalone_charge_sense') is True,manifest.get('standalone_charge_dirty_regions') is True)
     o.save(out/'charger-qualified.json',evidence);record('CHARGER_QUALIFIED',measured_interval_ms=evidence['measured_interval_ms'])
     if manifest.get('standalone_charge_shutdown_epoch') is True:
         epoch=shutdown_epoch_logs((out/'charger-evidence/received.bin').read_bytes())

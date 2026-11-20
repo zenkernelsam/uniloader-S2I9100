@@ -35,6 +35,8 @@ def main():
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+static unsigned progress_calls;
+#define I9100_CHARGE_RENDER_PROGRESS() do{progress_calls++;}while(0)
 #include "charge/i9100_power.h"
 #include "i9100-charge-screen.h"
 #include "i9100-charge-start.h"
@@ -66,22 +68,43 @@ int main(int argc,char**argv){
   memset(buffer,0xa5,capacity+128);struct i9100_charge_screen s={buffer+64,capacity,480*bpp/8,bpp};
   i9100_charge_renderer_reset();assert(i9100_charge_draw(&s,1,0,1,1,0,0,0));
   assert(i9100_charge_render.art_ok && i9100_charge_render.art_frame==17);
+  assert(i9100_charge_render.last_stores==480U*800U && !i9100_charge_render.last_compared);
+  assert(progress_calls>100 && i9100_charge_render.progress_calls>100);
   memcpy(snapshot,s.pixels,capacity);
+  unsigned progress_before=progress_calls,body_before=i9100_charge_render.body_rebuilds;
   assert(i9100_charge_draw(&s,1,0,1,1,0,0,1));
   assert(!memcmp(snapshot,s.pixels,capacity) && !i9100_charge_render.last_stores);
+  assert(!i9100_charge_render.last_compared && progress_calls==progress_before);
   assert(i9100_charge_draw(&s,1,6,1,1,0,0,2));
   assert(i9100_charge_render.last_stores<4000); /* Percentage only, body unchanged. */
+  assert(i9100_charge_render.last_compared==96U*28U && i9100_charge_render.body_rebuilds==body_before);
   assert(i9100_charge_draw(&s,1,50,1,1,0,0,3));
   assert(i9100_charge_render.art_frame==8 && i9100_charge_render.last_stores<70000);
+  assert(i9100_charge_render.last_compared==396U*258U+96U*28U);
   memcpy(snapshot,s.pixels,capacity);
   assert(i9100_charge_draw(&s,1,51,1,1,0,0,4));
   for(unsigned y=284;y<542;y++)assert(!memcmp(snapshot+y*s.stride,(uint8_t*)s.pixels+y*s.stride,s.stride));
   assert(i9100_charge_render.last_stores<4000); /* No glass erase in next percentage. */
+  assert(i9100_charge_render.last_compared==96U*28U);
   assert(i9100_charge_draw(&s,1,50,1,0,I9100_POWER_TEMPERATURE,0,5));
   assert(i9100_charge_render.last_stores<4000); /* Keep actual battery level while protected. */
   memcpy(snapshot,s.pixels,capacity);
   assert(i9100_charge_draw(&s,1,50,1,0,I9100_POWER_TEMPERATURE,0,6));
   assert(!memcmp(snapshot,s.pixels,capacity) && !i9100_charge_render.last_stores);
+  /* Compare dirty updates against a forced full production composition for
+   * every SOC and changes of status. A stale private background cannot hide
+   * a missing border, old digit or disappearing reflection. */
+  uint8_t*oracle=malloc(capacity);assert(oracle);
+  struct i9100_charge_screen reference={oracle,capacity,s.stride,bpp};
+  for(unsigned level=0;level<=100;level++){
+   assert(i9100_charge_draw(&s,1,level,1,1,0,level==100,0));
+   memcpy(snapshot,s.pixels,capacity);
+   i9100_charge_renderer_reset();assert(i9100_charge_draw(&reference,1,level,1,1,0,level==100,0));
+   assert(!memcmp(snapshot,reference.pixels,capacity));
+   /* Restore ownership without corrupting the cumulative target pixels. */
+   i9100_charge_renderer_reset();assert(i9100_charge_draw(&s,1,level,1,1,0,level==100,0));
+  }
+  free(oracle);
   assert(!i9100_charge_draw(&s,1,101,1,1,0,0,0));
   struct i9100_charge_screen short_buffer=s;short_buffer.bytes--;
   assert(!i9100_charge_draw(&short_buffer,1,25,1,1,0,0,0));

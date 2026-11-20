@@ -9,6 +9,8 @@
 #include "charge/i9100_power.c"
 #include "charge/i9100_power_bus.c"
 #include "charge/i9100_charge_epoch.h"
+static void lpm_charge_render_progress(void);
+#define I9100_CHARGE_RENDER_PROGRESS() lpm_charge_render_progress()
 #include "i9100-charge-screen.h"
 #include "i9100-charge-report.h"
 #include "i9100-charge-sense.h"
@@ -260,6 +262,15 @@ void i9100_boot_charge_stage(unsigned stage)
  i9100_boot_charge_service();lpm_boot_report(stage);
 }
 #endif
+static void lpm_charge_render_progress(void)
+{
+#ifdef I9100_STANDALONE_CHARGE_BUILD
+ i9100_boot_charge_service();
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+ usbcdc_poll();
+#endif
+#endif
+}
 void i9100_standalone_charge_gate(void)
 {
 #ifdef I9100_STANDALONE_CHARGE_BUILD
@@ -287,6 +298,7 @@ void i9100_standalone_charge_gate(void)
  i9100_lpm_boot_active=i9100_lpm_boot_owned=1;i9100_lpm_boot_next=0;i9100_boot_charge_service();
 #if defined(CONFIG_EXYNOS_CDCACM4210)
    extern void usbcdc4210_charge_render_report(const unsigned[8]);
+   extern void usbcdc4210_charge_dirty_report(const unsigned[8]);
    extern void usbcdc4210_charge_start_report(const unsigned[8]);
    extern void usbcdc4210_charge_transport_report(void);
    extern void usbcdc4210_charge_fault_report(const unsigned[8]);
@@ -354,6 +366,11 @@ void i9100_standalone_charge_gate(void)
       i9100_charge_render.frames,i9100_charge_render.stores,i9100_charge_render.last_stores,
       i9100_charge_render.unchanged,i9100_lpm_timer_rearms,i9100_lpm_timer_faults};
     usbcdc4210_charge_render_report(render);
+    unsigned dirty[8]={i9100_charge_render.frames,i9100_charge_render.compared,
+      i9100_charge_render.last_compared,i9100_charge_render.body_rebuilds,
+      i9100_charge_render.progress_calls,i9100_charge_render.initial_hidden,
+      i9100_charge_render.initial_committed,drawn};
+    usbcdc4210_charge_dirty_report(dirty);
     unsigned startup[8]={boot_ready,start_gate.samples,start_gate.blocked_presses,
       i9100_lpm_battery.present,i9100_lpm_battery.millivolts,i9100_lpm_battery.percent,
       i9100_lpm_battery.errors,(unsigned)i9100_lpm_battery.reason};
@@ -419,14 +436,27 @@ void i9100_standalone_charge_gate(void)
    * post-transition MCT value, not the loop's earlier timestamp. */
   now=lpm_ticks();
   if(screen_ok && !blanked && now>=next_draw){
+   unsigned hide_initial=!drawn;
+   if(hide_initial){
+    lpm_write(0x11c00000U,winmap,(saved_map&~0x01ffffffU)|0x01000000U);
+    i9100_charge_render.initial_hidden++;
+   }
    if(i9100_charge_draw(&screen,i9100_lpm_battery.valid,i9100_lpm_battery.percent,
       i9100_lpm_battery.connected,i9100_lpm_battery.charging,i9100_lpm_battery.reason,
       i9100_lpm_battery.full,animation++)){
     /* Refresh only after actual final-pixel changes. No transfer is needed
      * for an unchanged SOC/charger state or a sleeping display. */
-    if(i9100_charge_render.last_stores){LPM_BARRIER();lpm_write(0x11c00000U,0x1a4,3);}drawn=1;
+    if(i9100_charge_render.last_stores && !hide_initial){LPM_BARRIER();lpm_write(0x11c00000U,0x1a4,3);}drawn=1;
+    if(hide_initial)i9100_charge_render.initial_committed++;
    }else screen_ok=0;
-   next_draw=now+24000000U; /* At most 1Hz and no framebuffer work while blanked. */
+   if(hide_initial){
+    lpm_write(0x11c00000U,winmap,saved_map);
+    /* I80 consumers latch the window on the trigger. Release WINMAP first,
+     * otherwise the only initial transfer would carry the hidden black. */
+    if(drawn && i9100_charge_render.last_stores){LPM_BARRIER();lpm_write(0x11c00000U,0x1a4,3);}
+    show_until=lpm_ticks()+720000000U;
+   }
+   next_draw=lpm_ticks()+24000000U; /* Actual completion time; at most 1Hz. */
   }
   if(i9100_lpm_battery.valid && !i9100_lpm_battery.connected){
    i9100_power_stop(&i9100_lpm_battery);
