@@ -40,6 +40,7 @@ static unsigned read_ops,write_ops,rtc_ops,rtc_ok=1,wait_ops;
 static struct I9100ChargeEpoch i9100_lpm_prior_epoch;
 static unsigned i9100_lpm_epoch_marked,i9100_lpm_epoch_match,i9100_lpm_epoch_result;
 static uint64_t i9100_lpm_epoch_rtc;
+static uint64_t i9100_lpm_epoch_base;
 static struct i9100_power_state i9100_lpm_battery;
 static struct i9100_power_hw i9100_lpm_hw;
 #define I9100_CHARGE_EPOCH_SLOT ((volatile uint32_t *)((uint8_t *)cell+I9100_CHARGE_EPOCH_OFFSET))

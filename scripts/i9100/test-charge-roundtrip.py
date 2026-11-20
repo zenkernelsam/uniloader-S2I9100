@@ -175,7 +175,8 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
     if scenario=='boot-timeout':assert len(calls)==3
     if scenario=='success':assert len(calls)==4
     if scenario.startswith('bootstrap-fault'):assert len(calls)==2
-    if scenario.startswith(('handoff-','deadline-','epoch-')):assert len(calls)==4
+    if scenario.startswith(('handoff-','deadline-','epoch-')):
+        assert len(calls)==(2 if scenario in ('epoch-missing-log','epoch-extended') else 4)
     if scenario.startswith('art-'):
         capture=calls[1];assert capture[capture.index('--seconds')+1]=='180'
         assert len(calls)==(4 if expected_success else 2)

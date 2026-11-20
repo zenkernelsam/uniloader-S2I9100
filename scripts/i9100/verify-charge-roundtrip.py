@@ -186,13 +186,19 @@ def qualify_inherited_deadline(record,adopted):
         deadline_seconds=adopted['deadline_seconds'],full=adopted['full'],recharging=adopted['recharging'],
         limit='Conservative whole-second inheritance, not measured net current or full long-duration hardware validation')
 
-def qualify_shutdown_epoch(raw,returned):
+def shutdown_epoch_logs(raw):
     rows=re.findall(rb'^I9CE1 ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?$',raw,re.MULTILINE)
     o.require(rows,'Actual loader shutdown-epoch result missing')
     fields=[[int(word,16) for word in row.split()] for row in rows]
     latest=fields[-1]
     o.require(latest[0]==1 and latest[1:3]==[1,1] and all(row[:5]==latest[:5] for row in fields),
         'Normal shutdown charge epoch did not restore once into the loader')
+    o.require(latest[4]<=latest[5]<=latest[4]+602,
+        'Initial inherited period differs from its bounded RTC interval')
+    return latest
+
+def qualify_shutdown_epoch(raw,returned):
+    latest=shutdown_epoch_logs(raw)
     o.require(returned and returned.get('valid') is True and returned.get('state')==1,
         'Returned XNU lacks the actual consumed shutdown epoch')
     source=returned['source'];rtc=returned['rtc_seconds']
@@ -245,6 +251,9 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
     evidence=qualify_charger(out/'charger-evidence',tag+' '+charger_tag,manifest.get('panel_sleep') is True,
         manifest.get('standalone_panel_recovery') is True,require_art,manifest.get('standalone_charge_transport') is True)
     o.save(out/'charger-qualified.json',evidence);record('CHARGER_QUALIFIED',measured_interval_ms=evidence['measured_interval_ms'])
+    if manifest.get('standalone_charge_shutdown_epoch') is True:
+        epoch=shutdown_epoch_logs((out/'charger-evidence/received.bin').read_bytes())
+        o.save(out/'shutdown-epoch-loader.json',dict(fields=epoch,limit='One actual restore result before any remote boot'))
     child([sys.executable,'-B',HERE/'charge-command.py','--package',package,'--action','boot',
         '--output',out/'boot-command-evidence'],out/'boot-command-process',120,record)
     command=rows(out/'boot-command-evidence/events.jsonl')

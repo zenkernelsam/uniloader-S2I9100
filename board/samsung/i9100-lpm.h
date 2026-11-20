@@ -32,6 +32,7 @@ static uint64_t i9100_lpm_boot_sample_ticks;
 static struct I9100ChargeEpoch i9100_lpm_prior_epoch;
 static unsigned i9100_lpm_epoch_marked,i9100_lpm_epoch_match,i9100_lpm_epoch_result;
 static uint64_t i9100_lpm_epoch_rtc;
+static uint64_t i9100_lpm_epoch_base;
 #ifndef I9100_CHARGE_EPOCH_SLOT
 #define I9100_CHARGE_EPOCH_SLOT ((volatile uint32_t *)(0x7ffe0000U+I9100_CHARGE_EPOCH_OFFSET))
 #endif
@@ -88,6 +89,7 @@ static void lpm_restore_charge_epoch(void)
  i9100_lpm_epoch_result=i9100_charge_epoch_restore(&i9100_lpm_battery,
   i9100_lpm_epoch_match?&i9100_lpm_prior_epoch:0,i9100_lpm_epoch_marked,
   finished,rtc_valid,rtc);
+ i9100_lpm_epoch_base=i9100_lpm_battery.charge_elapsed_base;
 }
 static void lpm_charge_epoch_report(void)
 {
@@ -96,7 +98,7 @@ static void lpm_charge_epoch_report(void)
  uint64_t elapsed=((uint64_t)i9100_lpm_prior_epoch.elapsed_high<<32)|i9100_lpm_prior_epoch.elapsed_low;
  const unsigned fields[8]={i9100_lpm_epoch_result,i9100_lpm_epoch_marked,
   i9100_lpm_epoch_match,i9100_lpm_prior_epoch.checksum,(unsigned)(elapsed/1000000000ULL),
-  (unsigned)(i9100_lpm_battery.charge_elapsed_base/1000000000ULL),
+  (unsigned)(i9100_lpm_epoch_base/1000000000ULL),
   (unsigned)i9100_lpm_epoch_rtc,(unsigned)(i9100_lpm_epoch_rtc>>32)};
  usbcdc4210_charge_epoch_report(fields);
 #endif
