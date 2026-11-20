@@ -956,6 +956,8 @@ void usbcdc4210_charge_sense_report(const unsigned timing[8],const unsigned regi
 }
 void usbcdc4210_charge_policy_report(const unsigned values[8])
 {charge_words_report("I9PS1 ",values);}
+void usbcdc4210_charge_download_report(const unsigned values[8])
+{charge_words_report("I9DS1 ",values);}
 void usbcdc4210_charge_render_report(const unsigned values[8])
 {charge_words_report("I9CR1 ",values);}
 void usbcdc4210_charge_dirty_report(const unsigned values[8])

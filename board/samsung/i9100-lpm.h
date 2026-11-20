@@ -36,6 +36,7 @@ static struct I9100ChargeEpoch i9100_lpm_prior_epoch;
 static unsigned i9100_lpm_epoch_marked,i9100_lpm_epoch_match,i9100_lpm_epoch_result;
 static uint64_t i9100_lpm_epoch_rtc;
 static uint64_t i9100_lpm_epoch_base;
+static unsigned i9100_lpm_download_attempts,i9100_lpm_download_denied,i9100_lpm_download_confirmed;
 #ifndef I9100_CHARGE_EPOCH_SLOT
 #define I9100_CHARGE_EPOCH_SLOT ((volatile uint32_t *)(0x7ffe0000U+I9100_CHARGE_EPOCH_OFFSET))
 #endif
@@ -210,8 +211,39 @@ static unsigned lpm_revision(void)
   if(tag==0x54410007U && size>=3 && p[2]<=15)return p[2];p+=size;}
  return 0xffffffffU;
 }
-static void lpm_download(void)
+static int lpm_prepare_download(void)
 {
+#ifdef I9100_STANDALONE_CHARGE_BUILD
+ /* Only a charger already controlled by this loader can be checked here.
+  * Pre-initialization firmware fallback keeps its original reset route. */
+ if(i9100_lpm_boot_owned && i9100_lpm_battery.ready &&
+    i9100_lpm_battery.io.pmic_read && i9100_lpm_battery.io.pmic_write &&
+    i9100_lpm_battery.io.sub_enable){
+  unsigned in_service=i9100_lpm_boot_in_service;
+  i9100_lpm_download_attempts++;i9100_lpm_download_confirmed=0;
+  i9100_lpm_boot_in_service=1;
+  unsigned stopped=i9100_power_stop(&i9100_lpm_battery);
+  i9100_lpm_boot_in_service=in_service;
+  if(!stopped){
+   i9100_lpm_download_denied++;
+   i9100_lpm_battery.valid=0;i9100_lpm_battery.reason=I9100_POWER_IO;i9100_lpm_battery.errors++;
+   i9100_lpm_boot_gate.samples=i9100_lpm_boot_gate.ready=0;i9100_lpm_boot_gate.first_ns=0;
+   if(!i9100_lpm_boot_fault){i9100_lpm_boot_fault=12;i9100_lpm_fault_phase=i9100_lpm_boot_phase;}
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+   extern void usbcdc4210_charge_set_boot_ready(unsigned);
+   usbcdc4210_charge_set_boot_ready(0);
+#endif
+   return 0;
+  }
+  /* No callback or synchronous USB log runs between confirmed off/reset. */
+  i9100_lpm_download_confirmed=1;i9100_lpm_boot_active=0;
+ }
+#endif
+ return 1;
+}
+static int lpm_download(void)
+{
+ if(!lpm_prepare_download())return 0;
  lpm_write(0x10020000U,0x808,0x12345678U);lpm_write(0x10020000U,0x80c,0x12345671U);
  lpm_write(0x10020000U,0x400,1);for(;;)LPM_WAIT();
 }
@@ -314,6 +346,7 @@ void i9100_standalone_charge_gate(void)
  extern void usbcdc4210_charge_timed_report(const struct i9100_charge_report *);
  extern void usbcdc4210_charge_sense_report(const unsigned[8],const unsigned[8]);
  extern void usbcdc4210_charge_policy_report(const unsigned[8]);
+ extern void usbcdc4210_charge_download_report(const unsigned[8]);
  extern void usbcdc4210_charge_screen_report(unsigned,unsigned,unsigned,unsigned);
  extern void usbcdc4210_charge_fimd_report(const unsigned[8]);
  extern unsigned usbcdc4210_charge_take_action(void);
@@ -338,7 +371,7 @@ void i9100_standalone_charge_gate(void)
  if(!screen_ok && (lpm_read(0x11c00000U,0x28)&1U))window=2;
  unsigned winmap=0x180+window*4,saved_map=lpm_read(0x11c00000U,winmap);
  uint64_t next_draw=0,remote_deadline=0;unsigned remote_action=0;
- struct i9100_charge_start *start_gate=&i9100_lpm_boot_gate;unsigned denied_press=0;
+ struct i9100_charge_start *start_gate=&i9100_lpm_boot_gate;unsigned denied_press=0,download_held=0;
  for(;;){
   /* Main loop, USB delay and draw progress share one supervised sample
    * schedule. Only the service owns power_poll and startup admission. */
@@ -375,6 +408,8 @@ void i9100_standalone_charge_gate(void)
     i9100_charge_sense_words(&sense,sense_timing,sense_registers);
     unsigned policy[8]={report_sequence,observed_polls,(unsigned)observed_ticks,(unsigned)(observed_ticks>>32),
       (unsigned)observed_next,(unsigned)(observed_next>>32),observed_gate.samples,boot_ready};
+    unsigned download[8]={report_sequence,i9100_lpm_download_attempts,i9100_lpm_download_denied,
+      i9100_lpm_download_confirmed,observed.valid,observed.enabled,observed.stop_uncertain,(unsigned)observed.reason};
     unsigned fb[8]={lpm_read(0x11c00000U,0x20),lpm_read(0x11c00000U,0x28),
       lpm_read(0x11c00000U,0xb0),lpm_read(0x11c00000U,0x108),
       lpm_read(0x11c00000U,0x64),lpm_read(0x11c00000U,0xe0),
@@ -402,6 +437,7 @@ void i9100_standalone_charge_gate(void)
     usbcdc4210_charge_timed_report(&report);
     usbcdc4210_charge_sense_report(sense_timing,sense_registers);
     usbcdc4210_charge_policy_report(policy);
+    usbcdc4210_charge_download_report(download);
     usbcdc4210_charge_screen_report(drawn,(unsigned)screen.pixels,screen.stride,screen.bpp);
     usbcdc4210_charge_fimd_report(fb);usbcdc4210_charge_render_report(render);
     usbcdc4210_charge_dirty_report(dirty);usbcdc4210_charge_start_report(startup);
@@ -418,7 +454,9 @@ void i9100_standalone_charge_gate(void)
    * starts at the observed key state, never at the loop's stale timestamp. */
   unsigned keys=lpm_read(0x11000000U,0xc44),home=lpm_read(0x11000000U,0xc64);
   now=lpm_ticks();
-  if(!(keys&1U) && !(home&(1U<<5)))lpm_download();
+  if(!(keys&1U) && !(home&(1U<<5))){
+   if(!download_held){download_held=1;(void)lpm_download();}
+  }else download_held=0;
   if(!(keys&(1U<<7))){if(!pressed)pressed=now;
    show_until=now+720000000U;
    if(blanked){
@@ -433,7 +471,7 @@ void i9100_standalone_charge_gate(void)
    }
    if(now-pressed>=48000000U && !i9100_lpm_boot_fault && i9100_charge_start_ready(start_gate,lpm_now(0)) && !denied_press){
 #ifdef I9100_PANEL_SLEEP_BUILD
-    if(!lpm_panel_awake(&panel))lpm_download(); /* Power requested boot but panel is faulted. */
+    if(!lpm_panel_awake(&panel)){(void)lpm_download();continue;}
 #endif
     break;
    }
@@ -487,7 +525,7 @@ void i9100_standalone_charge_gate(void)
   now=lpm_ticks();
   if(received_action && !remote_action){remote_action=received_action;remote_deadline=now+12000000U;}
   if(remote_action && now>=remote_deadline){
-   if(remote_action==2)lpm_download();
+   if(remote_action==2)(void)lpm_download();
    if(remote_action==1 && !i9100_lpm_boot_fault && i9100_charge_start_ready(start_gate,lpm_now(0))){
 #ifdef I9100_PANEL_SLEEP_BUILD
     if(lpm_panel_awake(&panel))break;
@@ -502,7 +540,9 @@ void i9100_standalone_charge_gate(void)
   lpm_sleep_tick();
  }
 #ifdef I9100_PANEL_SLEEP_BUILD
- if(!lpm_panel_awake(&panel))lpm_download();
+ if(!lpm_panel_awake(&panel)){
+  (void)lpm_download();i9100_boot_charge_failure(12);return;
+ }
 #endif
  if(blanked)lpm_write(0x11c00000U,winmap,saved_map);
  i9100_lpm_boot_next=0;i9100_lpm_boot_phase=1;

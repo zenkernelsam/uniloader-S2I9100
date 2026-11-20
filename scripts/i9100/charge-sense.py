@@ -122,3 +122,29 @@ def grouped_policy(raw,timed):
         except ValueError as error:results.append(dict(sequence=sample['sequence'],available=False,error=str(error)))
         else:results.append(dict(observed,available=True))
     return results
+
+
+def decode_download(block,sample):
+    records=re.findall(rb'^I9DS1 ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?\n',block,re.MULTILINE)
+    if len(records)!=1:raise ValueError('One complete Download stop record required per timed group')
+    words=[int(value,16) for value in records[0].split()]
+    if words[0]!=sample['sequence'] or words[2]>words[1] or any(value>1 for value in words[3:7]):
+        raise ValueError('Download stop record identity/count/state differs')
+    reason=words[7] if words[7]<0x80000000 else words[7]-0x100000000
+    if words[4]!=sample['valid'] or reason!=sample['reason']:
+        raise ValueError('Download stop record is not the timed group policy snapshot')
+    if words[3] and (not words[1] or words[5] or words[6]):
+        raise ValueError('Confirmed Download stop retains an enabled or uncertain controller')
+    return dict(sequence=words[0],attempts=words[1],denied=words[2],stop_confirmed=bool(words[3]),
+        measurements_valid=bool(words[4]),enabled=bool(words[5]),stop_uncertain=bool(words[6]),reason=reason,
+        limit='Guard attempts and hardware stop/readback status; Download enumeration or flash completion remains separate')
+
+
+def grouped_download(raw,timed):
+    groups=[]
+    for index,sample in enumerate(timed):
+        end=timed[index+1]['end_offset'] if index+1<len(timed) else len(raw)
+        try:observed=decode_download(raw[sample['end_offset']:end],sample)
+        except ValueError as error:groups.append(dict(sequence=sample['sequence'],available=False,error=str(error)))
+        else:groups.append(dict(observed,available=True))
+    return groups

@@ -103,18 +103,18 @@ def qualify_art_records(raw,timed,require_transport=False,require_dirty=False):
         dirty_region_snapshots=[group['I9DR1'] for group in recent] if require_dirty else None,
         limit='Production render/start counters and matched device measurements; no physical keypress or pixel capture inferred')
 
-def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False,require_dirty=False,require_policy=False):
+def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False,require_dirty=False,require_policy=False,require_download=False):
     summary=s.summarize(path)
     raw=(path/'received.bin').read_bytes()
-    # A failed payload stays in a healthy supervised charger, but that does
-    # not make the same payload eligible for another automatic boot attempt.
+    # Failed bootstrap or charger-stop transitions can stay supervised, but
+    # do not make this session eligible for another automatic boot attempt.
     # This rejection also applies to builds which omit the new artwork.
     fault_prefix=re.search(rb'^I9BF1(?: |$)',raw,re.MULTILINE)
     if fault_prefix:
         faults=re.findall(rb'^I9BF1 ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?$',raw,re.MULTILINE)
         o.require(faults,'Partial bootstrap fault record; no boot attempt')
         reason,stage,*_=map(lambda word:int(word,16),faults[-1].split())
-        raise ValueError(f'Bootstrap fault parked in charger: reason={reason}, stage={stage}; no boot attempt')
+        raise ValueError(f'Bootstrap or charger transition parked: reason={reason}, stage={stage}; no boot attempt')
     o.require(re.search(rb'^I9CHC2 READY '+expected.encode()+rb'\r?$',raw,re.MULTILINE) is not None,
         'Matching deployed charger kernel/source identity missing from logs')
     timed=[sample for sample in summary['samples'] if sample['version']==2]
@@ -122,6 +122,15 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
     o.require(all(sample.get('interval_available') for sample in timed[-2:]) and
         timed[-1]['measured_ms']-timed[-3]['measured_ms']>=50000,
         'Continuous device measurement interval did not span 50 seconds')
+    download_records=[]
+    if require_download:
+        for index in range(len(timed)-3,len(timed)):
+            sample=timed[index]
+            end=timed[index+1]['end_offset'] if index+1<len(timed) else len(raw)
+            observed=sense.decode_download(raw[sample['end_offset']:end],sample)
+            o.require(not observed['denied'] and not observed['stop_uncertain'],
+                'A previous Download stop failed; keep its evidence and do not start the payload')
+            download_records.append(observed)
     policy_records=[]
     if require_policy:
         for index in range(len(timed)-3,len(timed)):
@@ -187,7 +196,7 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
                 (panel_recovery[0] or not panel_recovery[1]) and not panel_recovery[2] and
                 panel_recovery[3]==panel_values[1],'Panel recovery budget/result disagrees with its sleep state')
     elif require_recovery:raise ValueError('Recovery qualification requires panel-sleep observations')
-    return dict(summary=summary,ui=values,fimd=registers,artwork=art,panel_sleep=panel_values,panel_identity=panel_identity,panel_recovery=panel_recovery,charge_sense=sense_records,charge_policy=policy_records,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
+    return dict(summary=summary,ui=values,fimd=registers,artwork=art,panel_sleep=panel_values,panel_identity=panel_identity,panel_recovery=panel_recovery,charge_sense=sense_records,charge_policy=policy_records,download_stop=download_records,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
         limit='Draw/register/timed-log qualification; no physical image or keypress acceptance inferred')
 
 def wait_resumed(directory,seconds,record,clock=time.monotonic,sleep=time.sleep):
@@ -303,7 +312,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
     evidence=qualify_charger(out/'charger-evidence',tag+' '+charger_tag,manifest.get('panel_sleep') is True,
         manifest.get('standalone_panel_recovery') is True,require_art,manifest.get('standalone_charge_transport') is True,
         manifest.get('standalone_charge_sense') is True,manifest.get('standalone_charge_dirty_regions') is True,
-        manifest.get('standalone_charge_single_owner') is True)
+        manifest.get('standalone_charge_single_owner') is True,manifest.get('standalone_charge_download_stop') is True)
     o.save(out/'charger-qualified.json',evidence);record('CHARGER_QUALIFIED',measured_interval_ms=evidence['measured_interval_ms'])
     if manifest.get('standalone_charge_shutdown_epoch') is True:
         epoch=shutdown_epoch_logs((out/'charger-evidence/received.bin').read_bytes())
@@ -354,6 +363,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         stop_confirmation_verified=require_stop,
         native_charge_sense_verified=manifest.get('standalone_charge_sense') is True,
         shared_charge_policy_verified=manifest.get('standalone_charge_single_owner') is True,
+        charger_download_stop_verified=manifest.get('standalone_charge_download_stop') is True,
         writes_to_flash=0,physical_power_key_verified=False,energy_balance_verified=False)
 
 def main():
