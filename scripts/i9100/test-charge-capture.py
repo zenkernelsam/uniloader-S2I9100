@@ -114,6 +114,22 @@ actual=m.capture(kernel,SymbolsStop(),target)
 assert actual['version']==3 and actual['stop_confirmation']['uncertain'] is True
 assert actual['stop_confirmation']['measurement_valid'] is True
 assert actual['samples'][-1]['stop_uncertain']==1 and kernel.calls[-1]==(0x1000,16)
+class SymbolsLow(SymbolsStop):
+    values=dict(SymbolsStop.values,_i9100_low_battery_retreat_diag=0x7000)
+class KernelLow(KernelStop):
+    def read(self,address,size):
+        if address==0x7000:
+            self.calls.append((address,size))
+            first,last=1000000000,5000000000
+            values=[1,2,1,2,5,1,3,3400,first&0xffffffff,first>>32,last&0xffffffff,last>>32,
+                last&0xffffffff,last>>32,3,3400,5,4]
+            data=struct.pack('<18I',*values)
+            assert size in (72,8);return data if size==72 else data[:8]
+        return super().read(address,size)
+target=out/'low-battery-retreat';target.mkdir();kernel=KernelLow(1)
+actual=m.capture(kernel,SymbolsLow(),target)
+assert actual['low_battery_retreat']['consistent'] and actual['low_battery_retreat']['admitted']
+assert (target/'low-battery-retreat.bin').is_file() and kernel.calls[-1]==(0x1000,16)
 (out/'result.json').write_text(json.dumps(dict(result='PASS',cases=2,fixture=str(fixture),
     evidence='Real charger snapshot, separate optional addresses, v1/v2 decoding, inherited deadline publication and later producer advancement'),indent=2)+'\n')
 print('PASS real charger fixture; v1/v2 setup address isolation; final charger header and producer advancement')

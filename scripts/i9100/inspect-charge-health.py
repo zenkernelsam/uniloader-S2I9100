@@ -237,6 +237,29 @@ def decode(raw):
     return dict(version=version,count=count,samples=samples,
         net_charging_verified=False,reason='Charge-state bits alone do not establish energy balance')
 
+def decode_low_battery_retreat(raw,header_after=None):
+    if len(raw)!=72:raise ValueError('Low-battery publication size differs')
+    words=struct.unpack('<18I',raw)
+    if words[0]==1 and not any(words[1:]):
+        return dict(version=1,initialized=False,consistent=False,
+            limit='Power has not published its low-battery reserve state')
+    if (words[0],words[14],words[15],words[16],words[17])!=(1,3,3400,5,4) or words[2]>1 or words[3]>4 or words[4]>5 or words[5]>1 or words[6]>100 or words[7]>4300:
+        raise ValueError('Low-battery publication schema/state differs')
+    first=(words[9]<<32)|words[8];last=(words[11]<<32)|words[10];submitted=(words[13]<<32)|words[12]
+    if words[5] and (words[4]!=5 or not first or last<first or last-first<4000000000):
+        raise ValueError('Low-battery admission did not span its actual time window')
+    if submitted and (not words[2] or not words[5] or submitted<last or words[6]>3 or not 2500<=words[7]<=3400):
+        raise ValueError('Low-battery submission lacks its qualified trigger measurements')
+    value=dict(version=words[0],sequence=words[1],enabled=bool(words[2]),request_state=words[3],
+        samples=words[4],admitted=bool(words[5]),percent=words[6],millivolts=words[7],
+        first_ns=first,last_ns=last,submitted_ns=submitted,initialized=True,consistent=not words[1]&1,
+        limit='One normal-halt request from qualified low voltage and SOC; no successful shutdown or net charging inferred')
+    if header_after is not None:
+        if len(header_after)!=8:raise ValueError('Low-battery publication header size differs')
+        version,sequence=struct.unpack('<2I',header_after)
+        value['consistent']=value['consistent'] and (version,sequence)==words[:2]
+    return value
+
 def capture(kernel,symbols,out):
     address=symbols['_i9100_charge_diag']
     before=kernel.read(address,16)
@@ -261,6 +284,12 @@ def capture(kernel,symbols,out):
         if valid>1:raise ValueError('Unknown live Power measurement validity')
         result['stop_confirmation']=dict(uncertain=bool(uncertain),measurement_valid=bool(valid),
             limit='Last Power policy disable/readback and live measurement validity; timer failure clears validity; ADC/current still require separate evidence')
+    if '_i9100_low_battery_retreat_diag' in symbols.values:
+        address_low=symbols['_i9100_low_battery_retreat_diag']
+        low=kernel.read(address_low,72);low_after=kernel.read(address_low,8)
+        (out/'low-battery-retreat.bin').write_bytes(low)
+        (out/'low-battery-retreat-after.bin').write_bytes(low_after)
+        result['low_battery_retreat']=decode_low_battery_retreat(low,low_after)
     if '_i9100_display_power_diag' in symbols.values:
         words=struct.unpack('<12I',kernel.read(symbols['_i9100_display_power_diag'],48))
         result['display_power']=dict(zip(('version','requests','requested_state','result',

@@ -421,6 +421,7 @@ def main():
         'xpc_diag': args.xpc_diag,
         'charge_diag': args.charge_diag,
         'charge_stop_confirmation': b'_i9100_power_stop_uncertain\0' in raw_data,
+        'low_battery_normal_halt': b'_i9100_low_battery_retreat_diag\0' in raw_data,
         'panel_sleep': args.panel_sleep,
         'standalone_panel_recovery': args.standalone_charge and args.panel_sleep and b'I9PR1 ' in data,
         'charge_probe': args.charge_probe,
