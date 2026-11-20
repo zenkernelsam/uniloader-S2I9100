@@ -5,6 +5,7 @@
 #define I9100_CHARGE_RENDER_PROGRESS() do{}while(0)
 #endif
 #include "i9100-charge-art.h"
+#include "i9100-charge-font.h"
 /* Standalone charger visuals. The caller supplies the observed window buffer,
  * exact pixel format, valid state and actual SOC; drawing has no hardware API. */
 struct i9100_charge_screen{void*pixels;unsigned bytes,stride,bpp;};
@@ -93,16 +94,20 @@ static unsigned i9100_charge_corner(unsigned dy,unsigned height,unsigned radius)
  return radius;
 }
 #endif
-static const uint8_t i9100_charge_digits[12][7]={
- {14,17,19,21,25,17,14},{4,12,4,4,4,4,14},{14,17,1,2,4,8,31},
- {30,1,1,14,1,1,30},{2,6,10,18,31,2,2},{31,16,16,30,1,1,30},
- {14,16,16,30,17,17,14},{31,1,2,4,8,8,8},{14,17,17,14,17,17,14},
- {14,17,17,15,1,1,14},{17,2,4,8,16,17,0},{0,0,0,31,0,0,0}};
-static void i9100_charge_digit(const struct i9100_charge_screen*s,unsigned digit,unsigned x,unsigned y,unsigned scale,uint32_t c)
+static unsigned i9100_charge_digit(const struct i9100_charge_screen*s,unsigned digit,unsigned x,unsigned y,uint32_t c)
 {
- if(digit>=12)return;
- for(unsigned j=0;j<7;j++)for(unsigned i=0;i<5;i++)if(i9100_charge_digits[digit][j]&(1U<<(4U-i)))
-  i9100_charge_rect(s,x+i*scale,y+j*scale,scale,scale,c);
+ if(digit>=12)return 0;
+ const struct i9100_charge_glyph *g=&i9100_charge_font_metrics[digit];
+ for(unsigned j=0;j<g->height;j++)for(unsigned i=0;i<g->width;i++){
+  unsigned alpha=i9100_charge_font_alpha[digit][j*28U+i];
+  if(!alpha)continue;
+  uint32_t ink=((((c>>16)&255U)*alpha+127U)/255U)<<16;
+  ink|=((((c>>8)&255U)*alpha+127U)/255U)<<8;
+  ink|=((c&255U)*alpha+127U)/255U;
+  /* Common 28px baseline inside the unchanged 96x28 dirty rectangle. */
+  i9100_charge_pixel(s,x+(unsigned)g->left+i,y+24U-(unsigned)g->top+j,ink);
+ }
+ return g->advance;
 }
 static int i9100_charge_draw(const struct i9100_charge_screen*s,unsigned valid,unsigned soc,
  unsigned connected,unsigned charging,int reason,unsigned full,unsigned frame)
@@ -178,15 +183,15 @@ static int i9100_charge_draw(const struct i9100_charge_screen*s,unsigned valid,u
  for(unsigned y=280;y<308;y++)for(unsigned x=192;x<288;x++)
   i9100_charge_composed[y*480U+x]=0;
  unsigned digits=valid?(soc>=100?3U:soc>=10?2U:1U):2U;
- unsigned width=(digits+1U)*24U,x=(480U-width)/2U;
+ unsigned width=valid?digits*16U+28U:2U*11U+28U,x=(480U-width)/2U;
  uint32_t ink=visual_reason?0x00ce9f59U:valid && soc<=10U?0x00c98480U:0x00bdbdbdU;
- if(!valid){i9100_charge_digit(s,11,x,280,4,ink);i9100_charge_digit(s,11,x+24,280,4,ink);x+=48;}
+ if(!valid){x+=i9100_charge_digit(s,11,x,280,ink);x+=i9100_charge_digit(s,11,x,280,ink);}
  else{
-  if(digits==3){i9100_charge_digit(s,1,x,280,4,ink);x+=24;}
-  if(digits>=2){i9100_charge_digit(s,(soc/10)%10,x,280,4,ink);x+=24;}
-  i9100_charge_digit(s,soc%10,x,280,4,ink);x+=24;
+  if(digits==3)x+=i9100_charge_digit(s,1,x,280,ink);
+  if(digits>=2)x+=i9100_charge_digit(s,(soc/10)%10,x,280,ink);
+  x+=i9100_charge_digit(s,soc%10,x,280,ink);
  }
- i9100_charge_digit(s,10,x,280,4,ink);
+ (void)i9100_charge_digit(s,10,x,280,ink);
  /* Compare only changed visual regions after the hidden initial fill.
   * At the same sprite level, at most 96x28 live pixels are inspected. */
  for(unsigned y=0;y<800U;y++){

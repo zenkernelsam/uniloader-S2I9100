@@ -45,6 +45,7 @@ static int lpm_boot_requested(const struct I9100BootSource *source)
  source->flags==3 && source->sboot_mode==1 && source->inform2==1;}
 static unsigned i9100_lpm_timer_ready;
 static unsigned i9100_lpm_timer_rearms,i9100_lpm_timer_faults;
+const uint32_t i9100_lpm_wake_route_version=1;
 static uint32_t lpm_read(unsigned base,unsigned off)
 {return readl((void*)(base+off));}
 static void lpm_write(unsigned base,unsigned off,uint32_t value)
@@ -118,8 +119,11 @@ static int lpm_timer_init(void)
  unsigned off=(89U/4)*4,shift=(89U%4)*8;
  lpm_write(0x10490000U,0x800+off,(lpm_read(0x10490000U,0x800+off)&~(255U<<shift))|(1U<<shift));
  lpm_write(0x10490000U,0x400+off,(lpm_read(0x10490000U,0x400+off)&~(255U<<shift))|(0x80U<<shift));
- lpm_write(0x10490000U,0xc00+(89U/16)*4,lpm_read(0x10490000U,0xc00+(89U/16)*4)|(2U<<((89U%16)*2)));
- lpm_write(0x10480000U,4,0xf0);lpm_write(0x10480000U,0,1);lpm_write(0x10490000U,0,1);
+ /* Exynos4210 MCT G0 holds a LEVEL_HIGH output until CSTAT is cleared.
+  * Do not inherit an edge configuration or an arbitrary grouping mask. */
+ lpm_write(0x10490000U,0xc00+(89U/16)*4,lpm_read(0x10490000U,0xc00+(89U/16)*4)&~(3U<<((89U%16)*2)));
+ lpm_write(0x10480000U,8,0);lpm_write(0x10480000U,4,0xf0);
+ lpm_write(0x10480000U,0,1);lpm_write(0x10490000U,0,1);
  lpm_write(0x10050000U,0x10,1);lpm_write(0x10050000U,0x248,0);
  if(!lpm_mct_write(0x240,256,1U<<16))return 0;
  uint64_t before=lpm_ticks();unsigned n;
@@ -140,7 +144,9 @@ static void lpm_sleep_tick(void)
   * Rebase only that expired comparator; the charge/USB/Power loop remains
   * live even if a write handshake fails. IRQ89 is still the only wake IRQ. */
  uint64_t now=lpm_ticks();
- uint32_t high=lpm_read(0x10050000U,0x204),low=lpm_read(0x10050000U,0x200);
+ uint32_t high,low,again;
+ do{high=lpm_read(0x10050000U,0x204);low=lpm_read(0x10050000U,0x200);
+    again=lpm_read(0x10050000U,0x204);}while(high!=again);
  uint64_t match=((uint64_t)high<<32)|low;
  if(!i9100_lpm_timer_ready || match<=now+24000U ||
     !(lpm_read(0x10050000U,0x248)&1U) || (lpm_read(0x10050000U,0x240)&259U)!=259U){
@@ -156,6 +162,23 @@ static void lpm_sleep_tick(void)
   if(lpm_ticks()>=match)goto no_wait;
   i9100_lpm_timer_ready=1;
  }
+ /* A future comparator is insufficient if the GIC cannot deliver IRQ89.
+  * Polling remains safe when a firmware active-priority stack or failed
+  * route write blocks delivery; never clear an unknown active interrupt. */
+ if(!(lpm_read(0x10490000U,0)&1U) || !(lpm_read(0x10480000U,0)&1U) ||
+    !(lpm_read(0x10490000U,0x108)&(1U<<25)) ||
+    ((lpm_read(0x10490000U,0x858)>>8)&255U)!=1U ||
+    ((lpm_read(0x10490000U,0x458)>>8)&255U)!=0x80U ||
+    (lpm_read(0x10490000U,0xc14)&(3U<<18)) ||
+    (lpm_read(0x10480000U,4)&255U)!=0xf0U ||
+    (lpm_read(0x10480000U,8)&7U) ||
+    (lpm_read(0x10480000U,0x14)&255U)!=255U ||
+    (lpm_read(0x10490000U,0x308)&(1U<<25)) ||
+    lpm_read(0x10050000U,0x208)!=240000U)goto no_wait;
+ /* Complete MMIO validation just before the wait. A missed deadline must
+  * return to temperature/USB/keys instead of sleeping on an expired edge. */
+ now=lpm_ticks();
+ if(match<=now+24000U)goto no_wait;
  LPM_BARRIER();LPM_WAIT();
  unsigned token=lpm_read(0x10480000U,0x0c),irq=token&1023U;
  if(irq==89)lpm_write(0x10050000U,0x244,1);

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Check the production standalone charger MCT/GIC programming and bounds."""
-import os,sys,subprocess
+import os,sys,subprocess,hashlib,json
 from pathlib import Path
 from datetime import datetime
 if os.environ.get('I9100_CPU_CAPPED')!='1':
@@ -11,37 +11,73 @@ source=r'''
 #include <string.h>
 #include <assert.h>
 #include <stdio.h>
+#include <unistd.h>
 static uint32_t mct[1024],dist[1024],cpu[1024],enabled[8],fimd[1024];
 static uint64_t ticks;static unsigned stall,stuck,masked,waits,acks;
+static unsigned pending,active,drop_enable,drop_target,drop_priority,drop_config;
+static unsigned drop_dist,drop_cpu,drop_mask,drop_binary,drop_incr;
 unsigned boot_reg_r2;
+static void timer_progress(void){
+ uint64_t match=((uint64_t)mct[0x204/4]<<32)|mct[0x200/4];
+ if((mct[0x240/4]&257U)==257U && ticks>=match){
+  mct[0x244/4]|=1;
+  if((mct[0x240/4]&2U) && mct[0x208/4]){
+   match+=((ticks-match)/mct[0x208/4]+1U)*mct[0x208/4];
+   mct[0x200/4]=(uint32_t)match;mct[0x204/4]=(uint32_t)(match>>32);
+  }
+ }
+ if((mct[0x244/4]&mct[0x248/4]&1U))pending=1;
+}
+static int delivery(void){
+ timer_progress();unsigned priority=(dist[(0x400+88)/4]>>8)&255U;
+ return pending && !active && (dist[0]&1U) && (cpu[0]&1U) &&
+  (enabled[2]&(1U<<25)) && ((dist[(0x800+88)/4]>>8)&255U)==1 &&
+  priority<(cpu[1]&255U) && (cpu[2]&7U)==0 && (cpu[5]&255U)==255U;
+}
 static uint32_t model_read32(void*a){uintptr_t p=(uintptr_t)a;
  if(p>=0x10050000 && p<0x10051000){unsigned o=p-0x10050000;
-  if(o==0x100){if(!stuck)ticks++;return ticks;}if(o==0x104)return ticks>>32;
+  if(o==0x100){if(!stuck)ticks++;timer_progress();return ticks;}if(o==0x104)return ticks>>32;
   return mct[o/4];}
- if(p>=0x10490000 && p<0x10491000)return dist[(p-0x10490000)/4];
- if(p>=0x10480000 && p<0x10481000){if(p==0x1048000c)return 89;return cpu[(p-0x10480000)/4];}
+ if(p>=0x10490000 && p<0x10491000){unsigned o=p-0x10490000;
+  if(o>=0x100 && o<0x120)return enabled[(o-0x100)/4];
+  if(o==0x208)return pending?1U<<25:0U;if(o==0x308)return active?1U<<25:0U;
+  return dist[o/4];}
+ if(p>=0x10480000 && p<0x10481000){if(p==0x1048000c){
+  if(!delivery())return 1023;pending=0;active=1;cpu[5]=0x80;return 89;}
+  return cpu[(p-0x10480000)/4];}
  if(p>=0x11c00000 && p<0x11c01000)return fimd[(p-0x11c00000)/4];
  assert(0);return 0;}
 static void model_write32(uint32_t v,void*a){uintptr_t p=(uintptr_t)a;
  if(p>=0x10050000 && p<0x10051000){unsigned o=p-0x10050000;
-  if(o==0x24c){mct[o/4]&=~v;return;}mct[o/4]=v;
+  if(o==0x24c || o==0x244){mct[o/4]&=~v;return;}
+  if(o!=0x208 || !drop_incr)mct[o/4]=v;
   if(!stall){if(o==0x200)mct[0x24c/4]|=1;if(o==0x204)mct[0x24c/4]|=2;
    if(o==0x208)mct[0x24c/4]|=4;if(o==0x240)mct[0x24c/4]|=1<<16;}return;}
  if(p>=0x10490000 && p<0x10491000){unsigned o=p-0x10490000;
-  if(o>=0x100&&o<0x120)enabled[(o-0x100)/4]|=v;
+  if(o>=0x100&&o<0x120 && !drop_enable)enabled[(o-0x100)/4]|=v;
   if(o>=0x180&&o<0x1a0)enabled[(o-0x180)/4]&=~v;
+  if(o==0x288)pending=0;
+  if((o==0 && drop_dist)||(o==0x858 && drop_target)||(o==0x458 && drop_priority)||(o==0xc14 && drop_config))return;
   dist[o/4]=v;return;}
- if(p>=0x10480000 && p<0x10481000){cpu[(p-0x10480000)/4]=v;if(p==0x10480010){assert(v==89);acks++;}return;}
+ if(p>=0x10480000 && p<0x10481000){unsigned o=p-0x10480000;
+  if((o==0 && drop_cpu)||(o==4 && drop_mask)||(o==8 && drop_binary))return;
+  cpu[o/4]=v;if(o==0x10){assert(v==89 && active);active=0;cpu[5]=255;acks++;}return;}
  assert(0);}
+static void model_wait(void){
+ ticks+=240000;timer_progress();assert(delivery());waits++;
+}
 #define readl(a) model_read32(a)
 #define writel(v,a) model_write32(v,a)
 #define LPM_BARRIER() do{}while(0)
 #define LPM_MASK_IRQ() do{masked=1;}while(0)
-#define LPM_WAIT() do{ticks+=240000;waits++;}while(0)
+#define LPM_WAIT() model_wait()
 #include "i9100-lpm.h"
 static void reset(void){memset(mct,0,sizeof(mct));memset(dist,0,sizeof(dist));memset(cpu,0,sizeof(cpu));
- memset(enabled,255,sizeof(enabled));dist[1]=4;ticks=10;stall=stuck=masked=waits=acks=0;}
+ memset(enabled,255,sizeof(enabled));dist[1]=4;cpu[5]=255;ticks=10;stall=stuck=masked=waits=acks=0;
+ pending=active=drop_enable=drop_target=drop_priority=drop_config=drop_dist=drop_cpu=drop_mask=drop_binary=drop_incr=0;
+ i9100_lpm_timer_ready=i9100_lpm_timer_rearms=i9100_lpm_timer_faults=0;}
 int main(void){
+ alarm(10);
  struct i9100_charge_screen screen={0};unsigned window=0;
  memset(fimd,0,sizeof(fimd));fimd[0x28/4]=0x8035;fimd[0xb0/4]=0x5ec00000;
  fimd[0x108/4]=1920;fimd[0x64/4]=(479U<<11)|799U;fimd[0xe0/4]=0x5ed77000;
@@ -57,12 +93,13 @@ int main(void){
  for(unsigned n=0;n<5;n++)assert(enabled[n]==(n==2?(1U<<25):0));
  assert(mct[0x208/4]==240000&&mct[0x248/4]==1&&mct[0x240/4]==259);
  assert(((dist[(0x800+88)/4]>>8)&255)==1);
+ assert(!(dist[0xc14/4]&(2U<<18))); /* The real MCT output is level high. */
  lpm_sleep_tick();assert(waits==1&&acks==1);
  /* Real rendering/USB work can exceed 10ms. The old helper WFI waited
   * against an expired compare. Verify a future match before each wait. */
- ticks=2000000ULL;mct[0x200/4]=1000;mct[0x204/4]=0;
+ ticks=2000000ULL;mct[0x200/4]=1000;mct[0x204/4]=0;mct[0x240/4]=256;
  lpm_sleep_tick();assert(waits==2 && i9100_lpm_timer_rearms==1 && mct[0x200/4]>2000000U);
- stall=1;mct[0x200/4]=1000;unsigned before_waits=waits;
+ stall=1;mct[0x200/4]=1000;mct[0x240/4]=256;unsigned before_waits=waits;
  lpm_sleep_tick();assert(waits==before_waits && i9100_lpm_timer_faults==1);
  lpm_sleep_tick();assert(waits==before_waits && !i9100_lpm_timer_ready);
  stall=0;lpm_sleep_tick();assert(waits==before_waits+1 && i9100_lpm_timer_ready);
@@ -70,6 +107,19 @@ int main(void){
  reset();stall=1;assert(!lpm_timer_init());
  reset();stuck=1;assert(!lpm_timer_init());
  reset();dist[1]=31;assert(!lpm_timer_init());
+ for(unsigned fault=0;fault<10;fault++){
+  reset();assert(lpm_timer_init());
+  if(fault==0)dist[0]=0;if(fault==1)cpu[0]=0;if(fault==2)enabled[2]=0;
+  if(fault==3)dist[0x858/4]=0x200;if(fault==4)dist[0x458/4]=0xf000;
+  if(fault==5)dist[0xc14/4]|=2U<<18;if(fault==6)cpu[1]=0x80;
+  if(fault==7)cpu[2]=3;if(fault==8)cpu[5]=0x80;if(fault==9)active=1;
+  lpm_sleep_tick();assert(!waits && i9100_lpm_timer_faults==1 && !i9100_lpm_timer_ready);
+  assert(active==(fault==9)); /* Unknown firmware state was not cleared. */
+ }
+ reset();assert(lpm_timer_init());mct[0x208/4]=0;
+ lpm_sleep_tick();assert(!waits && i9100_lpm_timer_faults==1);
+ reset();assert(lpm_timer_init());
+ for(unsigned n=0;n<100;n++)lpm_sleep_tick();assert(waits==100 && acks==100 && !active);
  puts("PASS production MCT/GIC: IRQ89/10ms, wait/ACK, expired-draw compare rebased, failed rearm stays awake, handshake/counter/controller refusal");
 }
 '''
@@ -78,3 +128,7 @@ for cmd,name in [(['clang','-O1','-g','-fno-pie','-no-pie','-fsanitize=address,u
  r=subprocess.run(cmd,text=True,capture_output=True);(out/(name+'.log')).write_text(r.stdout+r.stderr);r.check_returncode()
  if name=='result':print(r.stdout.strip())
 print('EVIDENCE',out)
+(out/'result.json').write_text(json.dumps(dict(result='PASS',hardware=False,
+    source_sha256={'board/samsung/i9100-lpm.h':hashlib.sha256((repo/'board/samsung/i9100-lpm.h').read_bytes()).hexdigest(),
+                   'scripts/i9100/check-lpm-timer.py':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
+    limit='Production MCT/GIC register logic with a level/pending/priority model; WFI is modeled, no physical wake or current proved'),indent=2)+'\n')

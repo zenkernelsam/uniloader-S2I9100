@@ -100,6 +100,7 @@ objects = ['pexpert/i9100_usbcdc.o', 'pexpert/i9100_timer.o', 'pexpert/pe_exynos
            'bsd/unix_syscalls.o', 'bsd/pthread_synch.o', 'bsd/kern_sig.o', 'bsd/sys_generic.o', 'bsd/param.o', 'bsd/vfs_subr.o', 'bsd/kdebug.o', 'bsd/decmpfs.o', 'iokit/IOKitBSDInit.cpo',
            'iokit/IOPMrootDomain.cpo', 'iokit/IOS7LeoDisplay.cpo', 'iokit/IOUserClient.cpo', 'iokit/AppleARMPE.cpo',
            'iokit/IOS7LeoHIDTouch.cpo',
+           'iokit/IOS7LeoHFSFile.cpo','iokit/IOS7I9100SDMMC.cpo','iokit/i9100_sdmmc.o',
            'iokit/i9100_power.o', 'iokit/i9100_power_bus.o', 'iokit/IOS7I9100Power.cpo',
            'osfmk/vm_map.o', 'osfmk/vm_user.o', 'osfmk/mach_kernelrpc.o', 'bsd/kern_exit.o', 'osfmk/pmap.o']
 if args.emmc_root_profile:
