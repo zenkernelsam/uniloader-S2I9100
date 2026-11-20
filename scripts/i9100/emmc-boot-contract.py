@@ -29,8 +29,8 @@ def hexbytes(value,size):
     if not any(raw):raise ValueError('Missing nonzero identity')
     return raw
 
-def encode(profile,reviewed,pair_sha,system,data,model=False,transport=None):
-    if type(reviewed)is not bool or type(model)is not bool or reviewed and model:raise ValueError('Model data cannot be hardware reviewed')
+def encode(profile,reviewed,pair_sha,system,data,model=False,transport=None,idmac=False):
+    if type(reviewed)is not bool or type(model)is not bool or type(idmac)is not bool or reviewed and model:raise ValueError('Model data cannot be hardware reviewed')
     if set(profile)!= {'host','card'}:raise ValueError('Unexpected native profile fields')
     host=profile['host'];card=profile['card']
     host_fields=('ciu_clock_hz','source_mux','source_divider','clksel','gpk0_mux','gpk0_pull','gpk0_drive','xxti_hz','xusbxti_hz')
@@ -61,18 +61,19 @@ def encode(profile,reviewed,pair_sha,system,data,model=False,transport=None):
         if width not in (4,8)or hs not in (0,1)or vcc!=3300 or not 0<target<=(52000000 if hs else 20000000)or target>clk//2:
             raise ValueError('Unsupported SDR width/timing/clock/board voltage')
         transport_values=(int(reviewed),width,hs,target,clk,vcc,*cid)
-    b=bytearray(BYTES);b[:4]=b'I9EB';struct.pack_into('<III',b,4,3 if transport_values else 2,BYTES,int(reviewed)|(2 if model else 0))
+    b=bytearray(BYTES);b[:4]=b'I9EB';struct.pack_into('<III',b,4,4 if idmac else 3 if transport_values else 2,BYTES,int(reviewed)|(2 if model else 0))
     struct.pack_into('<8I',b,16,int(reviewed),*values[:7]);struct.pack_into('<4I',b,48,*cid)
     struct.pack_into('<3I',b,64,*[uint(card[name]) for name in ('primary_crc','backup_crc','entries_crc')])
     b[76:124]=b''.join(guids);struct.pack_into('<Q',b,124,card['sectors'])
     for at,(date,identifier) in zip((132,144),volume):struct.pack_into('<I',b,at,date);b[at+4:at+12]=identifier
     b[156:188]=hexbytes(pair_sha,32);struct.pack_into('<II',b,188,xtal,usb)
     if transport_values:struct.pack_into('<10I',b,196,*transport_values)
+    if idmac:struct.pack_into('<II',b,236,1,int(reviewed))
     struct.pack_into('<I',b,252,zlib.crc32(b[:252]));return bytes(b)
 
 def decode(raw):
     version=struct.unpack_from('<I',raw,4)[0]if len(raw)>=8 else 0
-    if len(raw)!=BYTES or raw[:4]!=b'I9EB' or version not in (2,3)or struct.unpack_from('<I',raw,8)[0]!=BYTES or any(raw[236 if version==3 else 196:252]) or zlib.crc32(raw[:252])!=struct.unpack_from('<I',raw,252)[0]:
+    if len(raw)!=BYTES or raw[:4]!=b'I9EB' or version not in (2,3,4)or struct.unpack_from('<I',raw,8)[0]!=BYTES or any(raw[244 if version==4 else 236 if version==3 else 196:252]) or zlib.crc32(raw[:252])!=struct.unpack_from('<I',raw,252)[0]:
         raise ValueError('Malformed/partial/CRC-invalid native boot record')
     flags=struct.unpack_from('<I',raw,12)[0];host=struct.unpack_from('<8I',raw,16)
     if flags&~3 or flags==3 or host[0]>1 or bool(flags&1)!=bool(host[0]):raise ValueError('Invalid review/model flags')
@@ -83,14 +84,20 @@ def decode(raw):
     profile['host'].update(zip(('xxti_hz','xusbxti_hz'),struct.unpack_from('<II',raw,188)))
     volumes=[dict(create_date=struct.unpack_from('<I',raw,at)[0],finder_volume_id=raw[at+4:at+12].hex()) for at in (132,144)]
     transport=None
-    if version==3:
+    if version>=3 and any(raw[196:236]):
         values=struct.unpack_from('<10I',raw,196)
         if values[0]!=host[0]or values[4]!=host[1]or list(values[6:])!=profile['card']['cid']:
             raise ValueError('SDR review/CID/CIU differs from card boot contract')
         transport=dict(zip(('width','high_speed','target_hz','vcc_mv'),(values[1],values[2],values[3],values[5])))
-    if encode(profile,bool(flags&1),raw[156:188].hex(),*volumes,model=bool(flags&2),transport=transport)!=raw:raise ValueError('Noncanonical record')
+    idmac=False
+    if version==4:
+        enabled,review=struct.unpack_from('<II',raw,236)
+        if enabled!=1 or review!=host[0]:raise ValueError('IDMAC review differs from original boot contract')
+        idmac=True
+    if encode(profile,bool(flags&1),raw[156:188].hex(),*volumes,model=bool(flags&2),transport=transport,idmac=idmac)!=raw:raise ValueError('Noncanonical record')
     result=dict(flags=flags,profile=profile,system=volumes[0],data=volumes[1],pair_manifest_sha256=raw[156:188].hex())
     if transport:result['transport']=transport
+    if idmac:result['idmac']=True
     return result
 
 def read_prepared(folder,require_reviewed=False):
@@ -129,6 +136,13 @@ def read_prepared(folder,require_reviewed=False):
             if len(evidence)!=item['bytes'] or hashlib.sha256(evidence).hexdigest()!=item['sha256']:raise ValueError('Original eMMC identity/controller capture changed')
             raws[name]=evidence
         validator.check(contract['profile'],raws,False,True)
+        if contract.get('idmac'):
+            record=manifest.get('idmac_board_evidence');tool_idmac=Path(__file__).with_name('emmc-idmac-evidence.py')
+            if not record or record.get('verifier_sha256')!=hashlib.sha256(tool_idmac.read_bytes()).hexdigest():raise ValueError('IDMAC original host proof/verifier missing')
+            raw_idmac=bounded(ROOT/record['path'],65536)
+            if hashlib.sha256(raw_idmac).hexdigest()!=record['sha256']:raise ValueError('Original IDMAC host evidence changed')
+            spec=importlib.util.spec_from_file_location('idmac_evidence',tool_idmac);verifier_idmac=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier_idmac)
+            verifier_idmac.check(json.loads(raw_idmac),contract['profile']['card'],json.loads(raws['controller']),True)
         if 'transport'in contract:
             controller=json.loads(raws['controller'])
             spec=importlib.util.spec_from_file_location('sdr_evidence',tool);verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier)

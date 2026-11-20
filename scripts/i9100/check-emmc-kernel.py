@@ -35,7 +35,9 @@ def definitions(raw):
                         '_i9100_hfs_data_bootstrap','_i9100_storage_shutdown_diag','_i9100_emmc_alias_devices',
                         '_i9100_emmc_clock_capture','_i9100_emmc_clock_rate','_i9100_emmc_clock_observation',
                         '_i9100_emmc_clock_observation_diag','_i9100_emmc_clock_observe_open','_i9100_emmc_sdr_apply',
-                        '_i9100_emmc_sdr_restore','_i9100_emmc_native_open_sdr') or name.startswith(('__Z20i9100_emmc_boot_open','__Z28ios6i9100_register_emmc_boot')):
+                        '_i9100_emmc_sdr_restore','_i9100_emmc_native_open_sdr','_i9100_emmc_idmac_bind',
+                        '_i9100_emmc_idmac_unbind','_i9100_emmc_native_open_configured','_i9100_dma_quarantine',
+                        '_i9100_dma_hold_pair','_i9100_dma_unhold_pair') or name.startswith(('__Z20i9100_emmc_boot_open','__Z28ios6i9100_register_emmc_boot')):
                 raise ValueError('Ambiguous internal boot definition')
             continue # unrelated static functions legitimately share local names
         names[name]=value
@@ -47,7 +49,8 @@ def verify(kernel):
        '_i9100_hfs_data_bootstrap','_i9100_storage_shutdown_diag','_i9100_emmc_alias_devices',
        '_i9100_emmc_clock_capture','_i9100_emmc_clock_rate','_i9100_emmc_clock_observe_open',
        '_i9100_emmc_clock_observation','_i9100_emmc_clock_observation_diag','_i9100_emmc_sdr_apply',
-       '_i9100_emmc_sdr_restore','_i9100_emmc_native_open_sdr')
+       '_i9100_emmc_sdr_restore','_i9100_emmc_native_open_sdr','_i9100_emmc_idmac_bind','_i9100_emmc_idmac_unbind',
+       '_i9100_emmc_native_open_configured','_i9100_dma_quarantine','_i9100_dma_hold_pair','_i9100_dma_unhold_pair')
     symbols=definitions(raw)
     if any(name not in symbols for name in required):raise ValueError('Missing actual native/HFS/checked-shutdown definitions')
     # C++ boot owner symbols use real Itanium name mangling; enforce uniquely
@@ -63,7 +66,7 @@ def verify(kernel):
     proofs={};needed={'AppleARMPE.cpp','vfs_syscalls.c','hfs_vfsops.c','bsd_init.c','kern_shutdown.c','i9100_usbcdc.c',
        'IOS6I9100EMMCBlockDriver.cpp','IOS6I9100EMMCRaw.cpp','IOS6I9100EMMCStorage.cpp','i9100_emmc_publication.cpp',
        'i9100_emmc_alias.cpp','i9100_emmc_boot.cpp','i9100_emmc_boot_contract.c','i9100_emmc_clock.c','i9100_emmc_clock_native.cpp','i9100_emmc_native.cpp',
-       'i9100_emmc.c','i9100_emmc_writer.c','IOS7I9100EMMC.cpp'}
+       'i9100_emmc.c','i9100_emmc_writer.c','IOS7I9100EMMC.cpp','i9100_emmc_idmac.c','i9100_dma_guard.c','i9100_dma_native.cpp'}
     cursor=folder;seen=set()
     for _ in range(32):
         if cursor in seen:raise ValueError('Cyclic kernel source ancestry')
@@ -85,6 +88,10 @@ def verify(kernel):
         if name in ('i9100_emmc.c','i9100_emmc_native.cpp','i9100_emmc_boot_contract.c','i9100_emmc_boot.cpp'):
             dep=compiled.with_suffix('.d')
             if not dep.is_file()or 'i9100_emmc_sdr.h'not in dep.read_text():raise ValueError('Paired SDR ABI was never consumed by ARM compiler')
+            if 'i9100_emmc_idmac.h'not in dep.read_text():raise ValueError('Paired IDMAC ABI was never consumed by ARM compiler')
+        if name in ('i9100_emmc_idmac.c','i9100_emmc_native.cpp','i9100_dma_native.cpp','i9100_dma_guard.c'):
+            dep=compiled.with_suffix('.d')
+            if not dep.is_file()or 'i9100_dma_guard.h'not in dep.read_text():raise ValueError('Paired DMA buffer ABI was never consumed by ARM compiler')
         if any(arg=='-DI9100_HFS_FROZEN_REFERENCE=1' for arg in item['arguments']):
             raise ValueError('Historical LPM-disabled offline fixture cannot become a deployment kernel')
         suffix=(name+('.cpo' if name.endswith('.cpp') else '.o'),Path(name).stem+('.cpo' if name.endswith('.cpp') else '.o'))

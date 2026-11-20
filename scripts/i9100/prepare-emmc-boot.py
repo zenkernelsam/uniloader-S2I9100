@@ -82,14 +82,24 @@ def prepare(a):
         if getattr(a,'sdr_high_speed',False)or getattr(a,'sdr_clock_hz',None)or getattr(a,'sdr_vcc_mv',None)or getattr(a,'sdr_board_evidence',None):
             raise ValueError('SDR parameters require explicit width')
         sdr_receipt=None
-    record=c.encode(inventory['profile'],a.mark_reviewed,hashlib.sha256(pair_raw).hexdigest(),*volumes,model=inventory['model_fixture'],transport=transport)
+    idmac=bool(getattr(a,'idmac',False));idmac_receipt=None
+    if idmac and a.mark_reviewed:
+        proof_path=getattr(a,'idmac_board_evidence',None)
+        if not proof_path:raise ValueError('Reviewed IDMAC requires original32bit host evidence')
+        raw=c.bounded(proof_path,65536);record=json.loads(raw)
+        tool=Path(__file__).with_name('emmc-idmac-evidence.py')
+        spec=importlib.util.spec_from_file_location('idmac_evidence',tool);verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier)
+        verifier.check(record,inventory['profile']['card'],json.loads(originals['controller']),True)
+        idmac_receipt=dict(path=str(Path(proof_path).resolve().relative_to(c.ROOT)),sha256=hashlib.sha256(raw).hexdigest(),verifier_sha256=sha(tool))
+    elif not idmac and getattr(a,'idmac_board_evidence',None):raise ValueError('IDMAC evidence requires explicit --idmac')
+    record=c.encode(inventory['profile'],a.mark_reviewed,hashlib.sha256(pair_raw).hexdigest(),*volumes,model=inventory['model_fixture'],transport=transport,idmac=idmac)
     output=a.output.resolve() if a.output else c.REPO/'out'/('emmc-boot-profile-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
     if not output.is_relative_to(c.REPO/'out') or output.exists():raise ValueError('Use a fresh retained loader out directory')
     manifest=dict(schema=1,kind='i9100-emmc-boot-contract',result='PASS',device_contacted=False,hardware_tested=False,
         deployment_authorized=False,boot_ready=False,source_note=a.source_note,record=c.decode(record),record_sha256=hashlib.sha256(record).hexdigest(),
         inventory=dict(path=str(a.inventory.resolve().relative_to(c.ROOT)),sha256=hashlib.sha256(inventory_raw).hexdigest()),
         pair=dict(path=str(a.pair.resolve().relative_to(c.ROOT)),sha256=hashlib.sha256(pair_raw).hexdigest()),evidence=evidence,
-        parsed_current_evidence=validated,verified_backup=backup_receipt,sdr_board_evidence=sdr_receipt,
+        parsed_current_evidence=validated,verified_backup=backup_receipt,sdr_board_evidence=sdr_receipt,idmac_board_evidence=idmac_receipt,
         evidence_checker_sha256=hashlib.sha256(Path(__file__).with_name('emmc-inventory-evidence.py').read_bytes()).hexdigest(),
         contract_tool_sha256=hashlib.sha256(Path(__file__).with_name('emmc-boot-contract.py').read_bytes()).hexdigest(),
         preparer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -106,5 +116,7 @@ def main():
     p.add_argument('--source-note',required=True);p.add_argument('--mark-reviewed',action='store_true');p.add_argument('--backup-acquisition',type=Path);p.add_argument('--output',type=Path)
     p.add_argument('--sdr-width',type=int,choices=(4,8));p.add_argument('--sdr-high-speed',action='store_true')
     p.add_argument('--sdr-clock-hz',type=int);p.add_argument('--sdr-vcc-mv',type=int,choices=(3300,));p.add_argument('--sdr-board-evidence',type=Path)
+    p.add_argument('--idmac',action='store_true',help='Explicit reviewed IDMAC32; default off')
+    p.add_argument('--idmac-board-evidence',type=Path)
     folder,manifest=prepare(p.parse_args());print(json.dumps(dict(output=str(folder),sha256=manifest['record_sha256'],reviewed=manifest['record']['flags']==1,boot_ready=False,device_contacted=False),indent=2))
 if __name__=='__main__':main()
