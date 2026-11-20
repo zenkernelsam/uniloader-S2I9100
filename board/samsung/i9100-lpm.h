@@ -353,8 +353,10 @@ void i9100_standalone_charge_gate(void)
     /* Freeze EVERY policy field before the first USB writer can call the
      * supervisor again. Sending this group remains interruptible by safe
      * monitoring; it never locks out sampling to preserve a log record. */
-    struct i9100_power_state observed=i9100_lpm_battery;
-    struct i9100_charge_start observed_gate=*start_gate;
+    struct i9100_power_state observed;
+    struct i9100_charge_start observed_gate;
+    memcpy(&observed,&i9100_lpm_battery,sizeof(observed));
+    memcpy(&observed_gate,start_gate,sizeof(observed_gate));
     unsigned observed_polls=i9100_lpm_boot_polls;
     uint64_t observed_ticks=i9100_lpm_boot_sample_ticks,observed_next=i9100_lpm_boot_next;
     struct i9100_charge_sense sense;
