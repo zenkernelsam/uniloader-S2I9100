@@ -96,10 +96,11 @@ try:m.decode(bad3)
 except ValueError:pass
 else:raise AssertionError('Bad v3 stop-confirmation state accepted')
 class SymbolsStop(Symbols):
-    values=dict(Symbols.values,_i9100_power_stop_uncertain=0x6000)
+    values=dict(Symbols.values,_i9100_power_stop_uncertain=0x6000,_i9100_power_valid=0x6010)
 class KernelStop(Kernel):
     def u32(self,address):
         if address==0x6000:self.calls.append((address,4));return 1
+        if address==0x6010:self.calls.append((address,4));return 1
         return super().u32(address)
     def read(self,address,size):
         if address==0x1000:
@@ -111,6 +112,7 @@ class KernelStop(Kernel):
 target=out/'stop-confirmation-v3';target.mkdir();kernel=KernelStop(1)
 actual=m.capture(kernel,SymbolsStop(),target)
 assert actual['version']==3 and actual['stop_confirmation']['uncertain'] is True
+assert actual['stop_confirmation']['measurement_valid'] is True
 assert actual['samples'][-1]['stop_uncertain']==1 and kernel.calls[-1]==(0x1000,16)
 (out/'result.json').write_text(json.dumps(dict(result='PASS',cases=2,fixture=str(fixture),
     evidence='Real charger snapshot, separate optional addresses, v1/v2 decoding, inherited deadline publication and later producer advancement'),indent=2)+'\n')

@@ -49,11 +49,12 @@ def owner(path,shutdown=False,handoff=None):
         charge=dict(charger_handoff=observed)
         if handoff.startswith('stop-'):
             charge.update(version=3,samples=[dict(sequence=1,stop_confirmation_available=True,stop_uncertain=0,measurements_valid=True,reason=0)],
-                stop_confirmation=dict(uncertain=False))
+                stop_confirmation=dict(uncertain=False,measurement_valid=True))
             if handoff=='stop-uncertain':
                 charge['samples'][0]['stop_uncertain']=1;charge['stop_confirmation']['uncertain']=True
             if handoff=='stop-invalid':charge['samples'][0]['measurements_valid']=False
             if handoff=='stop-missing':charge.pop('stop_confirmation')
+            if handoff=='stop-monitor-dead':charge['stop_confirmation']['measurement_valid']=False
         if handoff.startswith(('deadline-','epoch-')) and handoff!='deadline-missing':
             sampled_ns=decoded['sampled_ticks']*1000//24
             elapsed=(decoded['elapsed_seconds']+1)*1000000000
@@ -153,7 +154,7 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
                  'handoff-success','handoff-missing','handoff-corrupt',
                  'deadline-success','deadline-missing','deadline-rejected','deadline-extended',
                  'epoch-success','epoch-full','epoch-missing','epoch-rejected','epoch-extended','epoch-missing-log',
-                 'stop-success','stop-uncertain','stop-invalid','stop-missing'):
+                 'stop-success','stop-uncertain','stop-invalid','stop-missing','stop-monitor-dead'):
     directory=out/scenario;directory.mkdir();calls=[];records=[]
     class Host:
         def inventory(self):return [device]

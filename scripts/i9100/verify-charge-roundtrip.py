@@ -217,7 +217,8 @@ def qualify_stop_confirmation(charge):
     latest=charge['samples'][-1]
     o.require(latest.get('stop_confirmation_available') is True and latest.get('stop_uncertain')==0 and
         latest.get('measurements_valid') is True and
-        charge.get('stop_confirmation',{}).get('uncertain') is False,
+        charge.get('stop_confirmation',{}).get('uncertain') is False and
+        charge.get('stop_confirmation',{}).get('measurement_valid') is True,
         'Power stop or current measurement is still uncertain; round trip is not validated')
     return dict(confirmed=True,sequence=latest.get('sequence'),reason=latest.get('reason'),
         limit='Last Power policy disable/readback and sample status; no net current inferred')

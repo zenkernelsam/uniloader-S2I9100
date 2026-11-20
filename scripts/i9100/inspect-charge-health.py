@@ -257,7 +257,10 @@ def capture(kernel,symbols,out):
     if '_i9100_power_stop_uncertain' in symbols.values:
         uncertain=kernel.u32(symbols['_i9100_power_stop_uncertain'])
         if uncertain>1:raise ValueError('Unknown live stop-confirmation state')
-        result['stop_confirmation']=dict(uncertain=bool(uncertain),limit='Last Power policy disable/readback result; ADC/current and fresh cell state still require separate evidence')
+        valid=kernel.u32(symbols['_i9100_power_valid'])
+        if valid>1:raise ValueError('Unknown live Power measurement validity')
+        result['stop_confirmation']=dict(uncertain=bool(uncertain),measurement_valid=bool(valid),
+            limit='Last Power policy disable/readback and live measurement validity; timer failure clears validity; ADC/current still require separate evidence')
     if '_i9100_display_power_diag' in symbols.values:
         words=struct.unpack('<12I',kernel.read(symbols['_i9100_display_power_diag'],48))
         result['display_power']=dict(zip(('version','requests','requested_state','result',
