@@ -67,7 +67,7 @@ int main(int argc,char**argv){
   unsigned capacity=480*800*bpp/8;uint8_t*buffer=malloc(capacity+128);assert(buffer);
   memset(buffer,0xa5,capacity+128);struct i9100_charge_screen s={buffer+64,capacity,480*bpp/8,bpp};
   i9100_charge_renderer_reset();assert(i9100_charge_draw(&s,1,0,1,1,0,0,0));
-  assert(i9100_charge_render.art_ok && i9100_charge_render.art_frame==17);
+  assert(i9100_charge_render.art_ok && i9100_charge_render.art_frame==3);
   assert(i9100_charge_render.last_stores==480U*800U && !i9100_charge_render.last_compared);
   assert(progress_calls>100 && i9100_charge_render.progress_calls>100);
   memcpy(snapshot,s.pixels,capacity);
@@ -79,7 +79,7 @@ int main(int argc,char**argv){
   assert(i9100_charge_render.last_stores<4000); /* Percentage only, body unchanged. */
   assert(i9100_charge_render.last_compared==96U*28U && i9100_charge_render.body_rebuilds==body_before);
   assert(i9100_charge_draw(&s,1,50,1,1,0,0,3));
-  assert(i9100_charge_render.art_frame==8 && i9100_charge_render.last_stores<70000);
+  assert(i9100_charge_render.art_frame==9 && i9100_charge_render.last_stores<70000);
   assert(i9100_charge_render.last_compared==396U*258U+96U*28U);
   memcpy(snapshot,s.pixels,capacity);
   assert(i9100_charge_draw(&s,1,51,1,1,0,0,4));
@@ -164,7 +164,7 @@ int main(int argc,char**argv){
         path.with_suffix('.png').write_bytes(png.png_rgb(480,800,bytes(rgb)))
     result=dict(result='PASS',hardware=False,art_sha256=hashlib.sha256(pack.read_bytes()).hexdigest(),
                 source_sha256={str(p.relative_to(repo)):hashlib.sha256(p.read_bytes()).hexdigest() for p in
-                 (repo/'board/samsung/i9100-charge-art.h',repo/'board/samsung/i9100-charge-screen.h',repo/'board/samsung/i9100-charge-start.h')},
+                 (repo/'board/samsung/i9100-charge-art.h',repo/'board/samsung/i9100-charge-screen.h',repo/'board/samsung/i9100-charge-start.h',repo/'board/samsung/i9100-charge-font.h')},
                 scope='Production C and original firmware assets; no display timing or cell recovery proven')
     (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
     print('EVIDENCE',out,flush=True)

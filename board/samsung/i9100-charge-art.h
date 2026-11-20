@@ -73,7 +73,12 @@ static inline int i9100_charge_art_decode(const uint8_t *pack, unsigned bytes, u
 static inline unsigned i9100_charge_art_frame(unsigned valid, unsigned soc, unsigned full)
 {
  if(!valid)return 0;
- if(!full && soc<=10U)return 17U;
- return full?16U:(soc*16U+50U)/100U;
+ /* The original family contains a special red frame at index3; it is not
+  * a linear sequence of 17 green fills. Keep that native low-battery image,
+  * and skip it in the ordinary green progression. Frame17 is an older
+  * retained derivative and is no longer selected by production rendering. */
+ if(!full && soc<=10U)return 3U;
+ unsigned green=(soc*15U+50U)/100U;
+ return full?16U:green<3U?green:green+1U;
 }
 #endif
