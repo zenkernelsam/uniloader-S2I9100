@@ -82,6 +82,10 @@ def charger(path,scenario):
     for seq in range(1,5):
         ms=(seq-1)*30000
         lines.append(f'I9CHG2 seq={seq:08x} ms={ms:016x} valid=1 soc=75 mv=4000 temp=250 charging=1 reason=0 full=0 timeout=0 recharging=0 elapsed={ms//1000}\n')
+        if scenario.startswith('sense-') and scenario!='sense-missing':
+            sense_time=max(1,ms-3)
+            lines.append(f'I9CS1 {seq:08x} {sense_time:08x} 00000000 000007d0 000003ff 000003ce 00000001 00000000\n')
+            lines.append(f'I9RG1 {seq:08x} 0000c800 00004b00 00000032 010e0104 00000100 00000004 00000000\n')
         lines.append('I9UI1 00000001 5ec00000 00000780 00000020\n')
         lines.append('I9FB1 00000000 00008035 5ec00000 00000780 000efb1f 5ed77000 01000000 00000001\n')
         if scenario.startswith('art-') and scenario!='art-missing':
@@ -142,6 +146,13 @@ def charger(path,scenario):
     if scenario in ('bootstrap-fault','art-bootstrap-fault'):
         text+='I9BF1 00000001 00000005 0000000b 00000001 0000004b 00000fa0 00000001 00000000\n'
     if scenario=='bootstrap-fault-partial':text+='I9BF1 00000001 00000005'
+    if scenario=='sense-uncertain':text=text.replace('000003ce 00000001 00000000','000003ce 00000001 00000001')
+    if scenario=='sense-no-adc':text=text.replace('000003ff 000003ce','000003fe ffffffff')
+    if scenario=='sense-stale':text=text.replace('000007d0 000003ff','000fffff 000003ff')
+    if scenario=='sense-wrong-sequence':text=text.replace('I9RG1 00000004','I9RG1 00000005')
+    if scenario=='sense-partial':text=text.replace('00000100 00000004 00000000\n','00000100\n')
+    if scenario=='sense-duplicate':text=text.replace('I9RG1 00000004','I9CS1 00000004 00015f8d 00000000 000007d0 000003ff 000003ce 00000001 00000000\nI9RG1 00000004')
+    if scenario=='sense-readback':text=text.replace('00000100 00000004','00000100 00000000')
     raw=text.encode();(path/'received.bin').write_bytes(raw)
     write_events(path/'events.jsonl',[dict(phase='CHARGER_IDENTITY',device=dict(device,instance=m.o.CDC.replace('OS6','CHG'))),
         dict(phase='DTR_OK',time='2026-11-19T01:00:00+00:00'),
@@ -154,7 +165,9 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
                  'handoff-success','handoff-missing','handoff-corrupt',
                  'deadline-success','deadline-missing','deadline-rejected','deadline-extended',
                  'epoch-success','epoch-full','epoch-missing','epoch-rejected','epoch-extended','epoch-missing-log',
-                 'stop-success','stop-uncertain','stop-invalid','stop-missing','stop-monitor-dead'):
+                 'stop-success','stop-uncertain','stop-invalid','stop-missing','stop-monitor-dead',
+                 'sense-success','sense-missing','sense-uncertain','sense-no-adc','sense-stale',
+                 'sense-wrong-sequence','sense-partial','sense-duplicate','sense-readback'):
     directory=out/scenario;directory.mkdir();calls=[];records=[]
     class Host:
         def inventory(self):return [device]
@@ -180,7 +193,8 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
     if scenario.startswith('deadline-'):actual_manifest=dict(manifest,standalone_charge_handoff=True,standalone_charge_deadline_adoption=True)
     if scenario.startswith('epoch-'):actual_manifest=dict(manifest,standalone_charge_handoff=True,standalone_charge_deadline_adoption=True,standalone_charge_shutdown_epoch=True)
     if scenario.startswith('stop-'):actual_manifest=dict(manifest,standalone_charge_handoff=True,charge_stop_confirmation=True)
-    expected_success=scenario in ('success','art-success','art-transport-success','handoff-success','deadline-success','epoch-success','epoch-full','stop-success')
+    if scenario.startswith('sense-'):actual_manifest=dict(manifest,standalone_charge_sense=True)
+    expected_success=scenario in ('success','art-success','art-transport-success','handoff-success','deadline-success','epoch-success','epoch-full','stop-success','sense-success')
     try:m.run_roundtrip(package,actual_manifest,directory,lambda phase,**row:records.append(dict(phase=phase,**row)),child,Host())
     except (ValueError,RuntimeError):assert not expected_success
     else:
@@ -190,11 +204,13 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
         assert records[-1]['charger_deadline_verified']==scenario.startswith(('deadline-','epoch-'))
         assert records[-1]['shutdown_charge_epoch_verified']==scenario.startswith('epoch-')
         assert records[-1]['stop_confirmation_verified']==scenario.startswith('stop-')
+        assert records[-1]['native_charge_sense_verified']==scenario.startswith('sense-')
     assert all('odin-loop.py' not in call and 'flash' not in call for call in calls)
     if scenario in ('no-draw','no-blank','wrong-tag','gap','wrong-format','wrong-end'):assert len(calls)==2
     if scenario=='shutdown-failure':assert len(calls)==1
     if scenario=='boot-timeout':assert len(calls)==3
     if scenario=='success':assert len(calls)==4
+    if scenario.startswith('sense-'):assert len(calls)==(4 if expected_success else 2)
     if scenario.startswith('bootstrap-fault'):assert len(calls)==2
     if scenario.startswith(('handoff-','deadline-','epoch-','stop-')):
         assert len(calls)==(2 if scenario in ('epoch-missing-log','epoch-extended') else 4)

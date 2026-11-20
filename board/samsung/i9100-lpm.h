@@ -11,6 +11,7 @@
 #include "charge/i9100_charge_epoch.h"
 #include "i9100-charge-screen.h"
 #include "i9100-charge-report.h"
+#include "i9100-charge-sense.h"
 #include "i9100-charge-start.h"
 #include <main/i9100-boot-charge.h>
 #include <main/i9100-charge-handoff.h>
@@ -291,6 +292,7 @@ void i9100_standalone_charge_gate(void)
    extern void usbcdc4210_charge_fault_report(const unsigned[8]);
  extern void usbcdc4210_charge_identity(int);
  extern void usbcdc4210_charge_timed_report(const struct i9100_charge_report *);
+ extern void usbcdc4210_charge_sense_report(const unsigned[8],const unsigned[8]);
  extern void usbcdc4210_charge_screen_report(unsigned,unsigned,unsigned,unsigned);
  extern void usbcdc4210_charge_fimd_report(const unsigned[8]);
  extern unsigned usbcdc4210_charge_take_action(void);
@@ -327,9 +329,11 @@ void i9100_standalone_charge_gate(void)
 #endif
    usbcdc4210_charge_set_boot_ready(boot_ready);
    if((polls++%30)==0){
+    struct i9100_charge_sense sense;
+    i9100_charge_sense_capture(&sense,&i9100_lpm_battery,&i9100_lpm_hw,++report_sequence);
     uint64_t measured=lpm_ticks();
     struct i9100_charge_report report={0};
-    report.sequence=++report_sequence;report.milliseconds=measured/24000U;
+    report.sequence=report_sequence;report.milliseconds=measured/24000U;
     report.valid=i9100_lpm_battery.valid;report.percent=i9100_lpm_battery.percent;
     report.millivolts=i9100_lpm_battery.millivolts;report.temperature_deci_c=i9100_lpm_battery.temperature_deci_c;
     report.charging=i9100_lpm_battery.charging;report.reason=i9100_lpm_battery.reason;
@@ -337,6 +341,9 @@ void i9100_standalone_charge_gate(void)
     report.elapsed_seconds=i9100_power_elapsed(i9100_lpm_battery.charge_start,
       i9100_lpm_battery.charge_elapsed_base,measured/24U*1000U)/1000000000ULL;
     usbcdc4210_charge_timed_report(&report);
+    unsigned sense_timing[8],sense_registers[8];
+    i9100_charge_sense_words(&sense,sense_timing,sense_registers);
+    usbcdc4210_charge_sense_report(sense_timing,sense_registers);
     usbcdc4210_charge_screen_report(drawn,(unsigned)screen.pixels,screen.stride,screen.bpp);
     unsigned fb[8]={lpm_read(0x11c00000U,0x20),lpm_read(0x11c00000U,0x28),
       lpm_read(0x11c00000U,0xb0),lpm_read(0x11c00000U,0x108),

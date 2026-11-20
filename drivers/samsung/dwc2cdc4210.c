@@ -949,6 +949,11 @@ static void charge_words_report(const char tag[6],const unsigned values[8])
 {
  char line[80];charge_words_format(line,tag,values);usbcon_write(KERN_INFO,"",line);
 }
+void usbcdc4210_charge_sense_report(const unsigned timing[8],const unsigned registers[8])
+{
+ charge_words_report("I9CS1 ",timing);
+ charge_words_report("I9RG1 ",registers);
+}
 void usbcdc4210_charge_render_report(const unsigned values[8])
 {charge_words_report("I9CR1 ",values);}
 void usbcdc4210_charge_start_report(const unsigned values[8])

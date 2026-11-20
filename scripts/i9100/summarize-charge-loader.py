@@ -4,12 +4,15 @@ import argparse
 from collections import Counter
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
 
 REPO = Path(__file__).resolve().parents[2]
 MAX_BYTES = 64 * 1024 * 1024
+_sense_spec=importlib.util.spec_from_file_location('loader_charge_sense',Path(__file__).with_name('charge-sense.py'))
+_sense=importlib.util.module_from_spec(_sense_spec);_sense_spec.loader.exec_module(_sense)
 STATUS = re.compile(
     rb'^I9CHG1 valid=(?P<valid>[01]) soc=(?P<soc>\d+) mv=(?P<millivolts>\d+) '
     rb'temp=(?P<temperature_deci_c>-?\d+) charging=(?P<charging>[01]) '
@@ -137,6 +140,7 @@ def summarize(path, allow_partial=False):
         'observed_soc_delta': valid[-1]['soc'] - valid[0]['soc'] if valid else None,
         'observed_millivolts_delta': valid[-1]['millivolts'] - valid[0]['millivolts'] if valid else None,
         'ranges': ranges, 'samples': samples,
+        'charge_sense': _sense.grouped(raw,[row for row in samples if row['version']==2]),
         'source_measurement_times_available': any(row['version']==2 for row in samples),
         'charge_rate_verified': False,
         'timing_limit': 'I9CHG2 device clock/sequence qualifies only uninterrupted measurement segments; gaps/reboots/legacy data are split. Host receipts can include buffered states. SOC and voltage changes do not measure milliamps or prove a charge rate.',

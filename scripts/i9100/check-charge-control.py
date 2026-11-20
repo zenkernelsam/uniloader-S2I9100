@@ -76,6 +76,12 @@ int main(void){
  usbcdc4210_charge_transport_report();assert(tx_written_total==diagnostic_before+80U);
  assert(!memcmp(txring+diagnostic_at,"I9UT1 ",6));
  assert(txring[(diagnostic_at+77U)&(TXRING-1U)]=='\n');
+ unsigned sense[8]={1,7900,0,3000,0x3ff,974,1,0},raw_registers[8]={1,48000,50*256,0x32,0x010e0104,0x100,4,0};
+ diagnostic_at=tx_head;diagnostic_before=tx_written_total;
+ usbcdc4210_charge_sense_report(sense,raw_registers);
+ assert(tx_written_total==diagnostic_before+160U);
+ assert(!memcmp(txring+diagnostic_at,"I9CS1 ",6));
+ assert(!memcmp(txring+((diagnostic_at+80U)&(TXRING-1U)),"I9RG1 ",6));
  /* A real late opener can find hours of buffered charger messages. Logs
   * must be dropped whole and leave room for the exact READY handshake. */
  reset();host_open=0;GINTSTS=0;charge_log_dropped=0;

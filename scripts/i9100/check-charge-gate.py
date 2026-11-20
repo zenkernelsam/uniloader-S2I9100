@@ -39,6 +39,7 @@ code=r'''
 #include "charge/i9100_power.h"
 #include "i9100-charge-screen.h"
 #include "i9100-charge-report.h"
+#include "i9100-charge-sense.h"
 #include "i9100-charge-start.h"
 #include "main/i9100-charge-handoff.h"
 #include "main/i9100-boot-source.h"
@@ -59,7 +60,7 @@ static uint64_t i9100_lpm_boot_sample_ticks;
 static struct I9100ChargeEpoch i9100_lpm_prior_epoch;
 static unsigned i9100_lpm_epoch_marked,i9100_lpm_epoch_match,i9100_lpm_epoch_result;
 static uint64_t i9100_lpm_epoch_rtc;
-static unsigned power_init_calls,failed_stop;
+static unsigned power_init_calls,failed_stop,sense_sequence;
 static unsigned stop_sequence,last_boot_stage,fault_reports,boot_admission,slow_sample;
 static uint64_t first_key_seen,last_key_seen,unblank_ticks,last_blank_ticks;
 struct I9100BootSource i9100_boot_source;
@@ -150,7 +151,14 @@ int i9100_power_muic_read(void*c,unsigned r,uint8_t*v){(void)c;(void)r;(void)v;r
 int i9100_power_muic_write(void*c,unsigned r,uint8_t v){(void)c;(void)r;(void)v;return 0;}
 int usbcdc4210_init(void){return 0;}void usbcdc4210_charge_identity(int n){assert(n==0 || n==1);}
 void usbcdc4210_charge_timed_report(const struct i9100_charge_report *r){
- assert(r->milliseconds==ticks/24000 && r->percent==50);reports++;
+ assert(r->milliseconds==ticks/24000 && r->percent==50);reports++;sense_sequence=r->sequence;
+}
+int i9100_power_charge_adc_read(void*c,unsigned*v){assert(c==&i9100_lpm_hw);*v=974;return 1;}
+void usbcdc4210_charge_sense_report(const unsigned timing[8],const unsigned registers[8]){
+ assert(timing[0]==sense_sequence && registers[0]==timing[0]);
+ assert(timing[4]==(ticks?0x381U:0U) && timing[5]==(ticks?974U:0xffffffffU));
+ assert(timing[6]==i9100_lpm_battery.enabled && timing[7]==i9100_lpm_battery.stop_uncertain);
+ assert(((uint64_t)timing[2]<<32|timing[1])==ticks/24000);
 }
 void usbcdc4210_charge_screen_report(unsigned d,unsigned b,unsigned s,unsigned p){(void)d;(void)b;assert(s==1920 && p==32);}
 void usbcdc4210_charge_fimd_report(const unsigned p[8]){assert(p[1]==0x8035 && p[6]==(blanked?0x1000000:0));}

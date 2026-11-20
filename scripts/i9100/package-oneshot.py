@@ -427,6 +427,7 @@ def main():
         'standalone_charge': args.standalone_charge,
         'standalone_charge_art': art_record,
         'standalone_charge_transport': args.standalone_charge and b'I9UT1 ' in data,
+        'standalone_charge_sense': args.standalone_charge and b'I9CS1 ' in data and b'I9RG1 ' in data,
         'standalone_charge_boot_supervision': args.standalone_charge and b'I9BS1 ' in data,
         'standalone_charge_boot_fault_hold': args.standalone_charge and b'I9BF1 ' in data,
         'standalone_charge_handoff': args.standalone_charge and b'i9100-charge-handoff\0' in dt_blob.read_bytes(),

@@ -18,6 +18,7 @@ r=module('charge_roundtrip_resume','resume-on-device.py')
 o=r.o
 s=module('charge_roundtrip_summary','summarize-charge-loader.py')
 h=module('charge_roundtrip_handoff','charge-handoff.py')
+sense=module('charge_roundtrip_sense','charge-sense.py')
 
 def rows(path):
     return r.read_events(path)
@@ -92,7 +93,7 @@ def qualify_art_records(raw,timed,require_transport=False):
         transport_snapshots=[group['I9UT1'] for group in recent] if require_transport else None,
         limit='Production render/start counters and matched device measurements; no physical keypress or pixel capture inferred')
 
-def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False):
+def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False):
     summary=s.summarize(path)
     raw=(path/'received.bin').read_bytes()
     # A failed payload stays in a healthy supervised charger, but that does
@@ -111,6 +112,16 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
     o.require(all(sample.get('interval_available') for sample in timed[-2:]) and
         timed[-1]['measured_ms']-timed[-3]['measured_ms']>=50000,
         'Continuous device measurement interval did not span 50 seconds')
+    sense_records=[]
+    if require_sense:
+        for index in range(len(timed)-3,len(timed)):
+            sample=timed[index]
+            end=timed[index+1]['end_offset'] if index+1<len(timed) else len(raw)
+            observed=sense.decode(raw[sample['end_offset']:end],sample)
+            o.require((observed['mask']&0x39f)==0x39f and not observed['stop_uncertain'] and
+                observed['readback_consistent'],
+                'ADC/register evidence is incomplete or hardware stop remains uncertain')
+            sense_records.append(observed)
     ui=re.findall(rb'^I9UI1 ((?:[0-9a-f]{8} ){3}[0-9a-f]{8})\r?$',raw,re.MULTILINE)
     fb=re.findall(rb'^I9FB1 ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?$',raw,re.MULTILINE)
     o.require(ui and fb,'Actual charger UI/register records missing')
@@ -148,7 +159,7 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
                 (panel_recovery[0] or not panel_recovery[1]) and not panel_recovery[2] and
                 panel_recovery[3]==panel_values[1],'Panel recovery budget/result disagrees with its sleep state')
     elif require_recovery:raise ValueError('Recovery qualification requires panel-sleep observations')
-    return dict(summary=summary,ui=values,fimd=registers,artwork=art,panel_sleep=panel_values,panel_identity=panel_identity,panel_recovery=panel_recovery,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
+    return dict(summary=summary,ui=values,fimd=registers,artwork=art,panel_sleep=panel_values,panel_identity=panel_identity,panel_recovery=panel_recovery,charge_sense=sense_records,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
         limit='Draw/register/timed-log qualification; no physical image or keypress acceptance inferred')
 
 def wait_resumed(directory,seconds,record,clock=time.monotonic,sleep=time.sleep):
@@ -262,7 +273,8 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
     child([sys.executable,'-B',HERE/'capture-charge-loader.py','--output',out/'charger-evidence',
         '--seconds','180' if require_art else '120','--wait','180'],out/'charger-process',480 if require_art else 420,record)
     evidence=qualify_charger(out/'charger-evidence',tag+' '+charger_tag,manifest.get('panel_sleep') is True,
-        manifest.get('standalone_panel_recovery') is True,require_art,manifest.get('standalone_charge_transport') is True)
+        manifest.get('standalone_panel_recovery') is True,require_art,manifest.get('standalone_charge_transport') is True,
+        manifest.get('standalone_charge_sense') is True)
     o.save(out/'charger-qualified.json',evidence);record('CHARGER_QUALIFIED',measured_interval_ms=evidence['measured_interval_ms'])
     if manifest.get('standalone_charge_shutdown_epoch') is True:
         epoch=shutdown_epoch_logs((out/'charger-evidence/received.bin').read_bytes())
@@ -311,6 +323,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         charger_deadline_verified=require_deadline,
         shutdown_charge_epoch_verified=require_epoch,
         stop_confirmation_verified=require_stop,
+        native_charge_sense_verified=manifest.get('standalone_charge_sense') is True,
         writes_to_flash=0,physical_power_key_verified=False,energy_balance_verified=False)
 
 def main():
