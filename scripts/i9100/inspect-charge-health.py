@@ -337,9 +337,9 @@ def capture(kernel,symbols,out):
     if '_i9100_irq_pc_sample' in symbols.values:
         raw_pc=kernel.read(symbols['_i9100_irq_pc_sample'],4*(7+64*4))
         (out/'irq-pc-sample.bin').write_bytes(raw_pc)
-        version,sequence,samples,used,overflow,period,epoch=struct.unpack_from('<7I',raw_pc)
-        if version!=2 or used>64 or period!=37 or samples>512:raise ValueError('Unknown PC histogram schema')
-        table=dict(version=version,sequence=sequence,samples=samples,used=used,overflow=overflow,period=period,epoch=epoch,
+        pc_version,sequence,samples,used,overflow,period,epoch=struct.unpack_from('<7I',raw_pc)
+        if pc_version!=2 or used>64 or period!=37 or samples>512:raise ValueError('Unknown PC histogram schema')
+        table=dict(version=pc_version,sequence=sequence,samples=samples,used=used,overflow=overflow,period=period,epoch=epoch,
             consistent=not sequence&1,limit='Up to 512 interrupted-PC samples in this epoch; not an exact causal profile or per-process accounting')
         if table['consistent']:
             rows=[]

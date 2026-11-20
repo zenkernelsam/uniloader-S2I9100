@@ -130,6 +130,19 @@ target=out/'low-battery-retreat';target.mkdir();kernel=KernelLow(1)
 actual=m.capture(kernel,SymbolsLow(),target)
 assert actual['low_battery_retreat']['consistent'] and actual['low_battery_retreat']['admitted']
 assert (target/'low-battery-retreat.bin').is_file() and kernel.calls[-1]==(0x1000,16)
+class SymbolsPC(SymbolsLow):
+    values=dict(SymbolsLow.values,_i9100_irq_pc_sample=0x8000)
+class KernelPC(KernelLow):
+    def read(self,address,size):
+        if address==0x8000:
+            self.calls.append((address,size));assert size==4*(7+64*4)
+            words=[2,2,0,0,0,37,1]+[0]*(64*4)
+            return struct.pack('<'+str(len(words))+'I',*words)
+        return super().read(address,size)
+target=out/'v3-with-pc-histogram';target.mkdir();kernel=KernelPC(1)
+actual=m.capture(kernel,SymbolsPC(),target)
+assert actual['version']==3 and actual['irq_pc_sample']['version']==2
+assert actual['producer_count_after']==count+1 and kernel.calls[-1]==(0x1000,16)
 (out/'result.json').write_text(json.dumps(dict(result='PASS',cases=2,fixture=str(fixture),
     evidence='Real charger snapshot, separate optional addresses, v1/v2 decoding, inherited deadline publication and later producer advancement'),indent=2)+'\n')
 print('PASS real charger fixture; v1/v2 setup address isolation; final charger header and producer advancement')
