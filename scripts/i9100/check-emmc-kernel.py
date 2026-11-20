@@ -56,7 +56,9 @@ def verify(kernel):
     # C++ boot owner symbols use real Itanium name mangling; enforce uniquely
     # defined signatures instead of searching text strings in flat payloads.
     cpp={}
-    for stem in ('i9100_emmc_boot_open','ios6i9100_register_emmc_boot'):
+    for stem in ('i9100_emmc_boot_open','ios6i9100_register_emmc_boot','i9100_emmc_worker_create',
+                 'i9100_emmc_worker_submit','i9100_emmc_worker_barrier','i9100_emmc_worker_cancel',
+                 'i9100_emmc_worker_stop','i9100_emmc_worker_destroy'):
         matches={name:value for name,value in symbols.items() if name.startswith('__Z'+str(len(stem))+stem)}
         if len(matches)!=1:raise ValueError('Missing/ambiguous real C++ boot definition: '+stem)
         cpp.update(matches)
@@ -66,7 +68,7 @@ def verify(kernel):
     proofs={};needed={'AppleARMPE.cpp','vfs_syscalls.c','hfs_vfsops.c','bsd_init.c','kern_shutdown.c','i9100_usbcdc.c',
        'IOS6I9100EMMCBlockDriver.cpp','IOS6I9100EMMCRaw.cpp','IOS6I9100EMMCStorage.cpp','i9100_emmc_publication.cpp',
        'i9100_emmc_alias.cpp','i9100_emmc_boot.cpp','i9100_emmc_boot_contract.c','i9100_emmc_clock.c','i9100_emmc_clock_native.cpp','i9100_emmc_native.cpp',
-       'i9100_emmc.c','i9100_emmc_writer.c','IOS7I9100EMMC.cpp','i9100_emmc_idmac.c','i9100_dma_guard.c','i9100_dma_native.cpp'}
+       'i9100_emmc.c','i9100_emmc_writer.c','IOS7I9100EMMC.cpp','i9100_emmc_idmac.c','i9100_dma_guard.c','i9100_dma_native.cpp','i9100_emmc_worker.cpp'}
     cursor=folder;seen=set()
     for _ in range(32):
         if cursor in seen:raise ValueError('Cyclic kernel source ancestry')
@@ -92,6 +94,9 @@ def verify(kernel):
         if name in ('i9100_emmc_idmac.c','i9100_emmc_native.cpp','i9100_dma_native.cpp','i9100_dma_guard.c'):
             dep=compiled.with_suffix('.d')
             if not dep.is_file()or 'i9100_dma_guard.h'not in dep.read_text():raise ValueError('Paired DMA buffer ABI was never consumed by ARM compiler')
+        if name in ('i9100_emmc_worker.cpp','IOS6I9100EMMCRaw.cpp','IOS6I9100EMMCStorage.cpp'):
+            dep=compiled.with_suffix('.d')
+            if not dep.is_file()or 'i9100_emmc_worker.h'not in dep.read_text():raise ValueError('Paired asynchronous IO ABI was never consumed by ARM compiler')
         if any(arg=='-DI9100_HFS_FROZEN_REFERENCE=1' for arg in item['arguments']):
             raise ValueError('Historical LPM-disabled offline fixture cannot become a deployment kernel')
         suffix=(name+('.cpo' if name.endswith('.cpp') else '.o'),Path(name).stem+('.cpo' if name.endswith('.cpp') else '.o'))

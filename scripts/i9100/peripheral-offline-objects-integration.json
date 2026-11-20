@@ -62,6 +62,7 @@
     "iokit/i9100_peripheral_native.cpo",
     "iokit/i9100_emmc_boot.cpo",
     "iokit/i9100_emmc_clock_native.cpo",
+    "iokit/i9100_emmc_worker.cpo",
     "iokit/IOS7I9100EMMC.cpo",
     "iokit/IOS7I9100GPT.cpo",
     "iokit/i9100_audio_native.cpo",
@@ -91,7 +92,7 @@
     "iokit/i9100_emmc_alias.cpo",
     "iokit/i9100_emmc_publication.cpo"
   ],
-  "patch_sha256": "edd05b1cc1f6a205186fc7db5525aeb9a9285a51e17ce37523957a14ff15f127",
+  "patch_sha256": "3dd4205d352cb59a67aec087c05d62856e1836d35220ff6f015ec3095654e9df",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first",
