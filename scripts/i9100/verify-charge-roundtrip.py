@@ -211,6 +211,17 @@ def qualify_shutdown_epoch(raw,returned):
     return dict(restored=True,source=source,restored_rtc_seconds=rtc,initial_elapsed_seconds=latest[5],
         limit='Actual retained normal-halt/loader/returned-XNU evidence, not a physical charging-current measurement')
 
+def qualify_stop_confirmation(charge):
+    o.require(charge.get('version')==3 and charge.get('samples'),
+        'New stop-confirmation package requires its actual v3 Power records')
+    latest=charge['samples'][-1]
+    o.require(latest.get('stop_confirmation_available') is True and latest.get('stop_uncertain')==0 and
+        latest.get('measurements_valid') is True and
+        charge.get('stop_confirmation',{}).get('uncertain') is False,
+        'Power stop or current measurement is still uncertain; round trip is not validated')
+    return dict(confirmed=True,sequence=latest.get('sequence'),reason=latest.get('reason'),
+        limit='Last Power policy disable/readback and sample status; no net current inferred')
+
 def verify_deployment(directory,package,manifest,completed_capture=None):
     armed=json.loads((directory/'armed.json').read_text(encoding='utf-8'))
     o.require(Path(armed['package']).resolve()==package and armed['kernel_sha']==manifest['artifacts']['zImage']['sha256'],
@@ -272,6 +283,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
     require_handoff=manifest.get('standalone_charge_handoff') is True
     require_deadline=manifest.get('standalone_charge_deadline_adoption') is True
     require_epoch=manifest.get('standalone_charge_shutdown_epoch') is True
+    require_stop=manifest.get('charge_stop_confirmation') is True
     o.require(not require_deadline or require_handoff,'Deadline adoption requires the original loader record')
     if require_handoff:
         task=out/'returned-xnu-evidence/task-0000'
@@ -288,14 +300,16 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         deadline=qualify_inherited_deadline(decoded,charge.get('charger_deadline_adoption')) if require_deadline else None
         shutdown_epoch=qualify_shutdown_epoch((out/'charger-evidence/received.bin').read_bytes(),
             observed.get('shutdown_charge_epoch')) if require_epoch else None
+        stop_confirmed=qualify_stop_confirmation(charge) if require_stop else None
         o.save(out/'boot-handoff-verified.json',dict(record=decoded,
-            kernel_tag=tag,takeover_observation=charge.get('charger_takeover_observation'),deadline_adoption=deadline,shutdown_epoch=shutdown_epoch,
+            kernel_tag=tag,takeover_observation=charge.get('charger_takeover_observation'),deadline_adoption=deadline,shutdown_epoch=shutdown_epoch,stop_confirmation=stop_confirmed,
             limit='Checked loader stop retained in XNU; first-sample timing is optional and never proves net charging'))
     record('DONE',meaning='Normal shutdown, timed new charger UI/blank records, one remote boot and same XNU BUILD verified',
         native_artwork_verified=require_art,
         charger_handoff_verified=require_handoff,
         charger_deadline_verified=require_deadline,
         shutdown_charge_epoch_verified=require_epoch,
+        stop_confirmation_verified=require_stop,
         writes_to_flash=0,physical_power_key_verified=False,energy_balance_verified=False)
 
 def main():

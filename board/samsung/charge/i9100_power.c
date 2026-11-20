@@ -31,6 +31,7 @@ int i9100_power_stop(struct i9100_power_state *s)
  if(s->use_sub && !s->io.sub_enable(s->io.cookie,0))ok=0;
  if(!update(s,0x51,0xc0,0))ok=0; /* Never leave both chargers enabled. */
  s->enabled=0;s->charging=0;
+ s->stop_uncertain=!ok;
  return ok;
 }
 int i9100_power_init(struct i9100_power_state *s,const struct i9100_power_io *io,unsigned revision)
@@ -39,6 +40,7 @@ int i9100_power_init(struct i9100_power_state *s,const struct i9100_power_io *io
   !io->adc_read || !io->sub_read || !io->sub_enable || !io->now_ns)return I9100_POWER_IO;
  s->io=*io;s->revision=revision;s->use_sub=revision>=8 && revision<=15;
  s->ready=s->enabled=s->valid=s->connected=s->present=s->charging=0;
+ s->stop_uncertain=1;
  s->millivolts=s->percent=s->adc=s->full=s->timeout=s->thermal_block=s->errors=0;
  s->recharging=s->recharge_low_count=s->cable_type=0;s->charge_refresh=0;
  s->temperature_deci_c=0;s->charge_start=0;s->charge_elapsed_base=s->refresh_elapsed_base=0;s->reason=I9100_POWER_REVISION;
@@ -75,7 +77,7 @@ failure:
 int i9100_power_poll(struct i9100_power_state *s)
 {
  uint8_t status;uint16_t version,fuel_status,voltage,soc;
- unsigned adc,connected=0,charging=0;int temp;
+ unsigned adc,connected=0,charging=0,stop_failed=0;int temp;
  if(!s || !s->ready)return I9100_POWER_REVISION;
  s->valid=0;s->charging=0;
  if(!s->io.pmic_read(s->io.cookie,0x10,&status) ||
@@ -96,7 +98,7 @@ int i9100_power_poll(struct i9100_power_state *s)
   s->full=s->timeout=s->thermal_block=0;s->recharging=s->recharge_low_count=0;
   s->charge_start=s->charge_refresh=0;s->reason=I9100_POWER_OFFLINE;
   s->charge_elapsed_base=s->refresh_elapsed_base=0;
-  if(!i9100_power_stop(s))goto failure;return 0;
+  if(!i9100_power_stop(s)){stop_failed=1;goto failure;}return 0;
  }
  if(!s->present){s->reason=I9100_POWER_NO_BATTERY;goto stop;}
  if(temp<=0 || temp>=450)s->thermal_block=1;
@@ -129,9 +131,14 @@ int i9100_power_poll(struct i9100_power_state *s)
  /* Vendor refreshes the charger every ten minutes. The software cycle
   * start remains unchanged: refresh never postpones the safety deadline. */
  if(s->enabled && s->charge_refresh && i9100_power_elapsed(s->charge_refresh,s->refresh_elapsed_base,now)>=600ULL*1000000000ULL){
-  if(!i9100_power_stop(s))goto failure;
+  if(!i9100_power_stop(s)){stop_failed=1;goto failure;}
  }
  if(!s->enabled){
+  /* A preceding IO fault can leave the hardware enabled even though the
+   * software requested off. Confirm BOTH controllers stopped before any
+   * fresh enable; do not reset the existing period or repeat a failed stop
+   * twice in this same sample. Later periodic samples may retry safe off. */
+  if(s->stop_uncertain && !i9100_power_stop(s)){stop_failed=1;goto failure;}
   if(s->use_sub){
    if(!update(s,0x51,0xc0,0) || !s->io.sub_enable(s->io.cookie,1))goto failure;
   }else{
@@ -158,8 +165,9 @@ int i9100_power_poll(struct i9100_power_state *s)
  s->reason=I9100_POWER_OK;return 0;
 stop:
  if(s->reason!=I9100_POWER_FULL)s->recharge_low_count=0;
- if(!i9100_power_stop(s))goto failure;return 0;
+ if(!i9100_power_stop(s)){stop_failed=1;goto failure;}return 0;
 failure:
  s->recharge_low_count=0;
- (void)i9100_power_stop(s);s->valid=0;s->errors++;s->reason=I9100_POWER_IO;return s->reason;
+ if(!stop_failed)(void)i9100_power_stop(s);
+ s->valid=0;s->errors++;s->reason=I9100_POWER_IO;return s->reason;
 }

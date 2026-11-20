@@ -31,6 +31,8 @@ struct i9100_power_state {
  /* Duration inherited across an MCT reset; zero for an ordinary boot. */
  uint64_t charge_elapsed_base;
  uint64_t refresh_elapsed_base;
+ /* A failed disable/readback is not evidence that either charger is off. */
+ unsigned stop_uncertain;
 };
 static inline uint64_t i9100_power_elapsed(uint64_t start,uint64_t base,uint64_t now)
 {

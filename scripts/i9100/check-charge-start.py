@@ -45,6 +45,11 @@ int main(void){
  assert(now-start==10000000000ULL);
  i9100_charge_start_update(&gate,&b,0,now);
  assert(gate.ready && i9100_charge_start_ready(&gate,now));
+ b.stop_uncertain=1;now+=1000000000ULL;
+ i9100_charge_start_update(&gate,&b,0,now);assert(!gate.ready&&!gate.samples);
+ b.stop_uncertain=0;
+ for(unsigned n=0;n<11;n++){now+=1000000000ULL;i9100_charge_start_update(&gate,&b,0,now);}
+ assert(gate.ready);
  /* New errors revoke BOTH count and age: earlier good duration cannot
   * survive voltage collapse, absent cell, timeout or a bad bus read. */
  b.millivolts=3599;now+=1000000000ULL;

@@ -15,7 +15,7 @@ static void i9100_charge_start_update(struct i9100_charge_start *gate,
  unsigned healthy=battery && !poll_result && battery->valid && battery->present &&
   battery->percent>=3U && battery->millivolts>=3600U &&
   battery->temperature_deci_c>=50 && battery->temperature_deci_c<=400 &&
-  !battery->thermal_block && !battery->timeout;
+  !battery->thermal_block && !battery->timeout && !battery->stop_uncertain;
  if(!gate)return;
  if(!healthy || !now_ns || (gate->last_ns &&
     (now_ns<=gate->last_ns || now_ns-gate->last_ns>2500000000ULL))){

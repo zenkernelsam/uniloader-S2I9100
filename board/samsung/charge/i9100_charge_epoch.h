@@ -40,7 +40,7 @@ static inline void i9100_charge_epoch_encode(struct I9100ChargeEpoch *r,
  const struct i9100_power_state *s,uint64_t now_ns,unsigned sequence,unsigned rtc_valid,uint64_t rtc_seconds)
 {
  memset(r,0,sizeof(*r));if(!s || !s->ready || !now_ns || !sequence)return;
- r->magic=I9100_CHARGE_EPOCH_MAGIC;r->version=2;r->bytes=sizeof(*r);r->flags=rtc_valid?3U:1U;
+ r->magic=I9100_CHARGE_EPOCH_MAGIC;r->version=2;r->bytes=sizeof(*r);r->flags=rtc_valid && !s->stop_uncertain?3U:1U;
  r->revision=s->revision;r->sub_charger=s->use_sub;r->valid=s->valid;
  r->connected=s->connected;r->present=s->present;r->full=s->full;r->timeout=s->timeout;
  r->thermal_block=s->thermal_block;r->recharging=s->recharging;r->recharge_low_count=s->recharge_low_count;
