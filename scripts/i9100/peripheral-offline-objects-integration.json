@@ -84,10 +84,11 @@
     "iokit/i9100_emmc_native.cpo",
     "iokit/IOS6I9100EMMCStorage.cpo",
     "iokit/IOS6I9100EMMCRaw.cpo",
+    "iokit/IOS6I9100EMMCBlockDriver.cpo",
     "iokit/i9100_emmc_alias.cpo",
     "iokit/i9100_emmc_publication.cpo"
   ],
-  "patch_sha256": "2689a2b416a8f5eadf92c15efee38ccc2dff8333dcbc28693c7dc71f342f5fa9",
+  "patch_sha256": "f8caff31b811c0ecdc859e849e92e683347a5117c8c59f2d5ee1bb065de2f649",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first",

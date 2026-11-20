@@ -64,7 +64,16 @@ def main():
         defs=kernel_checker.definitions(a.kernel.read_bytes())
         for required in ('_i9100_hfs_data_bootstrap','_i9100_storage_shutdown_diag','_i9100_emmc_boot_decode'):
             assert required in defs
-        rejects(lambda:kernel_checker.verify(a.kernel))
+        for required,method in (('IOS6I9100EMMCBlockDriver','instantiateDesiredMediaObject'),
+                                ('IOS6I9100EMMCMedia','matchPropertyTable')):
+            assert any(name.startswith('__ZN'+str(len(required))+required) and method in name for name in defs)
+        # This test's kernel is explicitly a historical offline freeze; do
+        # not let a missing new storage object/provenance error masquerade as
+        # the intended deployment refusal.
+        try:kernel_checker.verify(a.kernel)
+        except ValueError as error:
+            if 'Historical LPM-disabled offline fixture' not in str(error):raise
+        else:raise AssertionError('Historical fixture was accepted for deployment')
         kernel_check=dict(path=str(a.kernel.resolve().relative_to(c.ROOT)),sha256=hashlib.sha256(a.kernel.read_bytes()).hexdigest(),
             real_definitions_present=True,historical_deployment_refused=True)
     generated=None

@@ -54,7 +54,9 @@ def verify(kernel):
     folder=kernel.parent;manifest=json.loads((folder/'manifest.json').read_text())
     if manifest.get('result')!='PASS' or manifest.get('complete_kernel_link')is not True or manifest.get('linked_kernel_sha256')!=sha(kernel):
         raise ValueError('Internal-root package requires verified full source provenance')
-    proofs={};needed={'AppleARMPE.cpp','vfs_syscalls.c','hfs_vfsops.c','bsd_init.c','kern_shutdown.c','i9100_usbcdc.c'}
+    proofs={};needed={'AppleARMPE.cpp','vfs_syscalls.c','hfs_vfsops.c','bsd_init.c','kern_shutdown.c','i9100_usbcdc.c',
+       'IOS6I9100EMMCBlockDriver.cpp','IOS6I9100EMMCRaw.cpp','IOS6I9100EMMCStorage.cpp','i9100_emmc_publication.cpp',
+       'i9100_emmc_alias.cpp','i9100_emmc_boot.cpp','i9100_emmc_boot_contract.c'}
     cursor=folder;seen=set()
     for _ in range(32):
         if cursor in seen:raise ValueError('Cyclic kernel source ancestry')
@@ -71,6 +73,8 @@ def verify(kernel):
         source=(ROOT/item['source_file']).resolve();compiled=(ROOT/item['object']).resolve()
         if not source.is_relative_to(XNU) or sha(source)!=item['source_sha256'] or not compiled.is_relative_to(XNU/'out'):
             raise ValueError('Paired compiler source drift')
+        if item.get('module_header') and sha(ROOT/item['module_header'])!=item['module_header_sha256']:
+            raise ValueError('Paired native storage header drift')
         if any(arg=='-DI9100_HFS_FROZEN_REFERENCE=1' for arg in item['arguments']):
             raise ValueError('Historical LPM-disabled offline fixture cannot become a deployment kernel')
         suffix=(name+('.cpo' if name.endswith('.cpp') else '.o'),Path(name).stem+('.cpo' if name.endswith('.cpp') else '.o'))
@@ -78,6 +82,10 @@ def verify(kernel):
         if len(matches)!=1 or sha(matches[0])!=sha(compiled):raise ValueError('Compiled paired object absent from final link')
     if 'ios6i9100_register_emmc_boot(this)' not in (ROOT/proofs['AppleARMPE.cpp']['source_file']).read_text():raise ValueError('PE entry unconnected')
     if 'i9100_hfs_data_bootstrap();' not in (ROOT/proofs['bsd_init.c']['source_file']).read_text():raise ValueError('Prelaunchd mount unconnected')
+    for name,anchor in (('IOS6I9100EMMCBlockDriver.cpp','IOS6I9100EMMCMedia::matchPropertyTable'),
+                       ('IOS6I9100EMMCRaw.cpp','IOS6I9100EMMCRaw::matchPropertyTable'),
+                       ('i9100_emmc_publication.cpp','gIOCatalogue->addDrivers(drivers,false)')):
+        if anchor not in (ROOT/proofs[name]['source_file']).read_text():raise ValueError('Native storage matching unconnected: '+name)
     return dict(result='PASS',kernel_sha256=sha(kernel),actual_definitions={name:symbols[name] for name in required},cpp_definitions=cpp,
       source_sha256={name:item['source_sha256'] for name,item in proofs.items()},hardware_tested=False,device_contacted=False)
 def main():
