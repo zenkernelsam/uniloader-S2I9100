@@ -1,6 +1,7 @@
 /* Dedicated U1 power buses only: GPB[6:7] MAX8997 and GPY4[0:1] MAX17042.
  * No address/pin scanning. All waits are bounded; GPIO fields are preserved. */
 #include "i9100_power.h"
+#include "i9100_rtc_time.h"
 struct bus {
  struct i9100_power_hw *hw;
  unsigned region,base,sda,scl;
@@ -57,7 +58,9 @@ static int receive(struct bus *b,uint8_t *byte,int last)
 static int transfer(struct i9100_power_hw *hw,unsigned fuel,unsigned slave,unsigned reg,
                     uint8_t *data,unsigned count,int writing)
 {
- if(!hw || !data || reg>255 || !count || count>2 || (fuel && writing) || slave>127)return 0;
+ if(!hw || !data || reg>255 || !count ||
+    (count>2 && !(count==7 && !fuel && slave==0x06U && reg==0x10U && !writing)) ||
+    (fuel && writing) || slave>127)return 0;
  struct bus b={hw,fuel?1U:0U,fuel?0x1a0U:0x40U,fuel?0U:6U,fuel?1U:7U,0,0,0};
  hw->enter(hw->cookie);
  b.con=rd(&b,0);b.dat=rd(&b,4);b.pull=rd(&b,8);
@@ -95,6 +98,17 @@ int i9100_power_muic_write(void *hw,unsigned reg,uint8_t value)
 {return transfer(hw,0,0x25,reg,&value,1,1);}
 int i9100_power_fuel_read(void *hw,unsigned reg,uint16_t *value)
 {uint8_t data[2];if(!value || !transfer(hw,1,0x36,reg,data,2,0))return 0;*value=data[0]|((uint16_t)data[1]<<8);return 1;}
+int i9100_power_rtc_seconds(void *hw,uint64_t *value)
+{
+ uint8_t control=0,again=0,first[7],last[7];uint64_t a,b;
+ if(!value || !transfer(hw,0,0x06,0x03,&control,1,0) ||
+    !transfer(hw,0,0x06,0x10,first,7,0) ||
+    !transfer(hw,0,0x06,0x10,last,7,0) ||
+    !transfer(hw,0,0x06,0x03,&again,1,0) || control!=again ||
+    !i9100_rtc_decode(first,control,&a) || !i9100_rtc_decode(last,control,&b) ||
+    b<a || b-a>1U)return 0;
+ *value=b;return 1;
+}
 unsigned i9100_power_revision(struct i9100_power_hw *hw)
 {
  /* Bootloader leaves revision straps as GPIO inputs; never change their mux. */

@@ -41,6 +41,7 @@ code=r'''
 #include "i9100-charge-report.h"
 #include "i9100-charge-start.h"
 #include "main/i9100-charge-handoff.h"
+#include "charge/i9100_charge_epoch.h"
 #include "charge/i9100_panel_spi.h"
 #include "charge/i9100_panel_sleep.h"
 #define I9100_STANDALONE_CHARGE_BUILD 1
@@ -54,17 +55,21 @@ static unsigned i9100_lpm_boot_polls,i9100_lpm_boot_phase;
 static unsigned i9100_lpm_boot_fault,i9100_lpm_fault_phase;
 static uint64_t i9100_lpm_boot_next;
 static uint64_t i9100_lpm_boot_sample_ticks;
+static struct I9100ChargeEpoch i9100_lpm_prior_epoch;
+static unsigned i9100_lpm_epoch_marked,i9100_lpm_epoch_match,i9100_lpm_epoch_result;
+static uint64_t i9100_lpm_epoch_rtc;
 static unsigned power_init_calls,failed_stop;
 static unsigned stop_sequence,last_boot_stage,fault_reports,boot_admission,slow_sample;
 static uint64_t first_key_seen,last_key_seen,unblank_ticks,last_blank_ticks;
-static unsigned i9100_boot_source,scenario,draws,late_draws,blanked,last_unblank,remote_issued,stops,reports,usb_calls;
+static struct I9100BootSource i9100_boot_source;
+static unsigned scenario,draws,late_draws,blanked,last_unblank,remote_issued,stops,reports,usb_calls;
 static uint64_t ticks,last_draw_ticks,reset_ticks,action_taken_ticks;static uint32_t fb[480*800];static jmp_buf escaped;
 static unsigned pmu2,pmu3,wait_ticks,panel_mode=0x9c,panel_scan=0x1003,panel_commands;
 static unsigned i9100_lpm_timer_rearms,i9100_lpm_timer_faults;
 static uint8_t device_tree[4096] __attribute__((aligned(4)));
 static unsigned device_tree_bytes;
 void i9100_boot_charge_failure(unsigned);
-static int lpm_boot_requested(const unsigned*p){return *p==1;}
+static int lpm_boot_requested(const struct I9100BootSource*p){return p->flags==1;}
 static int lpm_timer_init(void){return 1;}
 static int lpm_mct_write(unsigned offset,uint32_t value,uint32_t mask){assert(offset==0x240 && value==256 && mask==65536);return 1;}
 static uint64_t lpm_ticks(void){return ticks;}
@@ -119,6 +124,9 @@ static void lpm_hw_write(void*c,unsigned r,unsigned o,uint32_t v){(void)c;(void)
 static void lpm_delay(void*c,unsigned n){(void)c;(void)n;}
 static void lpm_enter(void*c){(void)c;}static void lpm_leave(void*c){(void)c;}
 static uint64_t lpm_now(void*c){(void)c;return ticks*1000/24;}
+static void lpm_capture_charge_epoch(void){}
+static void lpm_restore_charge_epoch(void){}
+static void lpm_charge_epoch_report(void){}
 int i9100_power_init(struct i9100_power_state*s,const struct i9100_power_io*io,unsigned r){power_init_calls++;assert(r==14);memset(s,0,sizeof(*s));s->io=*io;s->revision=14;s->use_sub=1;s->ready=s->enabled=s->valid=s->present=s->connected=s->charging=1;s->millivolts=scenario==4?3400:4000;s->percent=50;s->temperature_deci_c=250;s->charge_start=12345;return 0;}
 int i9100_power_poll(struct i9100_power_state*s){assert(s->io.cookie==&i9100_lpm_hw);
  if(scenario>=11)ticks+=2400U; /* Each real bus sample advances the MCT. */
@@ -239,7 +247,7 @@ int main(int argc,char **argv){
   if(scenario>=6 && scenario<=9)continue;
 #endif
   panel_mode=0x9c;panel_scan=0x1003;panel_commands=0;
-  ticks=action_taken_ticks=draws=late_draws=blanked=last_unblank=remote_issued=stops=reports=usb_calls=pmu2=pmu3=wait_ticks=0;i9100_boot_source=1;i9100_charge_renderer_reset();
+  ticks=action_taken_ticks=draws=late_draws=blanked=last_unblank=remote_issued=stops=reports=usb_calls=pmu2=pmu3=wait_ticks=0;i9100_boot_source.flags=1;i9100_charge_renderer_reset();
   i9100_lpm_boot_active=i9100_lpm_boot_owned=i9100_lpm_resume_charge=i9100_lpm_boot_in_service=i9100_lpm_boot_polls=0;
   i9100_lpm_boot_fault=i9100_lpm_fault_phase=0;
   i9100_lpm_boot_next=0;

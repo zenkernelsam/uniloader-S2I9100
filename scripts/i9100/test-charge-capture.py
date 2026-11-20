@@ -31,6 +31,8 @@ class Symbols:
     def __getitem__(self,name):return self.values[name]
 class Kernel:
     def __init__(self,setup_version):self.calls=[];self.setup_version=setup_version;self.header_reads=0
+    def u32(self,address):
+        assert address==0x4000;self.calls.append((address,4));return 1
     def read(self,address,size):
         self.calls.append((address,size))
         if address==0x1000:
@@ -56,6 +58,19 @@ for setup_version in (1,2):
     assert result['charger_deadline_adoption']['consistent'] and result['charger_deadline_adoption']['state']==1
     assert result['charger_deadline_adoption']['elapsed_ns']==2000000000 and (target/'charge-adopt.bin').is_file()
     if setup_version==2:assert result['setup_development_finish']['code_bytes']==132
+words=[2,1,14,1,0,0,0,0,3000000000,0,0,1000000000,0,0,0,1]
+decoded=m.decode_charge_adopt(struct.pack('<16I',*words))
+assert decoded['consistent'] and decoded['elapsed_base_ns']==1000000000 and decoded['elapsed_ns']==3999999999
+class SymbolsV2(Symbols):pass
+class KernelV2(Kernel):
+    def u32(self,address):assert address==0x4000;return 2
+    def read(self,address,size):
+        if address==0x4000 and size==64:self.calls.append((address,size));return struct.pack('<16I',*words)
+        return super().read(address,size)
+target=out/'adoption-v2';target.mkdir();kernel=KernelV2(1)
+actual=m.capture(kernel,SymbolsV2(),target)
+assert actual['charger_deadline_adoption']['elapsed_base_ns']==1000000000
+assert kernel.calls[-1]==(0x1000,16)
 (out/'result.json').write_text(json.dumps(dict(result='PASS',cases=2,fixture=str(fixture),
     evidence='Real charger snapshot, separate optional addresses, v1/v2 decoding, inherited deadline publication and later producer advancement'),indent=2)+'\n')
 print('PASS real charger fixture; v1/v2 setup address isolation; final charger header and producer advancement')

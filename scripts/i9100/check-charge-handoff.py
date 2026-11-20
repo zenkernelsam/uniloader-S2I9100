@@ -111,6 +111,13 @@ for field,value in ((0,0),(19,1),(24,1),(28,10),(29,9)):
     except ValueError:pass
     else:raise AssertionError('Invalid handoff accepted '+str(field))
 reference=fixtures['valid'];offset=m.tree_properties(reference)['/chosen']['offsets'][m.PROPERTY]
+epoch_raw=bytearray(128);struct.pack_into('<4I',epoch_raw,0,0x45433949,2,128,3)
+struct.pack_into('<13I',epoch_raw,16,14,1,1,1,1,0,0,0,0,0,1,1,50)
+struct.pack_into('<4I',epoch_raw,68,4000,250,0,0)
+struct.pack_into('<10I',epoch_raw,84,1000000000,0,4000000000,0,1000000000,0,900000000,0,1,7)
+struct.pack_into('<I',epoch_raw,124,m.checksum(epoch_raw))
+epoch_wrapper=struct.pack('<8I',0x57453949,1,160,1,1,1,900000020,0)+epoch_raw
+assert m.decode_epoch_return(epoch_wrapper)['valid']
 class Symbols:
     tag='0123456789abcdef';values={'_DTRootNode':0x80002000}
     path=out/'package/mach_kernel'
@@ -131,6 +138,11 @@ for name,raw,changed in (('live-valid',record,False),('live-partial',bytes(bad),
     result=m.capture(kernel,Symbols(),target)
     assert result['valid']==(name=='live-valid')
     assert len(kernel.calls)==3 and (target/'charge-handoff-tree.bin').read_bytes()==tree
+target=out/'live-shutdown-epoch';target.mkdir();tree=bytearray(reference);tree[offset:offset+128]=record
+epoch_offset=m.tree_properties(reference)['/chosen']['offsets']['i9100-charge-epoch']
+tree[epoch_offset:epoch_offset+160]=epoch_wrapper
+result=m.capture(Kernel(bytes(tree)),Symbols(),target)
+assert result['valid'] and result['shutdown_charge_epoch']['valid'] and (target/'charge-epoch-return.bin').read_bytes()==epoch_wrapper
 changed=bytearray(reference);changed[40]^=1
 (Symbols.path.parent/'dtb').write_bytes(changed)
 target=out/'changed-local-tree';target.mkdir();kernel=Kernel(reference)

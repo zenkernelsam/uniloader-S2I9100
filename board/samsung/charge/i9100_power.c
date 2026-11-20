@@ -41,7 +41,7 @@ int i9100_power_init(struct i9100_power_state *s,const struct i9100_power_io *io
  s->ready=s->enabled=s->valid=s->connected=s->present=s->charging=0;
  s->millivolts=s->percent=s->adc=s->full=s->timeout=s->thermal_block=s->errors=0;
  s->recharging=s->recharge_low_count=s->cable_type=0;s->charge_refresh=0;
- s->temperature_deci_c=0;s->charge_start=0;s->reason=I9100_POWER_REVISION;
+ s->temperature_deci_c=0;s->charge_start=0;s->charge_elapsed_base=s->refresh_elapsed_base=0;s->reason=I9100_POWER_REVISION;
  if(revision>15)return s->reason;
  uint8_t id,again;
  if(!io->pmic_read(io->cookie,0,&id) || id==0xff ||
@@ -95,6 +95,7 @@ int i9100_power_poll(struct i9100_power_state *s)
  if(!connected){
   s->full=s->timeout=s->thermal_block=0;s->recharging=s->recharge_low_count=0;
   s->charge_start=s->charge_refresh=0;s->reason=I9100_POWER_OFFLINE;
+  s->charge_elapsed_base=s->refresh_elapsed_base=0;
   if(!i9100_power_stop(s))goto failure;return 0;
  }
  if(!s->present){s->reason=I9100_POWER_NO_BATTERY;goto stop;}
@@ -109,6 +110,7 @@ int i9100_power_poll(struct i9100_power_state *s)
   if(++s->recharge_low_count>=2){
    s->full=0;s->recharging=1;s->recharge_low_count=0;
    s->charge_start=s->charge_refresh=0;resume_full=1;
+   s->charge_elapsed_base=s->refresh_elapsed_base=0;
   }
  }else s->recharge_low_count=0;
  /* A stale main-charger topoff bit must not immediately cancel the
@@ -116,16 +118,17 @@ int i9100_power_poll(struct i9100_power_state *s)
  if(!resume_full && (s->millivolts>=4200 || (s->percent>=100 && s->millivolts>=4150) ||
   (!s->use_sub && (status&1) && s->millivolts>=4100))){
   s->full=1;s->recharging=0;s->charge_start=s->charge_refresh=0;
+  s->charge_elapsed_base=s->refresh_elapsed_base=0;
  }
  if(s->full){s->reason=I9100_POWER_FULL;goto stop;}
  uint64_t now=s->io.now_ns(s->io.cookie);
  if(!now)goto failure;
  uint64_t limit=(s->recharging?5400ULL:18000ULL)*1000000000ULL;
- if(s->charge_start && now-s->charge_start>=limit)s->timeout=1;
+ if(i9100_power_elapsed(s->charge_start,s->charge_elapsed_base,now)>=limit)s->timeout=1;
  if(s->timeout){s->reason=I9100_POWER_TIMEOUT;goto stop;}
  /* Vendor refreshes the charger every ten minutes. The software cycle
   * start remains unchanged: refresh never postpones the safety deadline. */
- if(s->enabled && s->charge_refresh && now-s->charge_refresh>=600ULL*1000000000ULL){
+ if(s->enabled && s->charge_refresh && i9100_power_elapsed(s->charge_refresh,s->refresh_elapsed_base,now)>=600ULL*1000000000ULL){
   if(!i9100_power_stop(s))goto failure;
  }
  if(!s->enabled){
@@ -144,7 +147,7 @@ int i9100_power_poll(struct i9100_power_state *s)
    }
    if(!update(s,0x53,0x0f,cur) || !update(s,0x51,0xc0,0xc0))goto failure;
   }
-  s->enabled=1;if(!s->charge_start)s->charge_start=now;s->charge_refresh=now;
+  s->enabled=1;if(!s->charge_start)s->charge_start=now;s->charge_refresh=now;s->refresh_elapsed_base=0;
  }
  /* Status comes from the chip/pin, not just from the enable command. */
  if(s->use_sub){if(!s->io.sub_read(s->io.cookie,&connected,&charging))goto failure;s->charging=connected && charging;}

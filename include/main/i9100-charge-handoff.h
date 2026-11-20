@@ -28,6 +28,7 @@ static inline uint32_t i9100_charge_dt_u32(const uint8_t *p)
 
 struct i9100_charge_dt_cursor {
  const uint8_t *data;unsigned size,at,nodes,chosen,matches,target,error;
+ const char *property;unsigned property_bytes;
 };
 /* Walk the actual Apple flat-tree structure, never scan arbitrary value bytes
  * for a property-looking string. Only one direct /chosen slot is eligible. */
@@ -56,9 +57,8 @@ static inline void i9100_charge_dt_node(struct i9100_charge_dt_cursor *c,unsigne
    is_chosen=length==7U && !memcmp(c->data+value,"chosen\0",7);
    is_root=length==12U && !memcmp(c->data+value,"device-tree\0",12);
   }
-  if(end==sizeof(I9100_CHARGE_HANDOFF_PROPERTY)-1U &&
-     !memcmp(property,I9100_CHARGE_HANDOFF_PROPERTY,end)){
-   if(length!=I9100_CHARGE_HANDOFF_BYTES){c->error=1;return;}
+  if(end==strlen(c->property) && !memcmp(property,c->property,end)){
+   if(length!=c->property_bytes){c->error=1;return;}
    slots++;slot=value;c->matches++;
   }
   c->at=value+((length+3U)&~3U);
@@ -68,12 +68,15 @@ static inline void i9100_charge_dt_node(struct i9100_charge_dt_cursor *c,unsigne
  else if(slots){c->error=1;return;}
  for(unsigned n=0;n<children && !c->error;n++)i9100_charge_dt_node(c,depth+1U);
 }
-static inline uint8_t *i9100_charge_handoff_slot(void *tree,unsigned size)
+static inline uint8_t *i9100_charge_property_slot(void *tree,unsigned size,const char *property,unsigned bytes)
 {
  if(!tree || ((uintptr_t)tree&3U) || size<172U || size>32768U || (size&3U))return 0;
- struct i9100_charge_dt_cursor cursor={(const uint8_t*)tree,size,0,0,0,0,0,0};
+ if(!property || !strlen(property) || strlen(property)>31U || !bytes || (bytes&3U))return 0;
+ struct i9100_charge_dt_cursor cursor={(const uint8_t*)tree,size,0,0,0,0,0,0,property,bytes};
  i9100_charge_dt_node(&cursor,0);
  if(cursor.error || cursor.at!=size || cursor.chosen!=1U || cursor.matches!=1U || !cursor.target)return 0;
  return (uint8_t*)tree+cursor.target;
 }
+static inline uint8_t *i9100_charge_handoff_slot(void *tree,unsigned size)
+{return i9100_charge_property_slot(tree,size,I9100_CHARGE_HANDOFF_PROPERTY,I9100_CHARGE_HANDOFF_BYTES);}
 #endif

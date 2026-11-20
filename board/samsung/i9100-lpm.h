@@ -8,6 +8,7 @@
  * userspace launch. MCT/GIC addresses and handshake match the verified kernel. */
 #include "charge/i9100_power.c"
 #include "charge/i9100_power_bus.c"
+#include "charge/i9100_charge_epoch.h"
 #include "i9100-charge-screen.h"
 #include "i9100-charge-report.h"
 #include "i9100-charge-start.h"
@@ -28,6 +29,12 @@ static unsigned i9100_lpm_boot_polls,i9100_lpm_boot_phase;
 static unsigned i9100_lpm_boot_fault,i9100_lpm_fault_phase;
 static uint64_t i9100_lpm_boot_next;
 static uint64_t i9100_lpm_boot_sample_ticks;
+static struct I9100ChargeEpoch i9100_lpm_prior_epoch;
+static unsigned i9100_lpm_epoch_marked,i9100_lpm_epoch_match,i9100_lpm_epoch_result;
+static uint64_t i9100_lpm_epoch_rtc;
+#ifndef I9100_CHARGE_EPOCH_SLOT
+#define I9100_CHARGE_EPOCH_SLOT ((volatile uint32_t *)(0x7ffe0000U+I9100_CHARGE_EPOCH_OFFSET))
+#endif
 static int lpm_boot_requested(const struct I9100BootSource *source)
 {return source && source->magic==I9100_BOOT_SOURCE_MAGIC && source->version==1 &&
  source->flags==3 && source->sboot_mode==1 && source->inform2==1;}
@@ -58,6 +65,42 @@ static void lpm_delay(void *cookie,unsigned us)
 }
 static uint64_t lpm_now(void *cookie)
 {(void)cookie;return (lpm_ticks()/24U)*1000U;}
+static void lpm_capture_charge_epoch(void)
+{
+ /* Consume once before timer/USB changes and before i9100_init consumes the
+  * same PMU diagnostic pair. No arbitrary DRAM address or firmware call. */
+ unsigned marker=lpm_read(0x10020000U,0x818),check=lpm_read(0x10020000U,0x81c);
+ volatile uint32_t *slot=I9100_CHARGE_EPOCH_SLOT;
+ i9100_lpm_epoch_marked=marker==I9100_CHARGE_EPOCH_MARKER || slot[0]==I9100_CHARGE_EPOCH_MAGIC;
+ if(i9100_lpm_epoch_marked){
+  i9100_lpm_epoch_match=marker==I9100_CHARGE_EPOCH_MARKER && i9100_charge_epoch_read(slot,&i9100_lpm_prior_epoch) &&
+   i9100_lpm_prior_epoch.checksum==check;
+  slot[0]=0;LPM_BARRIER();
+  if(marker==I9100_CHARGE_EPOCH_MARKER){lpm_write(0x10020000U,0x818,0);lpm_write(0x10020000U,0x81c,0);}
+ }
+}
+static void lpm_restore_charge_epoch(void)
+{
+ uint64_t rtc=0,began=lpm_now(0);unsigned rtc_valid=0;
+ if(i9100_lpm_epoch_marked)rtc_valid=i9100_power_rtc_seconds(&i9100_lpm_hw,&rtc);
+ uint64_t finished=lpm_now(0);rtc_valid=rtc_valid && finished>=began && finished-began<=500000000ULL;
+ i9100_lpm_epoch_rtc=rtc;
+ i9100_lpm_epoch_result=i9100_charge_epoch_restore(&i9100_lpm_battery,
+  i9100_lpm_epoch_match?&i9100_lpm_prior_epoch:0,i9100_lpm_epoch_marked,
+  finished,rtc_valid,rtc);
+}
+static void lpm_charge_epoch_report(void)
+{
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+ extern void usbcdc4210_charge_epoch_report(const unsigned[8]);
+ uint64_t elapsed=((uint64_t)i9100_lpm_prior_epoch.elapsed_high<<32)|i9100_lpm_prior_epoch.elapsed_low;
+ const unsigned fields[8]={i9100_lpm_epoch_result,i9100_lpm_epoch_marked,
+  i9100_lpm_epoch_match,i9100_lpm_prior_epoch.checksum,(unsigned)(elapsed/1000000000ULL),
+  (unsigned)(i9100_lpm_battery.charge_elapsed_base/1000000000ULL),
+  (unsigned)i9100_lpm_epoch_rtc,(unsigned)(i9100_lpm_epoch_rtc>>32)};
+ usbcdc4210_charge_epoch_report(fields);
+#endif
+}
 static int lpm_timer_init(void)
 {
  LPM_MASK_IRQ();
@@ -219,6 +262,7 @@ void i9100_standalone_charge_gate(void)
 #ifdef I9100_STANDALONE_CHARGE_BUILD
  unsigned resuming=i9100_lpm_resume_charge;
  i9100_lpm_resume_charge=0;
+ if(!resuming && (i9100_boot_source.flags&1U))lpm_capture_charge_epoch();
  if(!resuming && !lpm_boot_requested(&i9100_boot_source))return;
  if(!lpm_timer_init())lpm_download();
  /* Bootloader watchdog must not reset a supervised charger every few seconds. */
@@ -232,6 +276,7 @@ void i9100_standalone_charge_gate(void)
  io.muic_write=i9100_power_muic_write;io.now_ns=lpm_now;
  if(!resuming){
   if(i9100_power_init(&i9100_lpm_battery,&io,lpm_revision()))lpm_download();
+  lpm_restore_charge_epoch();
   i9100_lpm_boot_gate=(struct i9100_charge_start){0};i9100_lpm_boot_polls=0;
  }
  /* Enable and supervise the safe charger BEFORE lengthy USB setup. Resume
@@ -287,8 +332,8 @@ void i9100_standalone_charge_gate(void)
     report.millivolts=i9100_lpm_battery.millivolts;report.temperature_deci_c=i9100_lpm_battery.temperature_deci_c;
     report.charging=i9100_lpm_battery.charging;report.reason=i9100_lpm_battery.reason;
     report.full=i9100_lpm_battery.full;report.timeout=i9100_lpm_battery.timeout;report.recharging=i9100_lpm_battery.recharging;
-    if(i9100_lpm_battery.charge_start && measured/24U*1000U>=i9100_lpm_battery.charge_start)
-      report.elapsed_seconds=(measured/24U*1000U-i9100_lpm_battery.charge_start)/1000000000ULL;
+    report.elapsed_seconds=i9100_power_elapsed(i9100_lpm_battery.charge_start,
+      i9100_lpm_battery.charge_elapsed_base,measured/24U*1000U)/1000000000ULL;
     usbcdc4210_charge_timed_report(&report);
     usbcdc4210_charge_screen_report(drawn,(unsigned)screen.pixels,screen.stride,screen.bpp);
     unsigned fb[8]={lpm_read(0x11c00000U,0x20),lpm_read(0x11c00000U,0x28),
@@ -305,6 +350,7 @@ void i9100_standalone_charge_gate(void)
       i9100_lpm_battery.errors,(unsigned)i9100_lpm_battery.reason};
     usbcdc4210_charge_start_report(startup);
     usbcdc4210_charge_transport_report();
+    lpm_charge_epoch_report();
     if(i9100_lpm_boot_fault){
      unsigned fault[8]={i9100_lpm_boot_fault,i9100_lpm_fault_phase,i9100_lpm_boot_polls,
       i9100_lpm_battery.valid,i9100_lpm_battery.percent,i9100_lpm_battery.millivolts,
@@ -424,6 +470,13 @@ void i9100_boot_charge_finish(void *tree,unsigned bytes)
  if(!i9100_lpm_boot_active)return;
  uint8_t *slot=i9100_charge_handoff_slot(tree,bytes);
  if(!slot){i9100_boot_charge_failure(11);return;}
+ uint8_t *epoch_slot=i9100_charge_property_slot(tree,bytes,"i9100-charge-epoch",160);
+ if(!epoch_slot){i9100_boot_charge_failure(11);return;}
+ if(i9100_lpm_epoch_marked){
+  const uint32_t header[8]={0x57453949U,1,160,i9100_lpm_epoch_result,
+   i9100_lpm_epoch_marked,i9100_lpm_epoch_match,(uint32_t)i9100_lpm_epoch_rtc,(uint32_t)(i9100_lpm_epoch_rtc>>32)};
+  memcpy(epoch_slot,header,sizeof(header));memcpy(epoch_slot+32,&i9100_lpm_prior_epoch,128);
+ }
  struct I9100ChargeHandoff record={0};
  for(;;){
   /* Force one fresh supervised sample immediately before the actual jump,
@@ -440,8 +493,8 @@ void i9100_boot_charge_finish(void *tree,unsigned bytes)
    record.enabled_before=battery->enabled;record.charging_before=battery->charging;
    record.sampled_low=(uint32_t)i9100_lpm_boot_sample_ticks;record.sampled_high=(uint32_t)(i9100_lpm_boot_sample_ticks>>32);
    uint64_t now_ns=(i9100_lpm_boot_sample_ticks/24U)*1000U;
-   record.elapsed_seconds=battery->charge_start && now_ns>=battery->charge_start?
-    (uint32_t)((now_ns-battery->charge_start)/1000000000ULL):0;
+   record.elapsed_seconds=(uint32_t)(i9100_power_elapsed(battery->charge_start,
+    battery->charge_elapsed_base,now_ns)/1000000000ULL);
    record.qualified_samples=i9100_lpm_boot_gate.samples;
    record.recovery_seconds=(uint32_t)((i9100_lpm_boot_gate.last_ns-i9100_lpm_boot_gate.first_ns)/1000000000ULL);
    record.fault=i9100_lpm_boot_fault;

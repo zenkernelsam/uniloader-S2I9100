@@ -148,7 +148,7 @@ def capture(kernel,symbols,out):
     stable=kernel.u32(symbols['_DTRootNode'])==root
     actual=tree_properties(raw)
     if set(actual)!=set(expected):raise ValueError('Live device-tree paths differ from the reviewed package')
-    mutable={'i9100-prev-boot','i9100-boot-source',PROPERTY}
+    mutable={'i9100-prev-boot','i9100-boot-source',PROPERTY,'i9100-charge-epoch'}
     for path,node in actual.items():
         if set(node['values'])!=set(expected[path]['values']):raise ValueError('Live tree property list differs')
         for key,value in node['values'].items():
@@ -162,6 +162,46 @@ def capture(kernel,symbols,out):
         result=dict(published=any(record),valid=False,error=str(error),raw_sha256=hashlib.sha256(record).hexdigest())
     result.update(tree_root=hex(root),root_stable=stable,tree_sha256=hashlib.sha256(raw).hexdigest(),
                   package_reference_sha256=hashlib.sha256(reference).hexdigest(),kernel_tag=symbols.tag)
+    if 'i9100-charge-epoch' in actual['/chosen']['values']:
+        epoch=actual['/chosen']['values']['i9100-charge-epoch']
+        (out/'charge-epoch-return.bin').write_bytes(epoch)
+        result['shutdown_charge_epoch']=decode_epoch_return(epoch)
     if not stable:result.update(valid=False,error='Live tree root changed during the single observation')
     (out/'charge-handoff.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
+    return result
+
+EPOCH_FIELDS=('magic','version','bytes','flags','revision','sub_charger','valid','connected','present',
+    'full','timeout','thermal_block','recharging','recharge_low_count','enabled','charging','percent',
+    'millivolts','temperature_deci_c','reason','errors','sampled_low','sampled_high','elapsed_low','elapsed_high',
+    'refresh_low','refresh_high','rtc_low','rtc_high','route','sequence','checksum')
+
+def decode_epoch(raw,route=1):
+    if len(raw)!=128:raise ValueError('Shutdown charge epoch length differs')
+    words=struct.unpack('<32I',raw);r=dict(zip(EPOCH_FIELDS,words))
+    if (words[:4]!=(0x45433949,2,128,3) or checksum(raw)!=words[-1] or
+        not r['sequence'] or r['revision']>15 or r['sub_charger']!=int(r['revision']>=8) or
+        any(r[key]>1 for key in ('valid','connected','present','full','timeout','thermal_block','recharging','enabled','charging')) or
+        r['charging']>r['enabled'] or r['recharge_low_count']>2 or r['percent']>100 or r['route']!=route or
+        (r['full'] and r['recharging'])):
+        raise ValueError('Shutdown charge epoch schema/checksum/state differs')
+    for field in ('reason','temperature_deci_c'):
+        if r[field]&0x80000000:r[field]-=1<<32
+    r.update(elapsed_ns=(r['elapsed_high']<<32)|r['elapsed_low'],
+        refresh_ns=(r['refresh_high']<<32)|r['refresh_low'],rtc_seconds=(r['rtc_high']<<32)|r['rtc_low'],
+        sampled_ns=(r['sampled_high']<<32)|r['sampled_low'],raw_sha256=hashlib.sha256(raw).hexdigest())
+    return r
+
+def decode_epoch_return(raw):
+    if len(raw)!=160:raise ValueError('Returned shutdown charge epoch length differs')
+    if not any(raw):return dict(published=False,valid=False)
+    magic,version,size,state,marked,matched,rtc_low,rtc_high=struct.unpack_from('<8I',raw)
+    if (magic,version,size)!=(0x57453949,1,160) or state>4 or marked!=1 or matched>1:
+        raise ValueError('Returned shutdown charge epoch wrapper differs')
+    result=dict(published=True,valid=False,state=state,marked=marked,matched=matched,
+        rtc_seconds=(rtc_high<<32)|rtc_low,raw_sha256=hashlib.sha256(raw).hexdigest())
+    try:epoch=decode_epoch(raw[32:])
+    except ValueError as error:result['error']=str(error);return result
+    result['source']=epoch
+    result['valid']=matched==1 and state in (1,2,4) and 0<=result['rtc_seconds']-epoch['rtc_seconds']<=600
+    result['limit']='Retained normal-halt epoch and measured RTC gap; current cell state still requires new fuel/ADC/GPIO samples'
     return result

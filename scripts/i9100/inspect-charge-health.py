@@ -25,13 +25,15 @@ IDLE_FIELDS=('version','sequence','irq','waits','mct_low','mct_high','wait_low',
     'frequency','map_ready')
 
 def decode_charge_adopt(raw):
-    if len(raw)!=48:raise ValueError('Charge deadline adoption size differs')
-    words=struct.unpack('<12I',raw)
-    if words[0]!=1 or words[1]>4 or any(words[n]>1 for n in (5,6,7,10,11)):
+    if len(raw) not in (48,64):raise ValueError('Charge deadline adoption size differs')
+    words=struct.unpack('<'+str(len(raw)//4)+'I',raw)
+    version=words[0];publication=11 if version==1 else 15
+    if (version,len(raw)) not in ((1,48),(2,64)) or words[1]>4 or any(words[n]>1 for n in (5,6,7,10,publication)):
         raise ValueError('Unknown charge deadline adoption schema')
-    value=dict(zip(('version','state','revision','start_low','start_high','full',
-        'timeout','recharging','time_low','time_high','enabled_after_init','published'),words))
-    value['consistent']=bool(words[11])
+    fields=('version','state','revision','start_low','start_high','full','timeout','recharging',
+        'time_low','time_high','enabled_after_init')
+    fields+=('published',) if version==1 else ('elapsed_base_low','elapsed_base_high','reserved0','reserved1','published')
+    value=dict(zip(fields,words));value['consistent']=bool(words[publication])
     value['limit']='Initial Power-owner deadline adoption; current charging and energy balance still require fresh measurements'
     if not value['consistent']:return value
     start=(words[4]<<32)|words[3];now=(words[9]<<32)|words[8]
@@ -39,8 +41,9 @@ def decode_charge_adopt(raw):
         raise ValueError('Malformed initial charge deadline state')
     if words[1] in (3,4) and not words[6]:raise ValueError('Rejected/expired handoff did not retain timeout stop')
     if words[1]==1 and not words[5] and not start:raise ValueError('Inherited charging deadline is absent')
-    value.update(charge_start_ns=start,observed_ns=now,deadline_seconds=5400 if words[7] else 18000)
-    if start:value['elapsed_ns']=now-start
+    elapsed_base=0 if version==1 else (words[12]<<32)|words[11]
+    value.update(charge_start_ns=start,observed_ns=now,elapsed_base_ns=elapsed_base,deadline_seconds=5400 if words[7] else 18000)
+    if start:value['elapsed_ns']=elapsed_base+now-start
     return value
 
 def decode_idle_paired(raw,header_after=None):
@@ -232,8 +235,24 @@ def capture(kernel,symbols,out):
     if observed is not None:
         result['charger_handoff']=observed
         result['charger_takeover_observation']=handoff.first_kernel_sample(observed,result['samples'])
+    if '_i9100_charge_epoch_live' in symbols.values:
+        epoch_address=symbols['_i9100_charge_epoch_live']
+        epoch=kernel.read(epoch_address,128);epoch_after=kernel.read(epoch_address,128)
+        (out/'charge-epoch-live.bin').write_bytes(epoch)
+        (out/'charge-epoch-live-after.bin').write_bytes(epoch_after)
+        try:
+            source=handoff.decode_epoch(epoch,0)
+            latest=handoff.decode_epoch(epoch_after,0)
+        except ValueError as error:
+            result['shutdown_epoch_source']=dict(valid=False,error=str(error))
+        else:
+            result['shutdown_epoch_source']=dict(valid=True,source=source,after=latest,
+                stable=epoch==epoch_after,limit='Two retained complete publications, no retry; only sealed next-boot evidence proves shutdown inheritance')
     if '_i9100_charge_adopt_diag' in symbols.values:
-        adopted=kernel.read(symbols['_i9100_charge_adopt_diag'],48)
+        adopt_address=symbols['_i9100_charge_adopt_diag']
+        adopt_version=kernel.u32(adopt_address)
+        if adopt_version not in (1,2):raise ValueError('Unknown charge adoption producer')
+        adopted=kernel.read(adopt_address,48 if adopt_version==1 else 64)
         (out/'charge-adopt.bin').write_bytes(adopted)
         result['charger_deadline_adoption']=decode_charge_adopt(adopted)
     if '_i9100_setup_dev_finish_diag' in symbols.values:

@@ -28,7 +28,8 @@ def device_tree():
                    ('display-rotation', struct.pack('<I', 0)),
                    ('i9100-prev-boot', bytes(64)),
                    ('i9100-boot-source', bytes(32)),
-                   ('i9100-charge-handoff', bytes(128))])
+                   ('i9100-charge-handoff', bytes(128)),
+                   ('i9100-charge-epoch', bytes(160))])
     # NOTE: software-behavior intentionally absent — an all-zero blob made
     # SpringBoard SIGABRT after reading it on-device.
     # backboardd reads region-info on the machine node for MobileGestalt.

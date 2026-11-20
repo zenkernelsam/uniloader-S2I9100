@@ -15,6 +15,15 @@ profile=json.loads((m.o.OUT/'inventory-20261106-211114-download-profile.json').r
 device=dict(instance=m.o.CDC,status='OK',port='COM12',service='usbser',location=profile['location'])
 
 def write_events(path,events):path.write_text(''.join(json.dumps(row)+'\n' for row in events))
+def epoch_fixture():
+    words=[0]*32;words[:4]=[0x45433949,2,128,3]
+    words[4:17]=[14,1,1,1,1,0,0,0,0,0,1,1,50]
+    words[17:21]=[4000,250,0,0]
+    elapsed=400000000000;words[21:27]=[1000000000,0,elapsed&0xffffffff,elapsed>>32,1000000000,0]
+    words[27:31]=[900000000,0,1,7]
+    raw=struct.pack('<32I',*words);words[31]=m.h.checksum(raw)
+    return struct.pack('<32I',*words)
+
 def owner(path,shutdown=False,handoff=None):
     path.mkdir();(path/'owner.json').write_text(json.dumps(dict(pid=123,tag=tag,process_created_100ns=456))+'\n')
     events=[dict(phase='READY',pid=123,tag=tag)]
@@ -28,16 +37,24 @@ def owner(path,shutdown=False,handoff=None):
         words[4:14]=[14,1,15,1,1,1,50,4000,250,0]
         words[17:21]=[1,1,0,0];words[21:27]=[660000000,0,660000100,0,660000200,0]
         words[27:31]=[14,11,13,0]
+        if handoff.startswith('epoch-'):words[27]=440
         raw=struct.pack('<32I',*words);words[31]=m.h.checksum(raw);raw=struct.pack('<32I',*words)
         decoded=m.h.decode(raw)
         observed=dict(decoded,root_stable=True,kernel_tag=tag)
         charge=dict(charger_handoff=observed)
-        if handoff.startswith('deadline-') and handoff!='deadline-missing':
-            start=max(1,decoded['sampled_ticks']*1000//24-(decoded['elapsed_seconds']+1)*1000000000)
+        if handoff.startswith(('deadline-','epoch-')) and handoff!='deadline-missing':
+            sampled_ns=decoded['sampled_ticks']*1000//24
+            elapsed=(decoded['elapsed_seconds']+1)*1000000000
+            start=max(1,sampled_ns-elapsed);base=0 if elapsed<sampled_ns else elapsed-sampled_ns+1
             charge['charger_deadline_adoption']=dict(consistent=True,state=1,revision=14,enabled_after_init=0,
-                full=0,recharging=0,timeout=0,charge_start_ns=start,deadline_seconds=18000)
+                full=0,recharging=0,timeout=0,charge_start_ns=start,elapsed_base_ns=base,deadline_seconds=18000)
             if handoff=='deadline-rejected':charge['charger_deadline_adoption'].update(state=3,timeout=1)
             if handoff=='deadline-extended':charge['charger_deadline_adoption']['charge_start_ns']+=1000000000
+        if handoff.startswith('epoch-'):
+            wrapper=struct.pack('<8I',0x57453949,1,160,1,1,1,900000020,0)+epoch_fixture()
+            charge['charger_handoff']['shutdown_charge_epoch']=m.h.decode_epoch_return(wrapper)
+            if handoff=='epoch-missing':charge['charger_handoff'].pop('shutdown_charge_epoch')
+            if handoff=='epoch-rejected':charge['charger_handoff']['shutdown_charge_epoch']['state']=3
         if handoff=='handoff-corrupt':
             raw=bytes((raw[0]^1,))+raw[1:]
         if handoff!='handoff-missing':(task/'charge-handoff.bin').write_bytes(raw)
@@ -65,6 +82,12 @@ def charger(path,scenario):
             if scenario.startswith('recovery-') and scenario!='recovery-missing':
                 lines.append('I9PR1 00000000 00000000 00000000 00000003\n')
     text=''.join(lines)
+    if scenario.startswith('epoch-'):
+        epoch=m.h.decode_epoch(epoch_fixture())
+        status=f'I9CE1 00000001 00000001 00000001 {epoch["checksum"]:08x} 00000190 000001a6 {900000020:08x} 00000000\n'
+        text+=status
+        if scenario=='epoch-missing-log':text=text.replace(status,'')
+        if scenario=='epoch-extended':text=text.replace('000001a6','00000100')
     if scenario=='no-draw':text=text.replace('I9UI1 00000001','I9UI1 00000000')
     if scenario=='no-blank':text=text.replace('01000000 00000001','00000000 00000000')
     if scenario=='wrong-tag':text=text.replace(tag,'aaaaaaaaaaaaaaaa')
@@ -111,7 +134,8 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
                  'art-success','art-missing','art-redrew-asleep','art-start-not-ready','art-transport-success','art-transport-missing',
                  'bootstrap-fault','bootstrap-fault-partial','art-bootstrap-fault',
                  'handoff-success','handoff-missing','handoff-corrupt',
-                 'deadline-success','deadline-missing','deadline-rejected','deadline-extended'):
+                 'deadline-success','deadline-missing','deadline-rejected','deadline-extended',
+                 'epoch-success','epoch-missing','epoch-rejected','epoch-extended','epoch-missing-log'):
     directory=out/scenario;directory.mkdir();calls=[];records=[]
     class Host:
         def inventory(self):return [device]
@@ -124,7 +148,7 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
             if '--poweroff-on-ready' in argv:
                 if scenario=='shutdown-failure':raise RuntimeError('modeled shutdown child STOP')
                 owner(target,True)
-            else:owner(target,handoff=scenario if scenario.startswith(('handoff-','deadline-')) else None)
+            else:owner(target,handoff=scenario if scenario.startswith(('handoff-','deadline-','epoch-')) else None)
         elif tool=='capture-charge-loader.py':charger(target,scenario)
         elif tool=='charge-command.py':
             assert argv[argv.index('--action')+1]=='boot'
@@ -135,21 +159,23 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
         standalone_charge_transport='transport-' in scenario) if scenario.startswith('art-') else manifest
     if scenario.startswith('handoff-'):actual_manifest=dict(manifest,standalone_charge_handoff=True)
     if scenario.startswith('deadline-'):actual_manifest=dict(manifest,standalone_charge_handoff=True,standalone_charge_deadline_adoption=True)
-    expected_success=scenario in ('success','art-success','art-transport-success','handoff-success','deadline-success')
+    if scenario.startswith('epoch-'):actual_manifest=dict(manifest,standalone_charge_handoff=True,standalone_charge_deadline_adoption=True,standalone_charge_shutdown_epoch=True)
+    expected_success=scenario in ('success','art-success','art-transport-success','handoff-success','deadline-success','epoch-success')
     try:m.run_roundtrip(package,actual_manifest,directory,lambda phase,**row:records.append(dict(phase=phase,**row)),child,Host())
     except (ValueError,RuntimeError):assert not expected_success
     else:
         assert expected_success and records[-1]['phase']=='DONE' and records[-1]['writes_to_flash']==0
         assert records[-1]['native_artwork_verified']==scenario.startswith('art-')
-        assert records[-1]['charger_handoff_verified']==scenario.startswith(('handoff-','deadline-'))
-        assert records[-1]['charger_deadline_verified']==scenario.startswith('deadline-')
+        assert records[-1]['charger_handoff_verified']==scenario.startswith(('handoff-','deadline-','epoch-'))
+        assert records[-1]['charger_deadline_verified']==scenario.startswith(('deadline-','epoch-'))
+        assert records[-1]['shutdown_charge_epoch_verified']==scenario.startswith('epoch-')
     assert all('odin-loop.py' not in call and 'flash' not in call for call in calls)
     if scenario in ('no-draw','no-blank','wrong-tag','gap','wrong-format','wrong-end'):assert len(calls)==2
     if scenario=='shutdown-failure':assert len(calls)==1
     if scenario=='boot-timeout':assert len(calls)==3
     if scenario=='success':assert len(calls)==4
     if scenario.startswith('bootstrap-fault'):assert len(calls)==2
-    if scenario.startswith(('handoff-','deadline-')):assert len(calls)==4
+    if scenario.startswith(('handoff-','deadline-','epoch-')):assert len(calls)==4
     if scenario.startswith('art-'):
         capture=calls[1];assert capture[capture.index('--seconds')+1]=='180'
         assert len(calls)==(4 if expected_success else 2)

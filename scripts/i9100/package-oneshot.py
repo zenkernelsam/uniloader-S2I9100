@@ -410,6 +410,7 @@ def main():
         'standalone_charge_boot_fault_hold': args.standalone_charge and b'I9BF1 ' in data,
         'standalone_charge_handoff': args.standalone_charge and b'i9100-charge-handoff\0' in dt_blob.read_bytes(),
         'standalone_charge_deadline_adoption': args.standalone_charge and b'_i9100_charge_adopt_diag\0' in raw_data,
+        'standalone_charge_shutdown_epoch': args.standalone_charge and b'I9CE1 ' in data and b'_i9100_charge_epoch_live\0' in raw_data,
         'standalone_charge_handoff_tree': {'bytes':dt_blob.stat().st_size,'sha256':sha(dt_blob)} if args.standalone_charge else None,
         'standalone_charge_control': args.standalone_charge and b'I9CHC2 READY ' in data,
         'standalone_charge_control_version': 2 if args.standalone_charge and b'I9CHC2 READY ' in data else None,
