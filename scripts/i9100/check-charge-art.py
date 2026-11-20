@@ -98,11 +98,15 @@ int main(int argc,char**argv){
   struct i9100_charge_screen reference={oracle,capacity,s.stride,bpp};
   for(unsigned level=0;level<=100;level++){
    assert(i9100_charge_draw(&s,1,level,1,1,0,level==100,0));
+   unsigned saved_key=i9100_charge_previous_key;
+   struct i9100_charge_render_stats saved_stats=i9100_charge_render;
    memcpy(snapshot,s.pixels,capacity);
    i9100_charge_renderer_reset();assert(i9100_charge_draw(&reference,1,level,1,1,0,level==100,0));
    assert(!memcmp(snapshot,reference.pixels,capacity));
-   /* Restore ownership without corrupting the cumulative target pixels. */
-   i9100_charge_renderer_reset();assert(i9100_charge_draw(&s,1,level,1,1,0,level==100,0));
+   /* Both paths composed the same state; restore target ownership/counters
+    * so the next level tests a REAL dirty update instead of a reset fill. */
+   i9100_charge_previous_buffer=s.pixels;i9100_charge_previous_bpp=s.bpp;
+   i9100_charge_previous_key=saved_key;i9100_charge_render=saved_stats;
   }
   free(oracle);
   assert(!i9100_charge_draw(&s,1,101,1,1,0,0,0));
