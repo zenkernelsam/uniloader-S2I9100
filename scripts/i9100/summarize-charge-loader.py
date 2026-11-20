@@ -24,6 +24,19 @@ TIMED_STATUS = re.compile(
     rb'reason=(?P<reason>-?\d+) full=(?P<full>[01]) timeout=(?P<timeout>[01]) '
     rb'recharging=(?P<recharging>[01]) elapsed=(?P<charge_elapsed_seconds>\d+)\r*$',re.MULTILINE)
 
+def decode_liveness(raw):
+    """Decode complete first-packet records; receipt time is not sample time."""
+    pattern=rb'^I9LV1 ([0-9a-f]{8}) ([0-9a-f]{8}) ([0-9a-f]{8}) ([0-9a-f]{8}) ([0-9a-f]{8}) ([0-9a-f]{8})\r*\n'
+    result=[]
+    for match in re.finditer(pattern,raw,re.MULTILINE):
+        values=[int(field,16) for field in match.groups()]
+        if values[0]>3 or values[4]>4:
+            raise ValueError('Unknown wake probe or epoch result in first-packet record')
+        if values[5]>=1<<31:values[5]-=1<<32
+        result.append(dict(zip(('wake_probe','completed_wfi','irq89_acks','policy_polls','epoch_result','reason'),values),
+                           end_offset=match.end(),measurement_time_available=False))
+    return result
+
 def decode_status(raw,receipts):
     matches=sorted([(match,1) for match in STATUS.finditer(raw)]+
                    [(match,2) for match in TIMED_STATUS.finditer(raw)],key=lambda item:item[0].start())
@@ -140,6 +153,7 @@ def summarize(path, allow_partial=False):
         'observed_soc_delta': valid[-1]['soc'] - valid[0]['soc'] if valid else None,
         'observed_millivolts_delta': valid[-1]['millivolts'] - valid[0]['millivolts'] if valid else None,
         'ranges': ranges, 'samples': samples,
+        'charger_liveness': decode_liveness(raw),
         'charge_sense': _sense.grouped(raw,[row for row in samples if row['version']==2]),
         'charge_policy': _sense.grouped_policy(raw,[row for row in samples if row['version']==2]),
         'charge_download_stop': _sense.grouped_download(raw,[row for row in samples if row['version']==2]),

@@ -80,6 +80,7 @@ static unsigned scenario,draws,late_draws,blanked,last_unblank,remote_issued,sto
 static uint64_t ticks,last_draw_ticks,reset_ticks,action_taken_ticks;static uint32_t fb[480*800];static jmp_buf escaped;
 static unsigned pmu2,pmu3,wait_ticks,panel_mode=0x9c,panel_scan=0x1003,panel_commands;
 static unsigned i9100_lpm_timer_rearms,i9100_lpm_timer_faults;
+static unsigned i9100_lpm_timer_probe=1,i9100_lpm_timer_waits,i9100_lpm_timer_acks=1;
 static uint8_t device_tree[4096] __attribute__((aligned(4)));
 static unsigned device_tree_bytes;
 void i9100_boot_charge_failure(unsigned);
@@ -211,6 +212,9 @@ void usbcdc4210_charge_start_report(const unsigned p[8]){
  assert(p[4]==group_report.millivolts && p[5]==group_report.percent && p[7]==(unsigned)group_report.reason);
 }
 void usbcdc4210_charge_transport_report(void){}
+void usbcdc4210_charge_liveness_report(const unsigned fields[6]){
+ assert(fields[0]==1 && fields[3]>0 && fields[4]<=4);
+}
 void usbcdc4210_charge_fault_report(const unsigned p[8]){
  assert(i9100_lpm_boot_fault && p[0]==i9100_lpm_boot_fault && p[1]==i9100_lpm_fault_phase);
  assert(p[3]==i9100_lpm_battery.valid && p[7]==(unsigned)i9100_lpm_battery.reason);fault_reports++;

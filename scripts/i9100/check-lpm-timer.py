@@ -16,6 +16,7 @@ static uint32_t mct[1024],dist[1024],cpu[1024],enabled[8],fimd[1024];
 static uint64_t ticks;static unsigned stall,stuck,masked,waits,acks;
 static unsigned pending,active,drop_enable,drop_target,drop_priority,drop_config;
 static unsigned drop_dist,drop_cpu,drop_mask,drop_binary,drop_incr;
+static unsigned no_delivery;
 unsigned boot_reg_r2;
 static void timer_progress(void){
  uint64_t match=((uint64_t)mct[0x204/4]<<32)|mct[0x200/4];
@@ -30,7 +31,7 @@ static void timer_progress(void){
 }
 static int delivery(void){
  timer_progress();unsigned priority=(dist[(0x400+88)/4]>>8)&255U;
- return pending && !active && (dist[0]&1U) && (cpu[0]&1U) &&
+ return !no_delivery && pending && !active && (dist[0]&1U) && (cpu[0]&1U) &&
   (enabled[2]&(1U<<25)) && ((dist[(0x800+88)/4]>>8)&255U)==1 &&
   priority<(cpu[1]&255U) && (cpu[2]&7U)==0 && (cpu[5]&255U)==255U;
 }
@@ -42,7 +43,8 @@ static uint32_t model_read32(void*a){uintptr_t p=(uintptr_t)a;
   if(o>=0x100 && o<0x120)return enabled[(o-0x100)/4];
   if(o==0x208)return pending?1U<<25:0U;if(o==0x308)return active?1U<<25:0U;
   return dist[o/4];}
- if(p>=0x10480000 && p<0x10481000){if(p==0x1048000c){
+ if(p>=0x10480000 && p<0x10481000){if(p==0x10480018)return delivery()?89:1023;
+  if(p==0x1048000c){
   if(!delivery())return 1023;pending=0;active=1;cpu[5]=0x80;return 89;}
   return cpu[(p-0x10480000)/4];}
  if(p>=0x11c00000 && p<0x11c01000)return fimd[(p-0x11c00000)/4];
@@ -74,7 +76,7 @@ static void model_wait(void){
 #include "i9100-lpm.h"
 static void reset(void){memset(mct,0,sizeof(mct));memset(dist,0,sizeof(dist));memset(cpu,0,sizeof(cpu));
  memset(enabled,255,sizeof(enabled));dist[1]=4;cpu[5]=255;ticks=10;stall=stuck=masked=waits=acks=0;
- pending=active=drop_enable=drop_target=drop_priority=drop_config=drop_dist=drop_cpu=drop_mask=drop_binary=drop_incr=0;
+ pending=active=drop_enable=drop_target=drop_priority=drop_config=drop_dist=drop_cpu=drop_mask=drop_binary=drop_incr=no_delivery=0;
  i9100_lpm_timer_ready=i9100_lpm_timer_rearms=i9100_lpm_timer_faults=0;}
 int main(void){
  alarm(10);
@@ -94,7 +96,8 @@ int main(void){
  assert(mct[0x208/4]==240000&&mct[0x248/4]==1&&mct[0x240/4]==259);
  assert(((dist[(0x800+88)/4]>>8)&255)==1);
  assert(!(dist[0xc14/4]&(2U<<18))); /* The real MCT output is level high. */
- lpm_sleep_tick();assert(waits==1&&acks==1);
+ assert(!waits && acks==1 && i9100_lpm_timer_delivery && i9100_lpm_timer_probe==1);
+ lpm_sleep_tick();assert(waits==1&&acks==2);
  /* Real rendering/USB work can exceed 10ms. The old helper WFI waited
   * against an expired compare. Verify a future match before each wait. */
  ticks=2000000ULL;mct[0x200/4]=1000;mct[0x204/4]=0;mct[0x240/4]=256;
@@ -119,7 +122,17 @@ int main(void){
  reset();assert(lpm_timer_init());mct[0x208/4]=0;
  lpm_sleep_tick();assert(!waits && i9100_lpm_timer_faults==1);
  reset();assert(lpm_timer_init());
- for(unsigned n=0;n<100;n++)lpm_sleep_tick();assert(waits==100 && acks==100 && !active);
+ for(unsigned n=0;n<100;n++)lpm_sleep_tick();assert(waits==100 && acks==101 && !active);
+ /* Moving MCT/readback can all pass while this CPU never receives IRQ89.
+  * The production awake probe must refuse WFI; it must not manufacture an
+  * ACK or clear an unknown active-priority stack. */
+ reset();no_delivery=1;assert(lpm_timer_init());
+ assert(!i9100_lpm_timer_delivery && i9100_lpm_timer_probe==2 && !acks && !waits);
+ for(unsigned n=0;n<20;n++)lpm_sleep_tick();assert(!waits && !acks);
+ no_delivery=0;lpm_sleep_tick();assert(!waits && !acks); /* No self-qualification. */
+ reset();active=1;cpu[5]=0x80;assert(lpm_timer_init());
+ assert(!i9100_lpm_timer_delivery && active && cpu[5]==0x80 && !acks);
+ lpm_sleep_tick();assert(!waits && active && !acks);
  puts("PASS production MCT/GIC: IRQ89/10ms, wait/ACK, expired-draw compare rebased, failed rearm stays awake, handshake/counter/controller refusal");
 }
 '''

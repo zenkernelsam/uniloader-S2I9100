@@ -10,6 +10,7 @@ if os.environ.get('I9100_CPU_CAPPED')!='1':
 from pathlib import Path
 from datetime import datetime
 import subprocess
+import importlib.util,json,hashlib
 repo=Path(__file__).resolve().parents[2];out=repo/'out'/('charge-control-check-'+datetime.now().strftime('%Y%m%d-%H%M%S'));out.mkdir()
 code=r'''
 #include <stdint.h>
@@ -23,6 +24,7 @@ static uint32_t receive_fifo[32];static unsigned fifo_index;
 #define PMU_USBPHYCTRL ((uintptr_t)&pmu)
 #define CMU_GATE_IP_FSYS clockgate
 #define FIFO_RD(n) rxpop(n)
+#define USB_DIEPINT_ACK(n,bits) do { DIEPINT(n)&=~(bits); } while(0)
 #define I9100_CONTROL_TAG "1234567890abcdef"
 #define I9100_CHARGER_TAG "fedcba0987654321"
 static uint32_t rxpop(unsigned ep){assert(ep==0 && fifo_index<32);return receive_fifo[fifo_index++];}
@@ -48,6 +50,30 @@ static void received(const char*line){unsigned n=strlen(line);assert(n<=64);mems
 static void complete(void){GINTSTS=GINTSTS_IEPINT;DAINT=2;DIEPINT(1)=DXEPINT_XFERCOMPL;usbcdc_poll();GINTSTS=0;DIEPINT(1)=0;}
 static void setup(unsigned rt,unsigned rq,unsigned value){memset(setup_pkt,0,8);setup_pkt[0]=rt;setup_pkt[1]=rq;setup_pkt[2]=value;ep0_setup();}
 int main(void){
+ /* A completion can be authoritative without appearing in the global
+  * summary snapshot. Test true W1C behavior so a FIFO-write ACK cannot be
+  * mistaken for XFRC and release an uncompleted reboot command. */
+ reset();ring_push("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\n");
+ ep1_kick();assert(ep1_busy && tx_completed_total==0 && !(DIEPINT(1)&DXEPINT_XFERCOMPL));
+ unsigned first=ep1_transfer_total;
+ GINTSTS=DAINT=0;DIEPINT(1)=DXEPINT_XFERCOMPL;usbcdc_poll();
+ assert(tx_completed_total==first && ep1_busy && tx_drained_total>first);
+ GINTSTS=DAINT=0;DIEPINT(1)=DXEPINT_XFERCOMPL;usbcdc_poll();
+ assert(!ep1_busy && tx_completed_total==tx_written_total);
+ reset();received("I9CHC2 00000021 1234567890abcdef fedcba0987654321 download\n");
+ GINTSTS=DAINT=0;DIEPINT(1)=DXEPINT_XFERCOMPL|DXEPINT_EPDISBLD;usbcdc_poll();
+ assert(!charge_action_ready && !usbcdc4210_charge_take_action() && !charge_control.action);
+ reset();received("I9CHC2 00000022 1234567890abcdef fedcba0987654321 download\n");
+ GINTSTS=DAINT=0;DIEPINT(1)=DXEPINT_INTKNTXFEMP;
+ for(unsigned n=0;n<10;n++)usbcdc_poll();assert(!charge_action_ready && !tx_completed_total);
+ DIEPINT(1)=DXEPINT_XFERCOMPL;usbcdc_poll();assert(usbcdc4210_charge_take_action()==2);
+ reset();ep0_req=REQ_OUT;ep0_ptr=(void*)1;ep0_plen=7;
+ DIEPINT(0)=DXEPINT_XFERCOMPL|DXEPINT_TIMEOUT;charge_ep0_new_setup();
+ assert(!DIEPINT(0) && ep0_req==REQ_NONE && !ep0_ptr && !ep0_plen);
+ charge_identity=0;DIEPINT(0)=DXEPINT_TIMEOUT;charge_ep0_new_setup();assert(DIEPINT(0)==DXEPINT_TIMEOUT);
+ reset();unsigned shortfields[6]={2,0,0,1,3,0xfffffffbU};
+ usbcdc4210_charge_liveness_report(shortfields);assert(tx_written_total==62 && ep1_busy);
+ assert(!memcmp(txring,"I9LV1 ",6) && txring[59]=='\n');
  reset();console_calls=0;setup(0x21,0x22,1);assert(!console_calls);
  charge_identity=0;setup(0x21,0x22,1);assert(console_calls>0);
  supervisor_calls=charge_delay_quanta=0;
@@ -196,3 +222,16 @@ for n,cmd in enumerate((['clang','-O1','-g','-fno-pie','-no-pie','-Wno-int-to-vo
     if r.returncode:print((r.stdout+r.stderr)[-3500:],file=sys.stderr);r.check_returncode()
     if r.stdout:print(r.stdout.strip(),flush=True)
 print('EVIDENCE',out,flush=True)
+spec=importlib.util.spec_from_file_location('charge_first_packet',repo/'scripts/i9100/summarize-charge-loader.py')
+summary=importlib.util.module_from_spec(spec);spec.loader.exec_module(summary)
+raw=b'I9LV1 00000002 00000000 00000000 00000001 00000003 fffffffb\n'
+decoded=summary.decode_liveness(raw)
+assert len(decoded)==1 and decoded[0]['reason']==-5 and decoded[0]['wake_probe']==2
+assert not summary.decode_liveness(raw[:-1]) and not decoded[0]['measurement_time_available']
+try:summary.decode_liveness(raw.replace(b'00000002',b'00000004',1))
+except ValueError:pass
+else:raise AssertionError('Invalid wake probe accepted')
+(out/'result.json').write_text(json.dumps(dict(result='PASS',hardware=False,
+ source_sha256={name:hashlib.sha256((repo/name).read_bytes()).hexdigest() for name in
+ ('drivers/samsung/dwc2cdc4210.c','scripts/i9100/check-charge-control.py','scripts/i9100/summarize-charge-loader.py')},
+ first_packet=decoded,limit='Production USB logic; hardware FIFO/W1C effects modeled, no physical transfer or charging proof'),indent=2)+'\n')

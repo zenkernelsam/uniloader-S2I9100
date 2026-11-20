@@ -37,6 +37,7 @@
 static struct i9100_charge_control charge_control;
 static unsigned charge_action_ready,charge_boot_available,tx_written_total,tx_drained_total,tx_completed_total,ep1_transfer_total;
 static unsigned charge_log_dropped;
+const uint32_t i9100_charge_usb_poll_version=1;
 static void ring_push(const char *s);
 
 /* Base addresses are overridable so the same logic can run under a
@@ -99,6 +100,9 @@ static void ring_push(const char *s);
 #define DTXFSTS(n)	GREG(0x918 + (n) * 0x20)
 #define DIEPDMA(n)	GREG(0x914 + (n) * 0x20)
 #define DOEPDMA(n)	GREG(0xB14 + (n) * 0x20)	/* INEPTFSPC per EP */
+#ifndef USB_DIEPINT_ACK
+#define USB_DIEPINT_ACK(n,bits) do { DIEPINT(n)=(bits); } while(0)
+#endif
 
 #define PCGCCTL		GREG(0xE00)
 #ifndef FIFO
@@ -281,6 +285,15 @@ enum { REQ_NONE, REQ_DATA, REQ_ZLP, REQ_OUT } ep0_req;
 static const uint8_t *ep0_ptr;	/* pending TX payload */
 static unsigned int ep0_plen;	/* pending TX byte count */
 static uint8_t setup_pkt[8];
+static void charge_ep0_new_setup(void)
+{
+ /* A new SETUP aborts the previous control-IN request. The working kernel
+  * clears those old completion/timeout bits before decoding the new reply.
+  * Keep this correction scoped to the independent charger identity. */
+ if(!charge_identity)return;
+ USB_DIEPINT_ACK(0,0x3ffU);
+ ep0_req=REQ_NONE;ep0_ptr=0;ep0_plen=0;
+}
 
 #define TXRING 16384
 static char txring[TXRING];
@@ -378,8 +391,8 @@ static void dev_soft_init(void)
 	DCFG &= ~0x7f0u;			/* DEVADDR=0 */
 
 	/* S-Boot 0x4d41b228: clear ep ints, EP0-IN CNAK, EP0-OUT armed */
-	DIEPINT(0) = 0x3ff;
-	DIEPINT(1) = 0x3ff;
+	USB_DIEPINT_ACK(0,0x3ff);
+	USB_DIEPINT_ACK(1,0x3ff);
 	DOEPINT(0) = 0x3ff;
 	DOEPINT(1) = 0x3ff;
 	/* Activate EP0-IN without arming a transfer (s3c-hsotg:
@@ -628,7 +641,7 @@ static void ep1_kick(void)
 		return;
 	ctl_before = DIEPCTL(1);
 	if (DIEPINT(1) & DXEPINT_XFERCOMPL)
-		DIEPINT(1) = DXEPINT_XFERCOMPL;	/* stale */
+		USB_DIEPINT_ACK(1,DXEPINT_XFERCOMPL);	/* stale */
 
 	/* Dedicated fifo 1: free space lives in DTXFSTS(1), not the
 	 * shared NPTX register (s3c-hsotg does the same split).  Check
@@ -666,7 +679,7 @@ static void ep1_kick(void)
 	}
 	size_fifo = DIEPTSIZ(1);
 	space_fifo = DTXFSTS(1);
-	DIEPINT(1) = DXEPINT_INTKNTXFEMP;	/* clear knock, like s3c-hsotg */
+	USB_DIEPINT_ACK(1,DXEPINT_INTKNTXFEMP);	/* clear knock, like s3c-hsotg */
 	if (ep1_dbg < 8) {
 		/* Capture before printk can delay servicing the next event. */
 		uint32_t ctl = DIEPCTL(1), size_arm = DIEPTSIZ(1);
@@ -680,6 +693,24 @@ static void ep1_kick(void)
 		ep1_dbg++;
 	}
 	ep1_busy = 1;
+}
+
+static void charge_ep1_complete(uint32_t ei)
+{
+ /* Poll the endpoint's authoritative W1C bits even if the global summary
+  * was absent from this snapshot. FIFO empty/EPENA/PKTCNT are never a
+  * substitute for a real completion, especially for a reboot ACK. */
+ if(!charge_identity || !ep1_busy)return;
+ uint32_t fault=ei&(DXEPINT_AHBERR|DXEPINT_TIMEOUT|DXEPINT_EPDISBLD);
+ if(!fault && !(ei&DXEPINT_XFERCOMPL))return;
+ USB_DIEPINT_ACK(1,ei);
+ if(fault){
+  ep1_busy=0;i9100_chg_cancel_incomplete(&charge_control,charge_action_ready);return;
+ }
+ ep1_busy=0;tx_completed_total=ep1_transfer_total;
+ if(charge_control.action && !charge_control.leased &&
+    tx_completed_total-charge_control.reply_target<0x80000000U)
+  charge_action_ready=1;
 }
 
 /* main service routine — S-Boot 0x4d41bf58/0x4d41bd1c dispatch model:
@@ -725,6 +756,7 @@ void usbcdc_poll(void)
 
 			memcpy(setup_pkt, &w0, 4);
 			memcpy(setup_pkt + 4, &w1, 4);
+			charge_ep0_new_setup();
 			ep0_setup();
 		} else if (ps == PKTSTS_OUTRX) {	/* 2: OUT data */
 			unsigned int i;
@@ -769,13 +801,14 @@ void usbcdc_poll(void)
 				ep0_kick();	/* host knocked: send now */
 			if (ei & DXEPINT_XFERCOMPL)
 				usbcdc_printk(KERN_INFO, "ep0i: compl\n");
-			DIEPINT(0) = ei;
+			USB_DIEPINT_ACK(0,ei);
 		}
 		if (d & 2) {
 			uint32_t ei = DIEPINT(1);
 			uint32_t ctl = DIEPCTL(1), size = DIEPTSIZ(1);
 			uint32_t space = DTXFSTS(1);
-			DIEPINT(1) = ei;
+			if(charge_identity)charge_ep1_complete(ei);
+			USB_DIEPINT_ACK(1,ei);
 			if (ei && ei != ep1_lastint && ep1_intdbg < 10) {
 				usbcdc_printk(KERN_INFO,
 				       "ep1i: int=%08x ctl=%08x tsiz=%08x dtx=%08x\n",
@@ -783,13 +816,9 @@ void usbcdc_poll(void)
 				ep1_intdbg++;
 			}
 			ep1_lastint = ei;
-			if ((ei & DXEPINT_XFERCOMPL) &&
-                (!charge_identity || (ep1_busy && !(ei&(DXEPINT_AHBERR|DXEPINT_TIMEOUT))))) {
+			if (!charge_identity && (ei & DXEPINT_XFERCOMPL)) {
 				ep1_busy = 0;
                 tx_completed_total=ep1_transfer_total;
-                if(charge_identity && charge_control.action && !charge_control.leased &&
-                   tx_completed_total-charge_control.reply_target<0x80000000U)
-                    charge_action_ready=1;
 				if (ep1_compldbg < 8) {
 					usbcdc_printk(KERN_INFO, "ep1 done int=%08x tsiz=%08x\n",
 					       ei, size);
@@ -798,10 +827,6 @@ void usbcdc_poll(void)
 			}
 			if (ei & DXEPINT_AHBERR)
 				ep1_busy = 0;
-            if(charge_identity && (ei&(DXEPINT_AHBERR|DXEPINT_TIMEOUT))){
-                ep1_busy=0;
-                i9100_chg_cancel_incomplete(&charge_control,charge_action_ready);
-            }
 		}
 		if (d & 4) {
 			uint32_t ei = DIEPINT(2);
@@ -825,6 +850,7 @@ void usbcdc_poll(void)
 		}
 	}
 drain:
+ if(charge_identity && ep1_busy)charge_ep1_complete(DIEPINT(1));
 	ep1_kick();
 	in_poll = 0;
 }
@@ -916,6 +942,18 @@ void usbcdc4210_charge_timed_report(const struct i9100_charge_report *report)
 {
  char line[256];
  if(i9100_charge_format(line,sizeof(line),report))usbcon_write(KERN_INFO,"",line);
+}
+void usbcdc4210_charge_liveness_report(const unsigned values[6])
+{
+ /* One complete <=64-byte record before the first long charger report.
+  * Format: probe-result / WFI-count / IRQ89-ACKs / policy-polls / epoch /
+  * signed reason as raw hex. No controller recovery or extra power poll. */
+ char line[64];unsigned at=6;memcpy(line,"I9LV1 ",6);
+ for(unsigned n=0;n<6;n++){
+  for(unsigned digit=0;digit<8;digit++)line[at++]="0123456789abcdef"[(values[n]>>((7U-digit)*4))&15U];
+  line[at++]=n==5?'\n':' ';
+ }
+ line[at]=0;usbcon_write(KERN_INFO,"",line);
 }
 void usbcdc4210_charge_screen_report(unsigned drawn,unsigned base,unsigned stride,unsigned bpp)
 {

@@ -45,7 +45,9 @@ static int lpm_boot_requested(const struct I9100BootSource *source)
  source->flags==3 && source->sboot_mode==1 && source->inform2==1;}
 static unsigned i9100_lpm_timer_ready;
 static unsigned i9100_lpm_timer_rearms,i9100_lpm_timer_faults;
-const uint32_t i9100_lpm_wake_route_version=1;
+static unsigned i9100_lpm_timer_delivery,i9100_lpm_timer_probe;
+static unsigned i9100_lpm_timer_waits,i9100_lpm_timer_acks;
+const uint32_t i9100_lpm_wake_route_version=2;
 static uint32_t lpm_read(unsigned base,unsigned off)
 {return readl((void*)(base+off));}
 static void lpm_write(unsigned base,unsigned off,uint32_t value)
@@ -108,8 +110,41 @@ static void lpm_charge_epoch_report(void)
  usbcdc4210_charge_epoch_report(fields);
 #endif
 }
+static void lpm_timer_prove_delivery(void)
+{
+ /* A writable route and a moving counter do not prove that this CPU can
+  * leave WFI. First observe a real pending INTID89, acknowledge that exact
+  * interrupt and release it while still awake. HPPIR is read-only; never
+  * pop an unknown firmware interrupt just to clear its priority stack. */
+ uint64_t began=lpm_ticks();
+ i9100_lpm_timer_delivery=0;i9100_lpm_timer_probe=2;
+ for(unsigned n=0;n<1048576U;n++){
+  uint64_t now=lpm_ticks();
+  if(now<began || now-began>720000U)break;
+  unsigned pending=lpm_read(0x10480000U,0x18)&1023U;
+  if(pending!=89U)continue;
+  unsigned token=lpm_read(0x10480000U,0x0c),irq=token&1023U;
+  if(irq==89U){
+   lpm_write(0x10050000U,0x244,1);
+   lpm_write(0x10480000U,0x10,token);
+   i9100_lpm_timer_acks++;
+   if(!(lpm_read(0x10050000U,0x244)&1U) &&
+      !(lpm_read(0x10490000U,0x308)&(1U<<25))){
+    i9100_lpm_timer_delivery=1;i9100_lpm_timer_probe=1;
+   }else i9100_lpm_timer_probe=3;
+  }else{
+   /* Only this IAR read created this lease; release it without touching a
+    * pre-existing active bit, and do not qualify another WFI. */
+   if(irq<1020U)lpm_write(0x10480000U,0x10,token);
+   i9100_lpm_timer_probe=3;
+  }
+  return;
+ }
+}
 static int lpm_timer_init(void)
 {
+ i9100_lpm_timer_delivery=i9100_lpm_timer_probe=0;
+ i9100_lpm_timer_waits=i9100_lpm_timer_acks=0;
  LPM_MASK_IRQ();
  lpm_write(0x10490000U,0,0);
  unsigned groups=(lpm_read(0x10490000U,4)&31U)+1U;
@@ -135,10 +170,14 @@ static int lpm_timer_init(void)
     !lpm_mct_write(0x208,240000,4) || !lpm_mct_write(0x240,259,1U<<16))return 0;
  lpm_write(0x10050000U,0x244,1);lpm_write(0x10050000U,0x248,1);
  lpm_write(0x10490000U,0x108,1U<<25);
+ lpm_timer_prove_delivery();
  i9100_lpm_timer_ready=1;return 1;
 }
 static void lpm_sleep_tick(void)
 {
+ /* A failed awake probe keeps USB, keys and charging supervision alive.
+  * Rewriting the same route is not a new proof and cannot re-enable WFI. */
+ if(!i9100_lpm_timer_delivery)goto no_wait;
  /* A large first draw or a USB setup can outlast the comparator period.
   * Never enter WFI against a comparator which is already behind the MCT.
   * Rebase only that expired comparator; the charge/USB/Power loop remains
@@ -179,10 +218,12 @@ static void lpm_sleep_tick(void)
   * return to temperature/USB/keys instead of sleeping on an expired edge. */
  now=lpm_ticks();
  if(match<=now+24000U)goto no_wait;
- LPM_BARRIER();LPM_WAIT();
+ LPM_BARRIER();LPM_WAIT();i9100_lpm_timer_waits++;
  unsigned token=lpm_read(0x10480000U,0x0c),irq=token&1023U;
  if(irq==89)lpm_write(0x10050000U,0x244,1);
  if(irq<1020)lpm_write(0x10480000U,0x10,token);
+ if(irq==89)i9100_lpm_timer_acks++;
+ else{i9100_lpm_timer_delivery=0;i9100_lpm_timer_faults++;}
  return;
 no_wait:
  i9100_lpm_timer_ready=0;i9100_lpm_timer_faults++;
@@ -457,6 +498,12 @@ void i9100_standalone_charge_gate(void)
     unsigned panel_identity[4]={panel.identity_reads,panel.id[0],panel.id[1],panel.id[2]};
     unsigned panel_recovery[4]={panel.recovery_attempts,panel.recovery_commands,panel.cleanup_error,panel.stage};
 #endif
+    /* Fits in the FIRST 64-byte packet. A stalled bulk stream still leaves
+     * the actual wake/epoch result instead of half a long battery line. */
+    extern void usbcdc4210_charge_liveness_report(const unsigned[6]);
+    const unsigned liveness[6]={i9100_lpm_timer_probe,i9100_lpm_timer_waits,
+      i9100_lpm_timer_acks,observed_polls,i9100_lpm_epoch_result,(unsigned)observed.reason};
+    usbcdc4210_charge_liveness_report(liveness);
     usbcdc4210_charge_timed_report(&report);
     usbcdc4210_charge_sense_report(sense_timing,sense_registers);
     usbcdc4210_charge_policy_report(policy);
