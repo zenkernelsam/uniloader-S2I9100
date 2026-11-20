@@ -33,11 +33,11 @@ def encode(profile,reviewed,pair_sha,system,data,model=False):
     if type(reviewed)is not bool or type(model)is not bool or reviewed and model:raise ValueError('Model data cannot be hardware reviewed')
     if set(profile)!= {'host','card'}:raise ValueError('Unexpected native profile fields')
     host=profile['host'];card=profile['card']
-    host_fields=('ciu_clock_hz','source_mux','source_divider','clksel','gpk0_mux','gpk0_pull','gpk0_drive')
+    host_fields=('ciu_clock_hz','source_mux','source_divider','clksel','gpk0_mux','gpk0_pull','gpk0_drive','xxti_hz','xusbxti_hz')
     if set(host)!=set(host_fields):raise ValueError('Exact inherited CIU/pin profile required')
     values=[uint(host[name]) for name in host_fields]
-    clk,mux,divider,sel,pins,pull,drive=values
-    if not 400000<=clk<=200000000 or mux&~0xf0000 or divider&~0xff0f or sel==0xffffffff or pins!=0x3133 or pull&~255 or drive&~255:
+    clk,mux,divider,sel,pins,pull,drive,xtal,usb=values
+    if not 400000<=clk<=200000000 or mux&~0xf0000 or divider&~0xff0f or sel==0xffffffff or pins!=0x3133 or pull&~255 or drive&~255 or xtal!=24000000 or usb!=24000000:
         raise ValueError('Unsupported inherited CIU/GPK0 profile')
     card_fields=('cid','primary_crc','backup_crc','entries_crc','disk_guid','system_guid','data_guid','sectors')
     if set(card)!=set(card_fields) or not isinstance(card['cid'],list) or len(card['cid'])!=4:
@@ -53,15 +53,15 @@ def encode(profile,reviewed,pair_sha,system,data,model=False):
         if not date:raise ValueError('Missing HFS creation identity')
         volume.append((date,identifier))
     if volume[0][1]==volume[1][1]:raise ValueError('Duplicate HFS volume ID')
-    b=bytearray(BYTES);b[:4]=b'I9EB';struct.pack_into('<III',b,4,1,BYTES,int(reviewed)|(2 if model else 0))
-    struct.pack_into('<8I',b,16,int(reviewed),*values);struct.pack_into('<4I',b,48,*cid)
+    b=bytearray(BYTES);b[:4]=b'I9EB';struct.pack_into('<III',b,4,2,BYTES,int(reviewed)|(2 if model else 0))
+    struct.pack_into('<8I',b,16,int(reviewed),*values[:7]);struct.pack_into('<4I',b,48,*cid)
     struct.pack_into('<3I',b,64,*[uint(card[name]) for name in ('primary_crc','backup_crc','entries_crc')])
     b[76:124]=b''.join(guids);struct.pack_into('<Q',b,124,card['sectors'])
     for at,(date,identifier) in zip((132,144),volume):struct.pack_into('<I',b,at,date);b[at+4:at+12]=identifier
-    b[156:188]=hexbytes(pair_sha,32);struct.pack_into('<I',b,252,zlib.crc32(b[:252]));return bytes(b)
+    b[156:188]=hexbytes(pair_sha,32);struct.pack_into('<II',b,188,xtal,usb);struct.pack_into('<I',b,252,zlib.crc32(b[:252]));return bytes(b)
 
 def decode(raw):
-    if len(raw)!=BYTES or raw[:4]!=b'I9EB' or struct.unpack_from('<II',raw,4)!=(1,BYTES) or any(raw[188:252]) or zlib.crc32(raw[:252])!=struct.unpack_from('<I',raw,252)[0]:
+    if len(raw)!=BYTES or raw[:4]!=b'I9EB' or struct.unpack_from('<II',raw,4)!=(2,BYTES) or any(raw[196:252]) or zlib.crc32(raw[:252])!=struct.unpack_from('<I',raw,252)[0]:
         raise ValueError('Malformed/partial/CRC-invalid native boot record')
     flags=struct.unpack_from('<I',raw,12)[0];host=struct.unpack_from('<8I',raw,16)
     if flags&~3 or flags==3 or host[0]>1 or bool(flags&1)!=bool(host[0]):raise ValueError('Invalid review/model flags')
@@ -69,6 +69,7 @@ def decode(raw):
              'card':dict(cid=list(struct.unpack_from('<4I',raw,48)),primary_crc=struct.unpack_from('<I',raw,64)[0],
                backup_crc=struct.unpack_from('<I',raw,68)[0],entries_crc=struct.unpack_from('<I',raw,72)[0],
                disk_guid=raw[76:92].hex(),system_guid=raw[92:108].hex(),data_guid=raw[108:124].hex(),sectors=struct.unpack_from('<Q',raw,124)[0])}
+    profile['host'].update(zip(('xxti_hz','xusbxti_hz'),struct.unpack_from('<II',raw,188)))
     volumes=[dict(create_date=struct.unpack_from('<I',raw,at)[0],finder_volume_id=raw[at+4:at+12].hex()) for at in (132,144)]
     if encode(profile,bool(flags&1),raw[156:188].hex(),*volumes,model=bool(flags&2))!=raw:raise ValueError('Noncanonical record')
     return dict(flags=flags,profile=profile,system=volumes[0],data=volumes[1],pair_manifest_sha256=raw[156:188].hex())

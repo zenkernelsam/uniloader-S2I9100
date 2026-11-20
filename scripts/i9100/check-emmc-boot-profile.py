@@ -39,6 +39,7 @@ def main():
     controller=dict(schema=1,model_fixture=True,ciu_clock_hz=host['ciu_clock_hz'],clock_and_pins_reviewed=False,
         host_physical=0x12550000,measurement_note='Explicit register facade; 100MHz fixture, no electrical measurement',
         registers=dict(cmu_ip_gate=1<<9,cmu_source_gate=1<<16,gpk0_data=4,gic_enable=0,**{k:v for k,v in host.items() if k!='ciu_clock_hz'}))
+    for key in ('xxti_hz','xusbxti_hz'):controller['registers'].pop(key,None)
     originals['controller']=json.dumps(controller).encode()
     assert evidence_check.check(record['profile'],originals,True,False)['partitions']==12
     for name in ('cid','gpt-primary','gpt-backup','pit'):

@@ -32,7 +32,9 @@ def definitions(raw):
         name=raw[stroff+index:end].decode('ascii')
         if name in names and names[name]!=value:
             if name in ('_i9100_emmc_boot_decode','_i9100_emmc_boot_match','_i9100_emmc_native_seal_data',
-                        '_i9100_hfs_data_bootstrap','_i9100_storage_shutdown_diag','_i9100_emmc_alias_devices') or name.startswith(('__Z20i9100_emmc_boot_open','__Z28ios6i9100_register_emmc_boot')):
+                        '_i9100_hfs_data_bootstrap','_i9100_storage_shutdown_diag','_i9100_emmc_alias_devices',
+                        '_i9100_emmc_clock_capture','_i9100_emmc_clock_rate','_i9100_emmc_clock_observation',
+                        '_i9100_emmc_clock_observation_diag','_i9100_emmc_clock_observe_open') or name.startswith(('__Z20i9100_emmc_boot_open','__Z28ios6i9100_register_emmc_boot')):
                 raise ValueError('Ambiguous internal boot definition')
             continue # unrelated static functions legitimately share local names
         names[name]=value
@@ -41,7 +43,9 @@ def verify(kernel):
     kernel=Path(kernel).resolve()
     if not kernel.is_relative_to(XNU/'out'):raise ValueError('Require retained project kernel')
     raw=kernel.read_bytes();required=('_i9100_emmc_boot_decode','_i9100_emmc_boot_match','_i9100_emmc_native_seal_data',
-       '_i9100_hfs_data_bootstrap','_i9100_storage_shutdown_diag','_i9100_emmc_alias_devices')
+       '_i9100_hfs_data_bootstrap','_i9100_storage_shutdown_diag','_i9100_emmc_alias_devices',
+       '_i9100_emmc_clock_capture','_i9100_emmc_clock_rate','_i9100_emmc_clock_observe_open',
+       '_i9100_emmc_clock_observation','_i9100_emmc_clock_observation_diag')
     symbols=definitions(raw)
     if any(name not in symbols for name in required):raise ValueError('Missing actual native/HFS/checked-shutdown definitions')
     # C++ boot owner symbols use real Itanium name mangling; enforce uniquely
@@ -56,7 +60,7 @@ def verify(kernel):
         raise ValueError('Internal-root package requires verified full source provenance')
     proofs={};needed={'AppleARMPE.cpp','vfs_syscalls.c','hfs_vfsops.c','bsd_init.c','kern_shutdown.c','i9100_usbcdc.c',
        'IOS6I9100EMMCBlockDriver.cpp','IOS6I9100EMMCRaw.cpp','IOS6I9100EMMCStorage.cpp','i9100_emmc_publication.cpp',
-       'i9100_emmc_alias.cpp','i9100_emmc_boot.cpp','i9100_emmc_boot_contract.c'}
+       'i9100_emmc_alias.cpp','i9100_emmc_boot.cpp','i9100_emmc_boot_contract.c','i9100_emmc_clock.c','i9100_emmc_clock_native.cpp','i9100_emmc_native.cpp'}
     cursor=folder;seen=set()
     for _ in range(32):
         if cursor in seen:raise ValueError('Cyclic kernel source ancestry')
@@ -81,6 +85,8 @@ def verify(kernel):
         matches=[Path(path) for path in files if re.sub(r'^(?:[0-9]{4}-)+','',Path(path).name) in suffix]
         if len(matches)!=1 or sha(matches[0])!=sha(compiled):raise ValueError('Compiled paired object absent from final link')
     if 'ios6i9100_register_emmc_boot(this)' not in (ROOT/proofs['AppleARMPE.cpp']['source_file']).read_text():raise ValueError('PE entry unconnected')
+    if 'ios6i9100_register_emmc_clock_observation();' not in (ROOT/proofs['AppleARMPE.cpp']['source_file']).read_text():
+        raise ValueError('Read-only clock observer PE entry unconnected')
     if 'i9100_hfs_data_bootstrap();' not in (ROOT/proofs['bsd_init.c']['source_file']).read_text():raise ValueError('Prelaunchd mount unconnected')
     for name,anchor in (('IOS6I9100EMMCBlockDriver.cpp','IOS6I9100EMMCMedia::matchPropertyTable'),
                        ('IOS6I9100EMMCRaw.cpp','IOS6I9100EMMCRaw::matchPropertyTable'),

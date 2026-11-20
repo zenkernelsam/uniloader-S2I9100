@@ -3,6 +3,9 @@
 import json
 import struct
 import zlib
+import hashlib
+import importlib.util
+from pathlib import Path
 
 def u32(value):
     if type(value)is not int or not 0<=value<1<<32:raise ValueError('Invalid unsigned evidence field')
@@ -63,11 +66,24 @@ def check(profile,raws,model,clock_reviewed):
     if set(found)!=set(parts) or found['FACTORYFS']!=10 or found['DATAFS']!=11:raise ValueError('Incomplete PIT role mapping')
     controller=json.loads(raws['controller'])
     required={'schema','model_fixture','ciu_clock_hz','clock_and_pins_reviewed','host_physical','registers','measurement_note'}
-    if set(controller)!=required or controller['schema']!=1 or controller['model_fixture']is not model or controller['clock_and_pins_reviewed']is not clock_reviewed:
+    if controller.get('schema')==2:required|={'clock_record_hex','clock_decoder_sha256'}
+    if set(controller)!=required or controller['schema']not in (1,2) or controller['model_fixture']is not model or controller['clock_and_pins_reviewed']is not clock_reviewed:
         raise ValueError('Controller evidence provenance mismatch')
     if controller['host_physical']!=0x12550000 or controller['ciu_clock_hz']!=host['ciu_clock_hz'] or not isinstance(controller['measurement_note'],str) or not controller['measurement_note'].strip():
         raise ValueError('CIU measurement/provenance missing')
     keys={'cmu_ip_gate','cmu_source_gate','source_mux','source_divider','clksel','gpk0_mux','gpk0_pull','gpk0_drive','gpk0_data','gic_enable'}
+    decoded=None
+    if controller['schema']==2:
+        tool=Path(__file__).with_name('emmc-clock-evidence.py')
+        if controller['clock_decoder_sha256']!=hashlib.sha256(tool.read_bytes()).hexdigest():raise ValueError('Clock decoder source drift')
+        spec=importlib.util.spec_from_file_location('emmc_clock',tool);clock=importlib.util.module_from_spec(spec);spec.loader.exec_module(clock)
+        raw_hex=controller['clock_record_hex']
+        if not isinstance(raw_hex,str)or len(raw_hex)!=1024 or any(c not in '0123456789abcdef'for c in raw_hex):raise ValueError('Exact512B clock record required')
+        decoded=clock.decode(bytes.fromhex(raw_hex),require_admitted=True);keys=set(clock.FIELDS)
+        if decoded['model_fixture']is not model or decoded['registers']!=controller['registers'] or decoded['ciu_clock_hz']!=host['ciu_clock_hz'] or decoded['xxti_hz']!=host.get('xxti_hz')or decoded['xusbxti_hz']!=host.get('xusbxti_hz'):
+            raise ValueError('Clock record/root frequencies disagree with actual profile')
+    elif not model or clock_reviewed:
+        raise ValueError('Legacy hand-entered controller capture cannot become hardware reviewed')
     regs=controller['registers']
     if set(regs)!=keys:raise ValueError('Incomplete inherited controller register capture')
     for name,value in regs.items():u32(value)
@@ -76,4 +92,4 @@ def check(profile,raws,model,clock_reviewed):
     for field,mask in (('source_mux',0xf0000),('source_divider',0xff0f),('clksel',0xffffffff),('gpk0_mux',0xffff),('gpk0_pull',0xff),('gpk0_drive',0xff)):
         if regs[field]&mask!=host[field]:raise ValueError('Inherited host profile does not match current controller capture')
     return dict(primary_crc=primary['crc'],backup_crc=backup['crc'],entries_crc=primary['entries_crc'],partitions=12,
-                pit_count=count,controller_evidence_only=True,actual_electrical_measurement_verified=False)
+                pit_count=count,controller_evidence_only=True,clock_record_verified=decoded is not None,actual_electrical_measurement_verified=False)
