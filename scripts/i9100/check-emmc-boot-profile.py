@@ -29,6 +29,16 @@ def main():
     raw=(proof/'actual-contract.bin').read_bytes()
     if hashlib.sha256(raw).hexdigest()!=m['actual_contract_sha256']:raise ValueError('Actual encoded record changed')
     record=c.decode(raw);assert c.encode(record['profile'],True,record['pair_manifest_sha256'],record['system'],record['data'])==raw
+    sdr=None
+    if m.get('sdr_boot_path'):
+        sdr_raw=(proof/'actual-contract-sdr.bin').read_bytes()
+        if hashlib.sha256(sdr_raw).hexdigest()!=m['actual_sdr_contract_sha256']:raise ValueError('Actual SDR contract output changed')
+        sdr=c.decode(sdr_raw)
+        assert sdr['transport']==dict(width=8,high_speed=1,target_hz=50000000,vcc_mv=3300)
+        assert c.encode(sdr['profile'],True,sdr['pair_manifest_sha256'],sdr['system'],sdr['data'],transport=sdr['transport'])==sdr_raw
+        bad=bytearray(sdr_raw);bad[220]^=1
+        import zlib
+        bad[252:256]=zlib.crc32(bad[:252]).to_bytes(4,'little');rejects(lambda:c.decode(bad))
     import copy
     originals={}
     for name,file in (('cid','cid.bin'),('gpt-primary','gpt-primary.bin'),('gpt-backup','gpt-backup.bin'),('pit','pit.bin')):
@@ -94,6 +104,7 @@ def main():
     result=dict(result='PASS',hardware_tested=False,device_contacted=False,model_fixture=True,
         native_proof=str(proof.relative_to(c.ROOT)),native_manifest_sha256=hashlib.sha256((proof/'manifest.json').read_bytes()).hexdigest(),
         actual_c_record_sha256=hashlib.sha256(raw).hexdigest(),model_record_sha256=hashlib.sha256(model).hexdigest(),
+        sdr_contract_sha256=hashlib.sha256(sdr_raw).hexdigest()if sdr else None,
         tree_sha256=hashlib.sha256(tree).hexdigest(),kernel_check=kernel_check,prepared_unreviewed=str(generated.relative_to(c.ROOT)) if generated else None,
         sources={name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in
         ('emmc-boot-contract.py','emmc-inventory-evidence.py','check-emmc-boot-profile.py','check-emmc-kernel.py','prepare-emmc-boot.py','prepare-payloads.py')},requirements='Model record refused by production packer/boot; current card/clock/backups and deployment approval still required')

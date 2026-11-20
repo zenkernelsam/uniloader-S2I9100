@@ -29,7 +29,7 @@ def hexbytes(value,size):
     if not any(raw):raise ValueError('Missing nonzero identity')
     return raw
 
-def encode(profile,reviewed,pair_sha,system,data,model=False):
+def encode(profile,reviewed,pair_sha,system,data,model=False,transport=None):
     if type(reviewed)is not bool or type(model)is not bool or reviewed and model:raise ValueError('Model data cannot be hardware reviewed')
     if set(profile)!= {'host','card'}:raise ValueError('Unexpected native profile fields')
     host=profile['host'];card=profile['card']
@@ -53,15 +53,26 @@ def encode(profile,reviewed,pair_sha,system,data,model=False):
         if not date:raise ValueError('Missing HFS creation identity')
         volume.append((date,identifier))
     if volume[0][1]==volume[1][1]:raise ValueError('Duplicate HFS volume ID')
-    b=bytearray(BYTES);b[:4]=b'I9EB';struct.pack_into('<III',b,4,2,BYTES,int(reviewed)|(2 if model else 0))
+    transport_values=None
+    if transport is not None:
+        if not isinstance(transport,dict)or set(transport)!={'width','high_speed','target_hz','vcc_mv'}:
+            raise ValueError('Exact explicit SDR transport requested')
+        width,hs,target,vcc=[uint(transport[k])for k in ('width','high_speed','target_hz','vcc_mv')]
+        if width not in (4,8)or hs not in (0,1)or vcc!=3300 or not 0<target<=(52000000 if hs else 20000000)or target>clk//2:
+            raise ValueError('Unsupported SDR width/timing/clock/board voltage')
+        transport_values=(int(reviewed),width,hs,target,clk,vcc,*cid)
+    b=bytearray(BYTES);b[:4]=b'I9EB';struct.pack_into('<III',b,4,3 if transport_values else 2,BYTES,int(reviewed)|(2 if model else 0))
     struct.pack_into('<8I',b,16,int(reviewed),*values[:7]);struct.pack_into('<4I',b,48,*cid)
     struct.pack_into('<3I',b,64,*[uint(card[name]) for name in ('primary_crc','backup_crc','entries_crc')])
     b[76:124]=b''.join(guids);struct.pack_into('<Q',b,124,card['sectors'])
     for at,(date,identifier) in zip((132,144),volume):struct.pack_into('<I',b,at,date);b[at+4:at+12]=identifier
-    b[156:188]=hexbytes(pair_sha,32);struct.pack_into('<II',b,188,xtal,usb);struct.pack_into('<I',b,252,zlib.crc32(b[:252]));return bytes(b)
+    b[156:188]=hexbytes(pair_sha,32);struct.pack_into('<II',b,188,xtal,usb)
+    if transport_values:struct.pack_into('<10I',b,196,*transport_values)
+    struct.pack_into('<I',b,252,zlib.crc32(b[:252]));return bytes(b)
 
 def decode(raw):
-    if len(raw)!=BYTES or raw[:4]!=b'I9EB' or struct.unpack_from('<II',raw,4)!=(2,BYTES) or any(raw[196:252]) or zlib.crc32(raw[:252])!=struct.unpack_from('<I',raw,252)[0]:
+    version=struct.unpack_from('<I',raw,4)[0]if len(raw)>=8 else 0
+    if len(raw)!=BYTES or raw[:4]!=b'I9EB' or version not in (2,3)or struct.unpack_from('<I',raw,8)[0]!=BYTES or any(raw[236 if version==3 else 196:252]) or zlib.crc32(raw[:252])!=struct.unpack_from('<I',raw,252)[0]:
         raise ValueError('Malformed/partial/CRC-invalid native boot record')
     flags=struct.unpack_from('<I',raw,12)[0];host=struct.unpack_from('<8I',raw,16)
     if flags&~3 or flags==3 or host[0]>1 or bool(flags&1)!=bool(host[0]):raise ValueError('Invalid review/model flags')
@@ -71,8 +82,16 @@ def decode(raw):
                disk_guid=raw[76:92].hex(),system_guid=raw[92:108].hex(),data_guid=raw[108:124].hex(),sectors=struct.unpack_from('<Q',raw,124)[0])}
     profile['host'].update(zip(('xxti_hz','xusbxti_hz'),struct.unpack_from('<II',raw,188)))
     volumes=[dict(create_date=struct.unpack_from('<I',raw,at)[0],finder_volume_id=raw[at+4:at+12].hex()) for at in (132,144)]
-    if encode(profile,bool(flags&1),raw[156:188].hex(),*volumes,model=bool(flags&2))!=raw:raise ValueError('Noncanonical record')
-    return dict(flags=flags,profile=profile,system=volumes[0],data=volumes[1],pair_manifest_sha256=raw[156:188].hex())
+    transport=None
+    if version==3:
+        values=struct.unpack_from('<10I',raw,196)
+        if values[0]!=host[0]or values[4]!=host[1]or list(values[6:])!=profile['card']['cid']:
+            raise ValueError('SDR review/CID/CIU differs from card boot contract')
+        transport=dict(zip(('width','high_speed','target_hz','vcc_mv'),(values[1],values[2],values[3],values[5])))
+    if encode(profile,bool(flags&1),raw[156:188].hex(),*volumes,model=bool(flags&2),transport=transport)!=raw:raise ValueError('Noncanonical record')
+    result=dict(flags=flags,profile=profile,system=volumes[0],data=volumes[1],pair_manifest_sha256=raw[156:188].hex())
+    if transport:result['transport']=transport
+    return result
 
 def read_prepared(folder,require_reviewed=False):
     folder=Path(folder).resolve()
@@ -84,6 +103,14 @@ def read_prepared(folder,require_reviewed=False):
     if manifest['record_sha256']!=hashlib.sha256(raw).hexdigest() or manifest['record']!=contract:
         raise ValueError('Prepared contract/manifest mismatch')
     if manifest['contract_tool_sha256']!=hashlib.sha256(Path(__file__).read_bytes()).hexdigest():raise ValueError('Contract encoder changed')
+    if 'transport'in contract and require_reviewed:
+        receipt=manifest.get('sdr_board_evidence')
+        if not receipt:raise ValueError('SDR record lacks independent original board evidence')
+        board_raw=bounded(ROOT/receipt['path'],65536)
+        if hashlib.sha256(board_raw).hexdigest()!=receipt['sha256']:raise ValueError('Original SDR board evidence changed')
+        board=json.loads(board_raw);transport=contract['transport']
+        tool=Path(__file__).with_name('emmc-sdr-evidence.py')
+        if receipt.get('verifier_sha256')!=hashlib.sha256(tool.read_bytes()).hexdigest():raise ValueError('SDR board verifier changed')
     if require_reviewed and contract['flags']!=1:raise ValueError('Require an independently reviewed non-model boot profile')
     if require_reviewed:
         import importlib.util
@@ -102,6 +129,10 @@ def read_prepared(folder,require_reviewed=False):
             if len(evidence)!=item['bytes'] or hashlib.sha256(evidence).hexdigest()!=item['sha256']:raise ValueError('Original eMMC identity/controller capture changed')
             raws[name]=evidence
         validator.check(contract['profile'],raws,False,True)
+        if 'transport'in contract:
+            controller=json.loads(raws['controller'])
+            spec=importlib.util.spec_from_file_location('sdr_evidence',tool);verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier)
+            verifier.check(board,transport,contract['profile']['card'],controller,True)
         receipt=manifest.get('verified_backup')
         if not receipt or receipt.get('model_fixture')is not False or receipt.get('verifier_sha256')!=hashlib.sha256(Path(__file__).with_name('emmc-read-evidence.py').read_bytes()).hexdigest():
             raise ValueError('Reviewed boot profile has no current original full-user backup proof')

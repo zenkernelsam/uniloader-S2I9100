@@ -62,14 +62,34 @@ def prepare(a):
         if h[:4]!=b'HX\0\5' or struct.unpack_from('>I',h,40)[0]!=8192 or bool(struct.unpack_from('>I',h,4)[0]&0x2000)!=journal:
             raise ValueError('HFSX geometry/journal mismatch')
         volumes.append(dict(create_date=struct.unpack_from('>I',h,16)[0],finder_volume_id=h[104:112].hex()))
-    record=c.encode(inventory['profile'],a.mark_reviewed,hashlib.sha256(pair_raw).hexdigest(),*volumes,model=inventory['model_fixture'])
+    width=getattr(a,'sdr_width',None);transport=None
+    if width:
+        target=getattr(a,'sdr_clock_hz',None);vcc=getattr(a,'sdr_vcc_mv',None)
+        if not target or vcc!=3300:raise ValueError('SDR requires exact clock and separately reviewed3300mV VCC')
+        transport=dict(width=width,high_speed=int(getattr(a,'sdr_high_speed',False)),target_hz=target,vcc_mv=vcc)
+        if a.mark_reviewed:
+            proof_path=getattr(a,'sdr_board_evidence',None)
+            if not proof_path:raise ValueError('Reviewed SDR requires original board pad/clock/VCC evidence')
+            board_raw=c.bounded(proof_path,65536);board=json.loads(board_raw)
+            controller=json.loads(originals['controller'])
+            spec=importlib.util.spec_from_file_location('sdr_evidence',Path(__file__).with_name('emmc-sdr-evidence.py'))
+            verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier)
+            verifier.check(board,transport,inventory['profile']['card'],controller,True)
+            sdr_receipt=dict(path=str(Path(proof_path).resolve().relative_to(c.ROOT)),sha256=hashlib.sha256(board_raw).hexdigest(),
+              verifier_sha256=sha(Path(__file__).with_name('emmc-sdr-evidence.py')))
+        else:sdr_receipt=None
+    else:
+        if getattr(a,'sdr_high_speed',False)or getattr(a,'sdr_clock_hz',None)or getattr(a,'sdr_vcc_mv',None)or getattr(a,'sdr_board_evidence',None):
+            raise ValueError('SDR parameters require explicit width')
+        sdr_receipt=None
+    record=c.encode(inventory['profile'],a.mark_reviewed,hashlib.sha256(pair_raw).hexdigest(),*volumes,model=inventory['model_fixture'],transport=transport)
     output=a.output.resolve() if a.output else c.REPO/'out'/('emmc-boot-profile-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
     if not output.is_relative_to(c.REPO/'out') or output.exists():raise ValueError('Use a fresh retained loader out directory')
     manifest=dict(schema=1,kind='i9100-emmc-boot-contract',result='PASS',device_contacted=False,hardware_tested=False,
         deployment_authorized=False,boot_ready=False,source_note=a.source_note,record=c.decode(record),record_sha256=hashlib.sha256(record).hexdigest(),
         inventory=dict(path=str(a.inventory.resolve().relative_to(c.ROOT)),sha256=hashlib.sha256(inventory_raw).hexdigest()),
         pair=dict(path=str(a.pair.resolve().relative_to(c.ROOT)),sha256=hashlib.sha256(pair_raw).hexdigest()),evidence=evidence,
-        parsed_current_evidence=validated,verified_backup=backup_receipt,
+        parsed_current_evidence=validated,verified_backup=backup_receipt,sdr_board_evidence=sdr_receipt,
         evidence_checker_sha256=hashlib.sha256(Path(__file__).with_name('emmc-inventory-evidence.py').read_bytes()).hexdigest(),
         contract_tool_sha256=hashlib.sha256(Path(__file__).with_name('emmc-boot-contract.py').read_bytes()).hexdigest(),
         preparer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -84,5 +104,7 @@ def main():
         os.execvpe('taskset',['taskset','-c','0-13','nice','-n10','ionice','-c2','-n7',sys.executable,'-B',*sys.argv],dict(os.environ,I9100_CPU_CAPPED='1'))
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--inventory',type=Path,required=True);p.add_argument('--pair',type=Path,required=True)
     p.add_argument('--source-note',required=True);p.add_argument('--mark-reviewed',action='store_true');p.add_argument('--backup-acquisition',type=Path);p.add_argument('--output',type=Path)
+    p.add_argument('--sdr-width',type=int,choices=(4,8));p.add_argument('--sdr-high-speed',action='store_true')
+    p.add_argument('--sdr-clock-hz',type=int);p.add_argument('--sdr-vcc-mv',type=int,choices=(3300,));p.add_argument('--sdr-board-evidence',type=Path)
     folder,manifest=prepare(p.parse_args());print(json.dumps(dict(output=str(folder),sha256=manifest['record_sha256'],reviewed=manifest['record']['flags']==1,boot_ready=False,device_contacted=False),indent=2))
 if __name__=='__main__':main()
