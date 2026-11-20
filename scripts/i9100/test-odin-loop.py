@@ -100,6 +100,29 @@ class Tests(unittest.TestCase):
         host, _ = self.run_case(mode='reboot-only')
         self.assertEqual(len(host.calls), 1)
 
+    def test_checked_shutdown_observation_does_not_resend(self):
+        host,plan=FakeHost(),FakePlan();plan.data['shutdown_wait_seconds']=300
+        seen=[];original=o.wait_for
+        def observed(h,predicate,seconds,label):
+            seen.append((seconds,label));return original(h,predicate,seconds,label)
+        with patch.object(o,'wait_for',side_effect=observed):
+            o.cycle(host,plan,'reboot-only',o.Journal(plan.parent))
+        self.assertEqual(len(host.calls),1)
+        self.assertEqual(seen[0],(300,'CDC disconnect after checked shutdown'))
+        self.assertFalse(any(call[1]=='flash' for call in host.calls))
+
+    def test_checked_shutdown_timeout_keeps_one_command_and_no_flash(self):
+        host,plan=FakeHost(),FakePlan();plan.data['shutdown_wait_seconds']=300
+        original_run=host.run
+        def stay_running(args,directory,timeout):
+            original_run(args,directory,timeout);host.state='cdc'
+        host.run=stay_running
+        with patch.object(o.time,'monotonic',side_effect=[0,301]):
+            with self.assertRaisesRegex(ValueError,'Timeout: CDC disconnect after checked shutdown'):
+                o.cycle(host,plan,'cycle',o.Journal(plan.parent))
+        self.assertEqual(len(host.calls),1)
+        self.assertFalse(any(call[1]=='flash' for call in host.calls))
+
     def test_bootstrap(self):
         host, _ = self.run_case(mode='bootstrap')
         self.assertEqual(len(host.calls), 2)
@@ -200,11 +223,21 @@ class Tests(unittest.TestCase):
         data['validation'] = 'control'
         data['root_status_protocol'] = False
         data['boot_settle_seconds'] = 90
+        data.pop('shutdown_wait_seconds',None) # old schema4 must remain byte-compatible
         for name in data['files']: shutil.copyfile(src.parent/name,dest/name)
         path = dest/'plan.json'
         o.save(path,data)
         plan = o.Plan(path,o.sha(path))
         with self.assertRaises(ValueError): o.Plan(path,'0'*64)
+        for duration in (29,301,True,'300'):
+            candidate=dict(data,schema=5,shutdown_wait_seconds=duration)
+            path.write_text(json.dumps(candidate),encoding='utf8')
+            with self.assertRaises(ValueError):o.Plan(path,o.sha(path))
+        for duration in (30,180,300):
+            candidate=dict(data,schema=5,shutdown_wait_seconds=duration)
+            path.write_text(json.dumps(candidate),encoding='utf8')
+            self.assertEqual(o.Plan(path,o.sha(path)).data['shutdown_wait_seconds'],duration)
+        path.write_text(json.dumps(data),encoding='utf8')
         if sys.platform == 'win32':
             with o.immutable_snapshots(plan):
                 with self.assertRaises(PermissionError):
@@ -298,4 +331,13 @@ class Tests(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    program=unittest.main(exit=False)
+    import hashlib
+    result=dict(result='PASS' if program.result.wasSuccessful() else 'FAIL',
+                hardware_tested=False,device_contacted=False,tests_run=program.result.testsRun,
+                failures=len(program.result.failures),errors=len(program.result.errors),
+                sources={name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+                         for name in ('odin-loop.py','test-odin-loop.py')})
+    (BASE/'manifest.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf8')
+    print('EVIDENCE',BASE)
+    raise SystemExit(0 if program.result.wasSuccessful() else 1)

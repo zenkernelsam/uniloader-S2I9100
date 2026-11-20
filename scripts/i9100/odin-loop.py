@@ -43,7 +43,9 @@ class UncertainProcess(RuntimeError):
 
 def sha(path):
     with Path(path).open('rb') as f:
-        return hashlib.file_digest(f, 'sha256').hexdigest()
+        digest=hashlib.sha256()
+        for block in iter(lambda:f.read(1024*1024),b''):digest.update(block)
+        return digest.hexdigest()
 
 
 def save(path, value):
@@ -211,8 +213,14 @@ class Plan:
         require(sha(self.path) == digest, 'Plan SHA256 was not approved or changed')
         self.data = json.loads(self.path.read_text())
         d = self.data
-        require(set(d) == {'schema', 'partition', 'validation', 'root_status_protocol', 'capture_seconds', 'boot_settle_seconds', 'control_tag', 'profile', 'files'}, 'Unexpected plan fields')
-        require(d['schema'] == 4 and d['partition'] == 'KERNEL', 'Only schema-4 KERNEL plans are permitted')
+        fields={'schema','partition','validation','root_status_protocol','capture_seconds','boot_settle_seconds','control_tag','profile','files'}
+        require(type(d.get('schema'))==int and d['schema'] in (4,5) and d.get('partition')=='KERNEL',
+                'Only schema-4/5 KERNEL plans are permitted')
+        if d['schema']==5:fields.add('shutdown_wait_seconds')
+        require(set(d)==fields,'Unexpected plan fields')
+        if d['schema']==5:
+            require(type(d['shutdown_wait_seconds'])==int and 30<=d['shutdown_wait_seconds']<=300,
+                    'Bad shutdown observation duration')
         require(d['validation'] in ('control', 'logs', 'maintenance'), 'Invalid validation mode')
         require(type(d['root_status_protocol']) == bool, 'Invalid root-status capability')
         require(d['validation'] != 'maintenance' or d['root_status_protocol'], 'Maintenance needs a root-status kernel')
@@ -246,6 +254,14 @@ def create_plan(args):
             'Maintenance needs an explicitly root-status-capable package')
     require(manifest['artifacts']['zImage']['sha256'] == sha(image), 'Package manifest does not match image')
     require(manifest['control_tag'] == manifest['artifacts']['mach_kernel']['sha256'][:16], 'Kernel tag mismatch')
+    # The original XNU shutdown can allow delayed processes to finish before
+    # non-forced DATAFS unmount and card flush. This extends PnP observation,
+    # never command attempts, serial openers or the KERNEL-only write scope.
+    internal_data=b'i9100emmcdata=1' in image.read_bytes()
+    shutdown_wait=getattr(args,'shutdown_wait_seconds',None)
+    if shutdown_wait is None:shutdown_wait=300 if internal_data else 30
+    require(type(shutdown_wait)==int and 30<=shutdown_wait<=300,'Bad shutdown observation duration')
+    require(not internal_data or shutdown_wait>=180,'Internal DATAFS requires at least 180 seconds for checked shutdown')
     profile = json.loads(confined(args.profile, ROOT).read_text()) if args.profile else None
     if profile:
         validate_profile(profile)
@@ -256,11 +272,12 @@ def create_plan(args):
         sources[name] = ROOT / 'assets/heimdall-win64' / name
     for name, src in sources.items():
         shutil.copyfile(src, dest / name)
-    data = {'schema': 4, 'partition': 'KERNEL',
+    data = {'schema': 5, 'partition': 'KERNEL',
             'validation': 'logs' if args.diagnostic else 'maintenance' if args.maintenance else 'control',
             'root_status_protocol': manifest.get('root_status_protocol') is True,
             'capture_seconds': args.seconds,
             'boot_settle_seconds': args.boot_settle_seconds,
+            'shutdown_wait_seconds':shutdown_wait,
             'control_tag': manifest['control_tag'], 'profile': profile,
             'files': {name: sha(dest / name) for name in sources}}
     save(dest / 'plan.json', data)
@@ -407,7 +424,10 @@ def cycle(host, plan, mode, journal):
         journal.event('CAPTURE_AND_REBOOT', device=device)
         serial(host, plan, plan.parent / 'before', device, 'reboot-download')
         journal.event('REBOOT_ACK')
-        wait_for(host, lambda ds: not cdc(ds), 30, 'CDC disconnect')
+        shutdown_wait=plan.data.get('shutdown_wait_seconds',30)
+        journal.event('WAIT_CHECKED_SHUTDOWN',seconds=shutdown_wait,
+                      meaning='PnP observation only; no second command/opener/flash retry')
+        wait_for(host, lambda ds: not cdc(ds), shutdown_wait, 'CDC disconnect after checked shutdown')
         devices = wait_for(host, lambda ds: ds if samsung(ds) else None, 60, 'Samsung download enumeration')
         observed = make_profile(devices)
         require(observed['location'] == normalize_location(device['location']), 'New device is on a different USB port')
@@ -446,6 +466,8 @@ def main():
     checks.add_argument('--maintenance', action='store_true', help='Expect NO_ROOT with working USB commands; not normal system boot')
     p.add_argument('--seconds', type=int, choices=range(1, 901), default=30, metavar='1..900')
     p.add_argument('--boot-settle-seconds', type=int, choices=range(30, 181), default=90, metavar='30..180')
+    p.add_argument('--shutdown-wait-seconds',type=int,choices=range(30,301),default=None,metavar='30..300',
+                   help='Immutable PnP wait after one reboot ACK; default30s or300s for i9100emmcdata=1, never a command retry')
     p = sub.add_parser('observe-download', help='Real-device PnP observation; phone must already be in download mode')
     p.add_argument('--output', type=Path, required=True)
     p = sub.add_parser('execute', help='Use only after user approves this concrete plan and hardware operation')
