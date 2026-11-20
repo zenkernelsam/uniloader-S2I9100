@@ -51,6 +51,12 @@ def decode(block, sample):
         result['sub_charging_pin'] = not bool(pins & 16) if not con & (15 << 16) else None
     if mask & 16:
         result['main_charger_enable_bits'] = (charger >> 8) & 0xc0
+    if mask & 32:
+        result['muic_low_power'] = bool(decoded['muic_ctrl2'] & 1)
+        result['muic_charge_pump_enabled'] = bool(decoded['muic_ctrl2'] & 4)
+        result['muic_accessory_detection_enabled'] = bool(decoded['muic_ctrl2'] & 32)
+    if sub and mask & 512:
+        result['sub_enable_pull'] = (decoded['gpl2pud'] >> 4) & 3
     issues = []
     if mask & 2 and (vcell == 0xffff or not 2500 <= result['observed_millivolts'] <= 4300):
         issues.append('VCELL readback outside qualified battery range')
@@ -76,6 +82,23 @@ def decode(block, sample):
     result['readback_issues'] = issues
     result['readback_consistent'] = not issues
     return result
+
+
+def qualify_route(observed):
+    """Check the new attached-path policy without rewriting legacy evidence."""
+    if not observed.get('readback_consistent') or observed.get('stop_uncertain'):
+        raise ValueError('Charger stop or native readback remains uncertain')
+    if (observed['mask'] & 32) != 32:
+        raise ValueError('Actual MAX8997 CONTROL2 readback required by the new policy')
+    if observed['enabled'] and (observed['muic_low_power'] or not observed['muic_charge_pump_enabled']):
+        raise ValueError('Enabled charger retains MUIC LowPwr or lacks CPEn')
+    if observed['sub_charger'] and ((observed['mask'] & 512) != 512 or observed.get('sub_enable_pull') != 0):
+        raise ValueError('MAX8922 CHG_EN still differs from the vendor no-pull configuration')
+    return dict(sequence=observed['sequence'],muic_low_power=observed['muic_low_power'],
+        muic_charge_pump_enabled=observed['muic_charge_pump_enabled'],
+        muic_accessory_detection_enabled=observed['muic_accessory_detection_enabled'],
+        sub_enable_pull=observed.get('sub_enable_pull'),
+        limit='Control and GPIO readback only; no net battery current inferred')
 
 
 def grouped(raw, timed):

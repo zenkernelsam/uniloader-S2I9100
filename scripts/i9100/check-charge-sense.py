@@ -111,6 +111,28 @@ assert observed['charge_current_adc']==1000 and observed['observed_millivolts']=
 assert observed['sub_enable_output'] is True and observed['main_charger_enable_bits']==0
 assert not observed['net_charging_verified']
 assert observed['readback_consistent']
+assert observed['muic_low_power'] is False and observed['muic_charge_pump_enabled'] is True
+assert observed['muic_accessory_detection_enabled'] is False and observed['sub_enable_pull']==2
+try:decoder.qualify_route(observed)
+except ValueError:pass
+else:raise AssertionError('Legacy CHG_EN pull accepted as new vendor configuration')
+for control in (4,0x24,0xfe):
+    changed=raw.replace(b'010e0104',f'010e01{control:02x}'.encode()).replace(b'00000aab',b'00000a8b')
+    routed=decoder.decode(changed[sample['end_offset']:],sample)
+    result=decoder.qualify_route(routed)
+    assert result['sub_enable_pull']==0 and result['muic_accessory_detection_enabled']==bool(control&32)
+for mutation in ('low-power','no-pump','pull','missing-muic','missing-pull','uncertain','bad-enable'):
+    invalid=decoder.decode(raw.replace(b'00000aab',b'00000a8b')[sample['end_offset']:],sample)
+    if mutation=='low-power':invalid['muic_low_power']=True
+    if mutation=='no-pump':invalid['muic_charge_pump_enabled']=False
+    if mutation=='pull':invalid['sub_enable_pull']=1
+    if mutation=='missing-muic':invalid['mask']&=~32
+    if mutation=='missing-pull':invalid['mask']&=~512
+    if mutation=='uncertain':invalid['stop_uncertain']=True
+    if mutation=='bad-enable':invalid['readback_consistent']=False
+    try:decoder.qualify_route(invalid)
+    except ValueError:pass
+    else:raise AssertionError('Bad route evidence accepted: '+mutation)
 for mutation in ('sequence','stale','missing','partial','duplicate','mask','adc','revision','duration','newline'):
     changed=raw
     if mutation=='sequence':changed=changed.replace(b'I9RG1 00000001',b'I9RG1 00000002')

@@ -103,7 +103,7 @@ def qualify_art_records(raw,timed,require_transport=False,require_dirty=False):
         dirty_region_snapshots=[group['I9DR1'] for group in recent] if require_dirty else None,
         limit='Production render/start counters and matched device measurements; no physical keypress or pixel capture inferred')
 
-def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False,require_dirty=False,require_policy=False,require_download=False):
+def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False,require_dirty=False,require_policy=False,require_download=False,require_route=False):
     summary=s.summarize(path)
     raw=(path/'received.bin').read_bytes()
     # Failed bootstrap or charger-stop transitions can stay supervised, but
@@ -158,6 +158,8 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
                 observed['readback_consistent'],
                 'ADC/register evidence is incomplete or hardware stop remains uncertain')
             sense_records.append(observed)
+    o.require(not require_route or require_sense,'Route qualification requires the original same-group register samples')
+    route_records=[sense.qualify_route(observed) for observed in sense_records] if require_route else []
     ui=re.findall(rb'^I9UI1 ((?:[0-9a-f]{8} ){3}[0-9a-f]{8})\r?$',raw,re.MULTILINE)
     fb=re.findall(rb'^I9FB1 ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?$',raw,re.MULTILINE)
     o.require(ui and fb,'Actual charger UI/register records missing')
@@ -196,7 +198,7 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
                 (panel_recovery[0] or not panel_recovery[1]) and not panel_recovery[2] and
                 panel_recovery[3]==panel_values[1],'Panel recovery budget/result disagrees with its sleep state')
     elif require_recovery:raise ValueError('Recovery qualification requires panel-sleep observations')
-    return dict(summary=summary,ui=values,fimd=registers,artwork=art,panel_sleep=panel_values,panel_identity=panel_identity,panel_recovery=panel_recovery,charge_sense=sense_records,charge_policy=policy_records,download_stop=download_records,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
+    return dict(summary=summary,ui=values,fimd=registers,artwork=art,panel_sleep=panel_values,panel_identity=panel_identity,panel_recovery=panel_recovery,charge_sense=sense_records,charge_policy=policy_records,download_stop=download_records,charge_route=route_records,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
         limit='Draw/register/timed-log qualification; no physical image or keypress acceptance inferred')
 
 def wait_resumed(directory,seconds,record,clock=time.monotonic,sleep=time.sleep):
@@ -312,7 +314,8 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
     evidence=qualify_charger(out/'charger-evidence',tag+' '+charger_tag,manifest.get('panel_sleep') is True,
         manifest.get('standalone_panel_recovery') is True,require_art,manifest.get('standalone_charge_transport') is True,
         manifest.get('standalone_charge_sense') is True,manifest.get('standalone_charge_dirty_regions') is True,
-        manifest.get('standalone_charge_single_owner') is True,manifest.get('standalone_charge_download_stop') is True)
+        manifest.get('standalone_charge_single_owner') is True,manifest.get('standalone_charge_download_stop') is True,
+        manifest.get('charge_route_control_version')==1)
     o.save(out/'charger-qualified.json',evidence);record('CHARGER_QUALIFIED',measured_interval_ms=evidence['measured_interval_ms'])
     if manifest.get('standalone_charge_shutdown_epoch') is True:
         epoch=shutdown_epoch_logs((out/'charger-evidence/received.bin').read_bytes())
@@ -364,6 +367,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         native_charge_sense_verified=manifest.get('standalone_charge_sense') is True,
         shared_charge_policy_verified=manifest.get('standalone_charge_single_owner') is True,
         charger_download_stop_verified=manifest.get('standalone_charge_download_stop') is True,
+        charger_route_readback_verified=manifest.get('charge_route_control_version')==1,
         writes_to_flash=0,physical_power_key_verified=False,energy_balance_verified=False)
 
 def main():

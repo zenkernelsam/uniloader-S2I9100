@@ -186,6 +186,11 @@ int i9100_power_sub_enable(void *cookie,unsigned enable)
  hw->write32(hw->cookie,1,0x104,(dat&~4U)|(enable?4U:0));
  uint32_t con=hw->read32(hw->cookie,1,0x100);
  hw->write32(hw->cookie,1,0x100,(con&~(15U<<8))|(1U<<8));
+ /* mach-u1 max8922_cfg_gpio() leaves CHG_EN without an internal pull.
+  * Preserve the other seven pins, including the adjacent status inputs. */
+ uint32_t pull=hw->read32(hw->cookie,1,0x108);
+ hw->write32(hw->cookie,1,0x108,pull&~(3U<<4));
  return ((hw->read32(hw->cookie,1,0x104)>>2)&1U)==enable &&
-        ((hw->read32(hw->cookie,1,0x100)>>8)&15U)==1U;
+        ((hw->read32(hw->cookie,1,0x100)>>8)&15U)==1U &&
+        !(hw->read32(hw->cookie,1,0x108)&(3U<<4));
 }

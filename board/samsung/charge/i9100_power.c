@@ -4,6 +4,9 @@
 #include "i9100_power.h"
 #include "i9100_battery_temperature.h"
 
+/* Published by the actual linked policy for host readback qualification. */
+const uint32_t i9100_power_muic_route_version=1;
+
 static int update(struct i9100_power_state *s,unsigned reg,uint8_t mask,uint8_t value)
 {
  uint8_t old,check;
@@ -11,6 +14,20 @@ static int update(struct i9100_power_state *s,unsigned reg,uint8_t mask,uint8_t 
  uint8_t next=(old&~mask)|(value&mask);
  if(next!=old && !s->io.pmic_write(s->io.cookie,reg,next))return 0;
  return s->io.pmic_read(s->io.cookie,reg,&check) && (check&mask)==(next&mask);
+}
+static int muic_attach(struct i9100_power_state *s)
+{
+ /* MAX8997 CONTROL2: LowPwr=bit0, CPEn=bit2, ACCDET=bit5.
+  * Match extcon-max8997's attached USB path, preserving accessory detection
+  * and all other fields. CPEn controls the MUIC switch charge pump; it is
+  * not evidence of battery current. Never treat an ACK as a verified route. */
+ if(!s->io.muic_read && !s->io.muic_write)return 1;
+ if(!s->io.muic_read || !s->io.muic_write)return 0;
+ uint8_t old,check;
+ if(!s->io.muic_read(s->io.cookie,0x0d,&old))return 0;
+ uint8_t next=(uint8_t)((old&~0x05U)|0x04U);
+ if(next!=old && !s->io.muic_write(s->io.cookie,0x0d,next))return 0;
+ return s->io.muic_read(s->io.cookie,0x0d,&check) && (check&0x05U)==0x04U;
 }
 int i9100_power_temperature(unsigned channel,unsigned adc,int *temperature)
 {
@@ -56,20 +73,9 @@ int i9100_power_init(struct i9100_power_state *s,const struct i9100_power_io *io
   * a safety net vendor lacks. */
  if(!s->use_sub && (!update(s,0x50,0x70,0x20) || !update(s,0x52,0x0f,0) ||
   !update(s,0x53,0x0f,5) || !update(s,0x54,0x0f,5) || !update(s,0x55,0x20,0)))goto failure;
- /* mach-u1 max8997_muic_set_safeout(AP_USB_MODE): the VBUS-to-charger
-  * power rail runs through ESAFEOUT1 (SAFEOUTCTRL bit6). Without it the
-  * charger reports DCINOK+charging yet zero current reaches the cell. */
+ /* Keep the existing AP-USB SAFEOUT1 selection from mach-u1. That supply
+  * selection alone does not prove current reaches the battery. */
  if(!s->use_sub && !update(s,0x5a,0x40,0x40))goto failure;
- /* MUIC CONTROL2(0x0d): CPEn=bit2 routes VBUS into the charger path,
-  * LowPwr=bit5. Upstream extcon sets CPEn on every attach. Ensure it
-  * once at init; an absent MUIC (old boards) fails soft. */
- if(s->io.muic_read && s->io.muic_write){
-  uint8_t c2;
-  if(s->io.muic_read(s->io.cookie,0x0d,&c2)){
-   uint8_t want=(uint8_t)((c2|0x04)&~0x20);
-   if(want!=c2)s->io.muic_write(s->io.cookie,0x0d,want);
-  }
- }
  s->cable_type=7;s->ready=1;s->reason=I9100_POWER_OFFLINE;return 0;
 failure:
  (void)i9100_power_stop(s);s->errors++;s->reason=I9100_POWER_IO;return s->reason;
@@ -139,6 +145,7 @@ int i9100_power_poll(struct i9100_power_state *s)
    * fresh enable; do not reset the existing period or repeat a failed stop
    * twice in this same sample. Later periodic samples may retry safe off. */
   if(s->stop_uncertain && !i9100_power_stop(s)){stop_failed=1;goto failure;}
+  if(!muic_attach(s))goto failure;
   if(s->use_sub){
    if(!update(s,0x51,0xc0,0) || !s->io.sub_enable(s->io.cookie,1))goto failure;
   }else{
