@@ -46,6 +46,7 @@ parser.add_argument('--ios6-hid', action=argparse.BooleanOptionalAction, default
 parser.add_argument('--input-test', action='store_true')
 parser.add_argument('--aks-development', action='store_true')
 parser.add_argument('--setup-dev-finish',action='store_true')
+parser.add_argument('--emmc-root-profile',type=Path,help='Explicit reviewed internal-root contract; paired source integrations required')
 args = parser.parse_args()
 if args.ls_ui_timeout and not args.xpc_diag:
     parser.error('--ls-ui-timeout requires --xpc-diag')
@@ -101,10 +102,27 @@ objects = ['pexpert/i9100_usbcdc.o', 'pexpert/i9100_timer.o', 'pexpert/pe_exynos
            'iokit/IOS7LeoHIDTouch.cpo',
            'iokit/i9100_power.o', 'iokit/i9100_power_bus.o', 'iokit/IOS7I9100Power.cpo',
            'osfmk/vm_map.o', 'osfmk/vm_user.o', 'osfmk/mach_kernelrpc.o', 'bsd/kern_exit.o', 'osfmk/pmap.o']
+if args.emmc_root_profile:
+    import importlib.util,json
+    spec=importlib.util.spec_from_file_location('emmc_contract',Path(__file__).with_name('emmc-boot-contract.py'))
+    contract_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(contract_module)
+    contract_module.read_prepared(args.emmc_root_profile,require_reviewed=True)
+    # Inspect actual main source integration before rebuilding. A missing
+    # object in an old generated Makefile must stop rather than create an
+    # apparently new package using old native/HFS/USB ABI objects.
+    pe=xnu/'iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp'
+    bsdclient=xnu/'iokit/Kernel/Storage/IOMediaBSDClient.cpp'
+    if 'ios6i9100_register_emmc_boot(this)' not in pe.read_text() or 'i9100_emmc_alias_commit' not in bsdclient.read_text() or 'i9100_hfs_data_bootstrap();' not in (xnu/'bsd/kern/bsd_init.c').read_text():
+        parser.error('Internal-root PE/BSD/HFS source patches are not applied; keep offline until integrated')
+    inventory=json.loads(Path(__file__).with_name('peripheral-offline-objects-integration.json').read_text())
+    objects.extend(name for name in inventory['new_objects'] if name not in objects)
+    objects.extend(name for name in ('bsd/vfs_syscalls.o','bsd/hfs_vfsops.o','bsd/bsd_init.o','bsd/kern_shutdown.o',
+        'iokit/IOMediaBSDClient.cpo') if name not in objects)
 subprocess.run([sys.executable, xnu / 'tools/rebuild-i9100.py', '--output', kernel, '--link', *objects], check=True)
 subprocess.run(['bash', repo / 'scripts/i9100/build-rawcom.sh'], check=True)
 subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--kernel', kernel / 'mach_kernel',
                 '--output', package, '--control',
+                *(['--emmc-root-profile',args.emmc_root_profile] if args.emmc_root_profile else []),
                 *(['--ls-bootstrap'] if args.ls_bootstrap else []),
                 *(['--ls-ui-timeout'] if args.ls_ui_timeout else []),
                 *(['--audio-property-lock'] if args.audio_property_lock else []),

@@ -148,6 +148,14 @@ void uart_puts(const char *s);
 #ifndef CONFIG_XNU_CMDLINE
 #define CONFIG_XNU_CMDLINE	"-v keepsyms=1 kprintf=1 debug=0x14e"
 #endif
+#ifdef I9100_EMMC_ROOT_BUILD
+#if !defined(CONFIG_SAMSUNG_I9100) || !defined(I9100_CONTROL_BUILD)
+#error Internal root requires the i9100 maintenance loader
+#endif
+#include <main/i9100-emmc-root.h>
+#else
+#define I9100_EMMC_ROOT_CMDLINE ""
+#endif
 #ifdef I9100_LS_BOOTSTRAP_BUILD
 #define I9100_LS_BOOTSTRAP_CMDLINE " i9100lsbootstrap=1"
 #else
@@ -395,7 +403,7 @@ void arch_load_kernel_xnu(void *kernel, void *dt, void *ramdisk)
 	dsc_arg[0] = 0;
 	i9100_boot_charge_stage(4);
 
-#ifdef CONFIG_EXYNOS_SD_FAT
+#if defined(CONFIG_EXYNOS_SD_FAT) && !defined(I9100_EMMC_ROOT_BUILD)
 	/* BRING-UP (J1): FIRST try the FAT32 SD card - if Image/dtb/ramdisk
 	 * are present and readable we load plain (uncompressed) binaries
 	 * straight into their final addresses and never touch the embedded
@@ -982,6 +990,16 @@ if ((unsigned int)(p - cs) + clen > cs_size)
 	/* Keep the proven one-copy bootargs path; compose opt-ins at compile time. */
 	memcpy(ba->CommandLine, I9100_EFFECTIVE_CMDLINE,
 	       sizeof(I9100_EFFECTIVE_CMDLINE) - 1);
+#ifdef I9100_EMMC_ROOT_BUILD
+    /* Fixed suffix only. Actual native card/volume identities are checked
+     * before writable DATAFS is published, not by this boot argument. */
+    {
+        if(!i9100_emmc_root_append(ba->CommandLine,sizeof(ba->CommandLine))){
+            printk(KERN_ERR,"i9100: internal root bootargs overflow\n");
+            i9100_boot_charge_failure(11U);for(;;);
+        }
+    }
+#endif
 #ifdef CONFIG_SAMSUNG_I9100
 	/* Preserve the bootloader's board revision, not boot_args.Revision (ABI).
 	 * The XNU power driver must select MAX8997 versus MAX8922 correctly. */

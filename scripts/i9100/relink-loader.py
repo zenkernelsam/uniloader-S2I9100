@@ -26,6 +26,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--kernel-blob', type=Path)
     parser.add_argument('--dtb-blob', type=Path)
+    parser.add_argument('--emmc-root-profile',type=Path,help='Reviewed project-local boot contract folder; default disabled')
     parser.add_argument('--control', action='store_true')
     parser.add_argument('--control-tag')
     parser.add_argument('--charger-tag')
@@ -64,6 +65,25 @@ def main():
     parser.add_argument('--setup-dev-finish',action='store_true')
     parser.add_argument('sources', nargs='*')
     args = parser.parse_args()
+    emmc_profile=None
+    if args.emmc_root_profile:
+        if not args.control or not args.dtb_blob or 'arch/arm/load-kernel.c' not in args.sources:
+            parser.error('--emmc-root-profile needs control, a matching DT and recompiling load-kernel.c')
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('emmc_boot_contract',Path(__file__).with_name('emmc-boot-contract.py'))
+        emmc_profile=importlib.util.module_from_spec(spec);spec.loader.exec_module(emmc_profile)
+        contract,_=emmc_profile.read_prepared(args.emmc_root_profile,require_reviewed=True)
+        # Validate structured DT and ensure there is exactly one property of
+        # the correct node; a byte substring in another property is not proof.
+        import importlib.util
+        payload_spec=importlib.util.spec_from_file_location('payloads',Path(__file__).with_name('prepare-payloads.py'))
+        payload_module=importlib.util.module_from_spec(payload_spec);payload_spec.loader.exec_module(payload_module)
+        expected_tree=emmc_profile.add_device_tree(payload_module.device_tree(),contract)
+        if args.dtb_blob.read_bytes()!=expected_tree:parser.error('DT does not exactly carry the reviewed native /chosen boot contract')
+        config=(repo/'include/generated/autoconf.h').read_text()
+        configured=re.search(r'^#define CONFIG_XNU_CMDLINE (.+)$',config,re.M)
+        if not configured or re.search(r'(?:\s|\")(?:(?:rd|rootdev)=)',configured[1]):
+            parser.error('Configured rootdev/rd conflicts with explicit internal-root selection')
     if args.audio_property_lock and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--audio-property-lock requires --control, --xpc-diag and --ios6-hid')
     if args.launchd_listener_guard and (not args.control or not args.xpc_diag or not args.ios6_hid):
@@ -174,6 +194,7 @@ def main():
         if args.standalone_charge and source_name in ('main/main.c','drivers/samsung/dwc2cdc4210.c','arch/arm/lz4dec.c'):
             command.append('-DI9100_STANDALONE_CHARGE_BUILD=1')
         if args.control and source_name == 'arch/arm/load-kernel.c':
+            if emmc_profile:command.append('-DI9100_EMMC_ROOT_BUILD=1')
             if args.aks_development:
                 command.append('-DI9100_AKS_DEVELOPMENT_BUILD=1')
             if args.setup_dev_finish:

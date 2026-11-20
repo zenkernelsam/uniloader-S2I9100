@@ -76,7 +76,15 @@ def main():
     parser.add_argument('--setup-dev-finish',action='store_true',help='Only matched iOS6 Setup uses its native completion/notification path')
     parser.add_argument('--control-bootargs-only', action='store_true',
                         help='Diagnostic: control loader bootargs with a baseline kernel; no command capability claim')
+    parser.add_argument('--emmc-root-profile',type=Path,help='Reviewed native eMMC boot contract; selects RO SYSTEM and mandatory DATAFS, default disabled')
     args = parser.parse_args()
+    emmc_module=None;emmc_manifest=None;emmc_contract=None
+    if args.emmc_root_profile:
+        if not args.control or args.control_bootargs_only:
+            parser.error('--emmc-root-profile requires actual control capability')
+        emmc_spec=importlib.util.spec_from_file_location('emmc_boot_contract',Path(__file__).with_name('emmc-boot-contract.py'))
+        emmc_module=importlib.util.module_from_spec(emmc_spec);emmc_spec.loader.exec_module(emmc_module)
+        emmc_contract,emmc_manifest=emmc_module.read_prepared(args.emmc_root_profile,require_reviewed=True)
     if args.audio_property_lock and (not args.control or not args.xpc_diag or not args.ios6_hid):
         parser.error('--audio-property-lock requires --control, --xpc-diag and --ios6-hid')
     if args.launchd_listener_guard and (not args.control or not args.xpc_diag or not args.ios6_hid):
@@ -169,11 +177,18 @@ def main():
     dt_spec=importlib.util.spec_from_file_location('i9100_dt',helpers/'prepare-payloads.py')
     dt_module=importlib.util.module_from_spec(dt_spec);dt_spec.loader.exec_module(dt_module)
     dt_blob=output/'dtb'
-    dt_blob.write_bytes(dt_module.device_tree())
+    dt_bytes=dt_module.device_tree()
+    if emmc_contract:dt_bytes=emmc_module.add_device_tree(dt_bytes,emmc_contract)
+    dt_blob.write_bytes(dt_bytes)
     raw = output/'Image.raw'
     run([sys.executable, helpers/'mkraw.py', kernel, raw], loader, output/'mkraw.log')
     import lz4.block
     raw_data = raw.read_bytes()
+    if emmc_contract:
+        check_spec=importlib.util.spec_from_file_location('emmc_kernel_check',Path(__file__).with_name('check-emmc-kernel.py'))
+        checker=importlib.util.module_from_spec(check_spec);check_spec.loader.exec_module(checker)
+        kernel_check=checker.verify(kernel)
+        (output/'internal-kernel-check.json').write_text(json.dumps(kernel_check,indent=2)+'\n',encoding='utf8')
     if args.audio_property_lock and b'i9100audiolock\0' not in raw_data:
         raise RuntimeError('Kernel lacks the explicit audio property lock capability')
     if args.launchd_listener_guard and b'i9100launchdguard\0' not in raw_data:
@@ -251,6 +266,7 @@ def main():
         (output/'charger-identity.json').write_text(json.dumps(dict(schema=2,tag=charger_tag,
             kernel_sha256=sha(kernel),sources=charger_sources,flags=charger_identity['flags']),indent=2)+'\n')
     run([sys.executable, helpers/'relink-loader.py', '--output', build,
+        *(['--emmc-root-profile',args.emmc_root_profile] if emmc_contract else []),
         *(['--control', '--control-tag', sha(kernel)[:16]] if args.control else []),
         *(['--charger-tag',charger_tag] if charger_tag else []),
         *(['--ls-bootstrap'] if args.ls_bootstrap else []),
@@ -301,6 +317,10 @@ def main():
     assert struct.unpack_from('<I', data, 0x2c)[0] == 0x40008000 + len(data)
     assert len(data) < 8*1024*1024
     assert dt_blob.read_bytes() in data
+    if emmc_contract:
+        assert b' rd=i9100-system i9100emmcdata=1\0' in data and emmc_contract in data
+    else:
+        assert b' rd=i9100-system i9100emmcdata=1\0' not in data
     assert b'ios7lab_vmabi=0' in data
     if args.control:
         assert b'i9100control=1' in data
@@ -427,6 +447,11 @@ def main():
         'aks_development_state_only': args.aks_development,
         'setup_development_finish': args.setup_dev_finish,
         'root_status_protocol': b'OK root=NO_ROOT' in raw_data,
+        'internal_emmc_root':bool(emmc_contract),
+        'internal_emmc_contract':{'profile_path':str(args.emmc_root_profile.resolve().relative_to(loader.parent)),
+            'sha256':hashlib.sha256(emmc_contract).hexdigest(),'pair_manifest_sha256':emmc_manifest['record']['pair_manifest_sha256'],
+            'runtime_hash_scope':'Current CID/GPT/PIT and stable HFS volume IDs; full image SHA is deployment evidence',
+            'hardware_tested':False,'deployment_authorized':False} if emmc_contract else None,
         'diagnostic_control_bootargs_only': args.control_bootargs_only,
         'control_tag': sha(kernel)[:16] if args.control else None,
         'memory': {'load_pa':hex(0x40001000),'raw_end':hex(raw_end),
