@@ -5,7 +5,7 @@ import re
 def decode(block, sample):
     records = {}
     for tag in ('I9CS1', 'I9RG1'):
-        rows = re.findall(rb'^'+tag.encode()+rb' ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?$',
+        rows = re.findall(rb'^'+tag.encode()+rb' ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?\n',
                           block, re.MULTILINE)
         if len(rows) != 1:
             raise ValueError('Exactly one complete '+tag+' must follow its timed charger sample')

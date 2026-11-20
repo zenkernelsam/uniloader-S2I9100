@@ -111,7 +111,7 @@ assert observed['charge_current_adc']==1000 and observed['observed_millivolts']=
 assert observed['sub_enable_output'] is True and observed['main_charger_enable_bits']==0
 assert not observed['net_charging_verified']
 assert observed['readback_consistent']
-for mutation in ('sequence','stale','missing','partial','duplicate','mask','adc','revision','duration'):
+for mutation in ('sequence','stale','missing','partial','duplicate','mask','adc','revision','duration','newline'):
     changed=raw
     if mutation=='sequence':changed=changed.replace(b'I9RG1 00000001',b'I9RG1 00000002')
     if mutation=='stale':changed=changed.replace(b'I9CS1 00000001 00002710',b'I9CS1 00000001 00000001')
@@ -124,6 +124,7 @@ for mutation in ('sequence','stale','missing','partial','duplicate','mask','adc'
     if mutation=='duration':
         line=next(line for line in raw.splitlines() if line.startswith(b'I9CS1'));words=line.split();words[4]=b'ffffffff'
         changed=changed.replace(line,b' '.join(words))
+    if mutation=='newline':changed=raw.split(b'\nPASS')[0]
     try:decoder.decode(changed[sample['end_offset']:],sample)
     except ValueError:pass
     else:raise AssertionError('Bad evidence accepted: '+mutation)

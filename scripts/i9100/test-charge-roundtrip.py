@@ -153,6 +153,7 @@ def charger(path,scenario):
     if scenario=='sense-partial':text=text.replace('00000100 00000004 00000000\n','00000100\n')
     if scenario=='sense-duplicate':text=text.replace('I9RG1 00000004','I9CS1 00000004 00015f8d 00000000 000007d0 000003ff 000003ce 00000001 00000000\nI9RG1 00000004')
     if scenario=='sense-readback':text=text.replace('00000100 00000004','00000100 00000000')
+    if scenario=='sense-newline':text=text[:text.index('\n',text.rfind('I9RG1 '))]
     raw=text.encode();(path/'received.bin').write_bytes(raw)
     write_events(path/'events.jsonl',[dict(phase='CHARGER_IDENTITY',device=dict(device,instance=m.o.CDC.replace('OS6','CHG'))),
         dict(phase='DTR_OK',time='2026-11-19T01:00:00+00:00'),
@@ -167,7 +168,7 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
                  'epoch-success','epoch-full','epoch-missing','epoch-rejected','epoch-extended','epoch-missing-log',
                  'stop-success','stop-uncertain','stop-invalid','stop-missing','stop-monitor-dead',
                  'sense-success','sense-missing','sense-uncertain','sense-no-adc','sense-stale',
-                 'sense-wrong-sequence','sense-partial','sense-duplicate','sense-readback'):
+                 'sense-wrong-sequence','sense-partial','sense-duplicate','sense-readback','sense-newline'):
     directory=out/scenario;directory.mkdir();calls=[];records=[]
     class Host:
         def inventory(self):return [device]
