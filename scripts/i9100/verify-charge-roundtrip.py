@@ -172,6 +172,7 @@ def qualify_inherited_deadline(record,adopted):
         'Loader full/recharge policy was not inherited')
     if record['full'] or not record['connected']:
         o.require(adopted.get('charge_start_ns')==0 and not adopted.get('timeout') and
+            not adopted.get('elapsed_base_ns',0) and
             adopted.get('state')==(1 if record['full'] else 2),'Stopped/offline handoff changed its policy')
     else:
         sampled_ns=record['sampled_ticks']*1000//24
@@ -205,7 +206,7 @@ def qualify_shutdown_epoch(raw,returned):
     o.require(source['checksum']==latest[3] and source['elapsed_ns']//1000000000==latest[4] and
         rtc==(latest[7]<<32)|latest[6] and 0<=rtc-source['rtc_seconds']<=600,
         'Loader logs and retained shutdown source/RTC identity differ')
-    expected=(source['elapsed_ns']+(rtc-source['rtc_seconds']+2)*1000000000)//1000000000
+    expected=(source['elapsed_ns']+(rtc-source['rtc_seconds']+2)*1000000000)//1000000000 if source['elapsed_ns'] else 0
     o.require(latest[5]==expected,'Inherited loader charging allowance was restarted or extended')
     return dict(restored=True,source=source,restored_rtc_seconds=rtc,initial_elapsed_seconds=latest[5],
         limit='Actual retained normal-halt/loader/returned-XNU evidence, not a physical charging-current measurement')

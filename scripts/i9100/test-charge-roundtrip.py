@@ -15,12 +15,15 @@ profile=json.loads((m.o.OUT/'inventory-20261106-211114-download-profile.json').r
 device=dict(instance=m.o.CDC,status='OK',port='COM12',service='usbser',location=profile['location'])
 
 def write_events(path,events):path.write_text(''.join(json.dumps(row)+'\n' for row in events))
-def epoch_fixture():
+def epoch_fixture(full=False):
     words=[0]*32;words[:4]=[0x45433949,2,128,3]
     words[4:17]=[14,1,1,1,1,0,0,0,0,0,1,1,50]
     words[17:21]=[4000,250,0,0]
     elapsed=400000000000;words[21:27]=[1000000000,0,elapsed&0xffffffff,elapsed>>32,1000000000,0]
     words[27:31]=[900000000,0,1,7]
+    if full:
+        words[9]=1;words[14]=words[15]=0;words[19]=0xfffffffc
+        words[23]=words[24]=words[25]=words[26]=0
     raw=struct.pack('<32I',*words);words[31]=m.h.checksum(raw)
     return struct.pack('<32I',*words)
 
@@ -38,6 +41,8 @@ def owner(path,shutdown=False,handoff=None):
         words[17:21]=[1,1,0,0];words[21:27]=[660000000,0,660000100,0,660000200,0]
         words[27:31]=[14,11,13,0]
         if handoff.startswith('epoch-'):words[27]=440
+        if handoff=='epoch-full':
+            words[14]=1;words[17]=words[18]=words[27]=0;words[13]=0xfffffffc
         raw=struct.pack('<32I',*words);words[31]=m.h.checksum(raw);raw=struct.pack('<32I',*words)
         decoded=m.h.decode(raw)
         observed=dict(decoded,root_stable=True,kernel_tag=tag)
@@ -48,10 +53,12 @@ def owner(path,shutdown=False,handoff=None):
             start=max(1,sampled_ns-elapsed);base=0 if elapsed<sampled_ns else elapsed-sampled_ns+1
             charge['charger_deadline_adoption']=dict(consistent=True,state=1,revision=14,enabled_after_init=0,
                 full=0,recharging=0,timeout=0,charge_start_ns=start,elapsed_base_ns=base,deadline_seconds=18000)
+            if handoff=='epoch-full':
+                charge['charger_deadline_adoption'].update(full=1,charge_start_ns=0,elapsed_base_ns=0)
             if handoff=='deadline-rejected':charge['charger_deadline_adoption'].update(state=3,timeout=1)
             if handoff=='deadline-extended':charge['charger_deadline_adoption']['charge_start_ns']+=1000000000
         if handoff.startswith('epoch-'):
-            wrapper=struct.pack('<8I',0x57453949,1,160,1,1,1,900000020,0)+epoch_fixture()
+            wrapper=struct.pack('<8I',0x57453949,1,160,1,1,1,900000020,0)+epoch_fixture(handoff=='epoch-full')
             charge['charger_handoff']['shutdown_charge_epoch']=m.h.decode_epoch_return(wrapper)
             if handoff=='epoch-missing':charge['charger_handoff'].pop('shutdown_charge_epoch')
             if handoff=='epoch-rejected':charge['charger_handoff']['shutdown_charge_epoch']['state']=3
@@ -83,9 +90,12 @@ def charger(path,scenario):
                 lines.append('I9PR1 00000000 00000000 00000000 00000003\n')
     text=''.join(lines)
     if scenario.startswith('epoch-'):
-        epoch=m.h.decode_epoch(epoch_fixture())
-        status=f'I9CE1 00000001 00000001 00000001 {epoch["checksum"]:08x} 00000190 000001a6 {900000020:08x} 00000000\n'
+        epoch=m.h.decode_epoch(epoch_fixture(scenario=='epoch-full'))
+        previous,current=(0,0) if scenario=='epoch-full' else (400,422)
+        status=f'I9CE1 00000001 00000001 00000001 {epoch["checksum"]:08x} {previous:08x} {current:08x} {900000020:08x} 00000000\n'
         text+=status
+        if scenario=='epoch-full':
+            text=text.replace('soc=75 mv=4000','soc=99 mv=4180').replace('charging=1 reason=0 full=0','charging=0 reason=-4 full=1')
         if scenario=='epoch-missing-log':text=text.replace(status,'')
         if scenario=='epoch-extended':text=text.replace('000001a6','00000100')
     if scenario=='no-draw':text=text.replace('I9UI1 00000001','I9UI1 00000000')
@@ -135,7 +145,7 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
                  'bootstrap-fault','bootstrap-fault-partial','art-bootstrap-fault',
                  'handoff-success','handoff-missing','handoff-corrupt',
                  'deadline-success','deadline-missing','deadline-rejected','deadline-extended',
-                 'epoch-success','epoch-missing','epoch-rejected','epoch-extended','epoch-missing-log'):
+                 'epoch-success','epoch-full','epoch-missing','epoch-rejected','epoch-extended','epoch-missing-log'):
     directory=out/scenario;directory.mkdir();calls=[];records=[]
     class Host:
         def inventory(self):return [device]
@@ -160,7 +170,7 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
     if scenario.startswith('handoff-'):actual_manifest=dict(manifest,standalone_charge_handoff=True)
     if scenario.startswith('deadline-'):actual_manifest=dict(manifest,standalone_charge_handoff=True,standalone_charge_deadline_adoption=True)
     if scenario.startswith('epoch-'):actual_manifest=dict(manifest,standalone_charge_handoff=True,standalone_charge_deadline_adoption=True,standalone_charge_shutdown_epoch=True)
-    expected_success=scenario in ('success','art-success','art-transport-success','handoff-success','deadline-success','epoch-success')
+    expected_success=scenario in ('success','art-success','art-transport-success','handoff-success','deadline-success','epoch-success','epoch-full')
     try:m.run_roundtrip(package,actual_manifest,directory,lambda phase,**row:records.append(dict(phase=phase,**row)),child,Host())
     except (ValueError,RuntimeError):assert not expected_success
     else:
