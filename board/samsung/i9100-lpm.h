@@ -241,6 +241,14 @@ void i9100_boot_charge_service(void)
  i9100_lpm_boot_sample_ticks=sampled;
  i9100_charge_start_update(&i9100_lpm_boot_gate,&i9100_lpm_battery,result,(sampled/24U)*1000U);
  i9100_lpm_boot_polls++;i9100_lpm_boot_next=sampled+24000000U;
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+ /* A sample from USB/draw progress can revoke an earlier main-loop
+  * admission. Never ACK boot against a stale, separate local gate. */
+ extern void usbcdc4210_charge_set_boot_ready(unsigned);
+ if(result || i9100_lpm_boot_fault ||
+    !i9100_charge_start_ready(&i9100_lpm_boot_gate,(sampled/24U)*1000U))
+  usbcdc4210_charge_set_boot_ready(0);
+#endif
  i9100_lpm_boot_in_service=0;
 }
 static void lpm_boot_report(unsigned stage)
@@ -305,6 +313,7 @@ void i9100_standalone_charge_gate(void)
  extern void usbcdc4210_charge_identity(int);
  extern void usbcdc4210_charge_timed_report(const struct i9100_charge_report *);
  extern void usbcdc4210_charge_sense_report(const unsigned[8],const unsigned[8]);
+ extern void usbcdc4210_charge_policy_report(const unsigned[8]);
  extern void usbcdc4210_charge_screen_report(unsigned,unsigned,unsigned,unsigned);
  extern void usbcdc4210_charge_fimd_report(const unsigned[8]);
  extern unsigned usbcdc4210_charge_take_action(void);
@@ -312,7 +321,7 @@ void i9100_standalone_charge_gate(void)
  extern void usbcdc4210_charge_set_boot_ready(unsigned);
  usbcdc4210_charge_identity(1);usbcdc4210_init();
 #endif
- uint64_t next=0,pressed=0,show_until=lpm_ticks()+720000000U;unsigned polls=0,report_sequence=0;
+ uint64_t next_report=0,pressed=0,show_until=lpm_ticks()+720000000U;unsigned report_sequence=0;
  unsigned window=0,blanked=0;
  i9100_charge_renderer_reset(); /* Normal boot may have reused this scanout. */
  struct i9100_charge_screen screen={0};unsigned screen_ok=lpm_screen_bind(&screen,&window),animation=0,drawn=0;
@@ -329,75 +338,80 @@ void i9100_standalone_charge_gate(void)
  if(!screen_ok && (lpm_read(0x11c00000U,0x28)&1U))window=2;
  unsigned winmap=0x180+window*4,saved_map=lpm_read(0x11c00000U,winmap);
  uint64_t next_draw=0,remote_deadline=0;unsigned remote_action=0;
- struct i9100_charge_start start_gate={0};unsigned denied_press=0;
+ struct i9100_charge_start *start_gate=&i9100_lpm_boot_gate;unsigned denied_press=0;
  for(;;){
-  uint64_t now=lpm_ticks();
-  if(now>=next){unsigned poll_result=i9100_power_poll(&i9100_lpm_battery);next=now+24000000U;
-   i9100_charge_start_update(&start_gate,&i9100_lpm_battery,poll_result,lpm_now(0));
+  /* Main loop, USB delay and draw progress share one supervised sample
+   * schedule. Only the service owns power_poll and startup admission. */
+  i9100_boot_charge_service();uint64_t now=lpm_ticks();
 #if defined(CONFIG_EXYNOS_CDCACM4210)
-   unsigned boot_ready=!i9100_lpm_boot_fault && i9100_charge_start_ready(&start_gate,lpm_now(0));
+   unsigned boot_ready=!i9100_lpm_boot_fault && i9100_charge_start_ready(start_gate,lpm_now(0));
 #ifdef I9100_PANEL_SLEEP_BUILD
    if(panel.qualified && panel.stage==I9P_FAULT)boot_ready=0;
 #endif
    usbcdc4210_charge_set_boot_ready(boot_ready);
-   if((polls++%30)==0){
+   if(now>=next_report){
+    /* Freeze EVERY policy field before the first USB writer can call the
+     * supervisor again. Sending this group remains interruptible by safe
+     * monitoring; it never locks out sampling to preserve a log record. */
+    struct i9100_power_state observed=i9100_lpm_battery;
+    struct i9100_charge_start observed_gate=*start_gate;
+    unsigned observed_polls=i9100_lpm_boot_polls;
+    uint64_t observed_ticks=i9100_lpm_boot_sample_ticks,observed_next=i9100_lpm_boot_next;
     struct i9100_charge_sense sense;
-    i9100_charge_sense_capture(&sense,&i9100_lpm_battery,&i9100_lpm_hw,++report_sequence);
+    i9100_charge_sense_capture(&sense,&observed,&i9100_lpm_hw,++report_sequence);
     uint64_t measured=lpm_ticks();
+    next_report=measured+720000000U;
     struct i9100_charge_report report={0};
     report.sequence=report_sequence;report.milliseconds=measured/24000U;
-    report.valid=i9100_lpm_battery.valid;report.percent=i9100_lpm_battery.percent;
-    report.millivolts=i9100_lpm_battery.millivolts;report.temperature_deci_c=i9100_lpm_battery.temperature_deci_c;
-    report.charging=i9100_lpm_battery.charging;report.reason=i9100_lpm_battery.reason;
-    report.full=i9100_lpm_battery.full;report.timeout=i9100_lpm_battery.timeout;report.recharging=i9100_lpm_battery.recharging;
-    report.elapsed_seconds=i9100_power_elapsed(i9100_lpm_battery.charge_start,
-      i9100_lpm_battery.charge_elapsed_base,measured/24U*1000U)/1000000000ULL;
-    usbcdc4210_charge_timed_report(&report);
+    report.valid=observed.valid;report.percent=observed.percent;
+    report.millivolts=observed.millivolts;report.temperature_deci_c=observed.temperature_deci_c;
+    report.charging=observed.charging;report.reason=observed.reason;
+    report.full=observed.full;report.timeout=observed.timeout;report.recharging=observed.recharging;
+    report.elapsed_seconds=i9100_power_elapsed(observed.charge_start,
+      observed.charge_elapsed_base,measured/24U*1000U)/1000000000ULL;
     unsigned sense_timing[8],sense_registers[8];
     i9100_charge_sense_words(&sense,sense_timing,sense_registers);
-    usbcdc4210_charge_sense_report(sense_timing,sense_registers);
-    usbcdc4210_charge_screen_report(drawn,(unsigned)screen.pixels,screen.stride,screen.bpp);
+    unsigned policy[8]={report_sequence,observed_polls,(unsigned)observed_ticks,(unsigned)(observed_ticks>>32),
+      (unsigned)observed_next,(unsigned)(observed_next>>32),observed_gate.samples,boot_ready};
     unsigned fb[8]={lpm_read(0x11c00000U,0x20),lpm_read(0x11c00000U,0x28),
       lpm_read(0x11c00000U,0xb0),lpm_read(0x11c00000U,0x108),
       lpm_read(0x11c00000U,0x64),lpm_read(0x11c00000U,0xe0),
       lpm_read(0x11c00000U,0x188),blanked};
-    usbcdc4210_charge_fimd_report(fb);
     unsigned render[8]={i9100_charge_render.art_ok,i9100_charge_render.art_frame,
       i9100_charge_render.frames,i9100_charge_render.stores,i9100_charge_render.last_stores,
       i9100_charge_render.unchanged,i9100_lpm_timer_rearms,i9100_lpm_timer_faults};
-    usbcdc4210_charge_render_report(render);
     unsigned dirty[8]={i9100_charge_render.frames,i9100_charge_render.compared,
       i9100_charge_render.last_compared,i9100_charge_render.body_rebuilds,
       i9100_charge_render.progress_calls,i9100_charge_render.initial_hidden,
       i9100_charge_render.initial_committed,drawn};
-    usbcdc4210_charge_dirty_report(dirty);
-    unsigned startup[8]={boot_ready,start_gate.samples,start_gate.blocked_presses,
-      i9100_lpm_battery.present,i9100_lpm_battery.millivolts,i9100_lpm_battery.percent,
-      i9100_lpm_battery.errors,(unsigned)i9100_lpm_battery.reason};
-    usbcdc4210_charge_start_report(startup);
-    usbcdc4210_charge_transport_report();
-    lpm_charge_epoch_report();
-    if(i9100_lpm_boot_fault){
-     unsigned fault[8]={i9100_lpm_boot_fault,i9100_lpm_fault_phase,i9100_lpm_boot_polls,
-      i9100_lpm_battery.valid,i9100_lpm_battery.percent,i9100_lpm_battery.millivolts,
-      i9100_lpm_battery.enabled,(unsigned)i9100_lpm_battery.reason};
-     usbcdc4210_charge_fault_report(fault);
-    }
+    unsigned startup[8]={boot_ready,observed_gate.samples,observed_gate.blocked_presses,
+      observed.present,observed.millivolts,observed.percent,observed.errors,(unsigned)observed.reason};
+    unsigned fault[8]={i9100_lpm_boot_fault,i9100_lpm_fault_phase,observed_polls,
+      observed.valid,observed.percent,observed.millivolts,observed.enabled,(unsigned)observed.reason};
 #ifdef I9100_PANEL_SLEEP_BUILD
     extern void usbcdc4210_charge_panel_report(const unsigned[8]);
     extern void usbcdc4210_charge_panel_identity_report(const unsigned[4]);
     extern void usbcdc4210_charge_panel_recovery_report(const unsigned[4]);
     unsigned panel_fields[8]={panel.qualified,panel.stage,panel.error,panel.mode,panel.commands,
       panel.saved_scanout,panel.owned_scanout,lpm_panel_scan_read(0)};
-    usbcdc4210_charge_panel_report(panel_fields);
     unsigned panel_identity[4]={panel.identity_reads,panel.id[0],panel.id[1],panel.id[2]};
-    usbcdc4210_charge_panel_identity_report(panel_identity);
     unsigned panel_recovery[4]={panel.recovery_attempts,panel.recovery_commands,panel.cleanup_error,panel.stage};
+#endif
+    usbcdc4210_charge_timed_report(&report);
+    usbcdc4210_charge_sense_report(sense_timing,sense_registers);
+    usbcdc4210_charge_policy_report(policy);
+    usbcdc4210_charge_screen_report(drawn,(unsigned)screen.pixels,screen.stride,screen.bpp);
+    usbcdc4210_charge_fimd_report(fb);usbcdc4210_charge_render_report(render);
+    usbcdc4210_charge_dirty_report(dirty);usbcdc4210_charge_start_report(startup);
+    usbcdc4210_charge_transport_report();lpm_charge_epoch_report();
+    if(fault[0])usbcdc4210_charge_fault_report(fault);
+#ifdef I9100_PANEL_SLEEP_BUILD
+    usbcdc4210_charge_panel_report(panel_fields);
+    usbcdc4210_charge_panel_identity_report(panel_identity);
     usbcdc4210_charge_panel_recovery_report(panel_recovery);
 #endif
    }
 #endif
-  }
   /* Battery IO/report/USB may have taken time. The two-second Power hold
    * starts at the observed key state, never at the loop's stale timestamp. */
   unsigned keys=lpm_read(0x11000000U,0xc44),home=lpm_read(0x11000000U,0xc64);
@@ -415,14 +429,14 @@ void i9100_standalone_charge_gate(void)
     }
 #endif
    }
-   if(now-pressed>=48000000U && !i9100_lpm_boot_fault && i9100_charge_start_ready(&start_gate,lpm_now(0)) && !denied_press){
+   if(now-pressed>=48000000U && !i9100_lpm_boot_fault && i9100_charge_start_ready(start_gate,lpm_now(0)) && !denied_press){
 #ifdef I9100_PANEL_SLEEP_BUILD
     if(!lpm_panel_awake(&panel))lpm_download(); /* Power requested boot but panel is faulted. */
 #endif
     break;
    }
-   if(now-pressed>=48000000U && (i9100_lpm_boot_fault || !i9100_charge_start_ready(&start_gate,lpm_now(0))) && !denied_press){
-    start_gate.blocked_presses++;denied_press=1;
+   if(now-pressed>=48000000U && (i9100_lpm_boot_fault || !i9100_charge_start_ready(start_gate,lpm_now(0))) && !denied_press){
+    start_gate->blocked_presses++;denied_press=1;
    }
   }else{pressed=0;denied_press=0;}
   now=lpm_ticks();
@@ -472,7 +486,7 @@ void i9100_standalone_charge_gate(void)
   if(received_action && !remote_action){remote_action=received_action;remote_deadline=now+12000000U;}
   if(remote_action && now>=remote_deadline){
    if(remote_action==2)lpm_download();
-   if(remote_action==1 && !i9100_lpm_boot_fault && i9100_charge_start_ready(&start_gate,lpm_now(0))){
+   if(remote_action==1 && !i9100_lpm_boot_fault && i9100_charge_start_ready(start_gate,lpm_now(0))){
 #ifdef I9100_PANEL_SLEEP_BUILD
     if(lpm_panel_awake(&panel))break;
 #else
@@ -489,7 +503,6 @@ void i9100_standalone_charge_gate(void)
  if(!lpm_panel_awake(&panel))lpm_download();
 #endif
  if(blanked)lpm_write(0x11c00000U,winmap,saved_map);
- i9100_lpm_boot_gate=start_gate;
  i9100_lpm_boot_next=0;i9100_lpm_boot_phase=1;
  /* The plain bootstrap supervisor replaces the standalone periodic gate;
   * retaining an enabled comparator without its loop leaves pending IRQ89. */

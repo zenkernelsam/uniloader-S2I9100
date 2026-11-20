@@ -103,7 +103,7 @@ def qualify_art_records(raw,timed,require_transport=False,require_dirty=False):
         dirty_region_snapshots=[group['I9DR1'] for group in recent] if require_dirty else None,
         limit='Production render/start counters and matched device measurements; no physical keypress or pixel capture inferred')
 
-def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False,require_dirty=False):
+def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False,require_dirty=False,require_policy=False):
     summary=s.summarize(path)
     raw=(path/'received.bin').read_bytes()
     # A failed payload stays in a healthy supervised charger, but that does
@@ -122,6 +122,23 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
     o.require(all(sample.get('interval_available') for sample in timed[-2:]) and
         timed[-1]['measured_ms']-timed[-3]['measured_ms']>=50000,
         'Continuous device measurement interval did not span 50 seconds')
+    policy_records=[]
+    if require_policy:
+        for index in range(len(timed)-3,len(timed)):
+            sample=timed[index]
+            end=timed[index+1]['end_offset'] if index+1<len(timed) else len(raw)
+            block=raw[sample['end_offset']:end]
+            startup=None
+            if require_art:
+                records=re.findall(rb'^I9BT1 ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?\n',block,re.MULTILINE)
+                o.require(len(records)==1,'Frozen policy needs one startup record from its group')
+                startup=[int(value,16) for value in records[0].split()]
+            policy_records.append(sense.decode_policy(block,sample,startup))
+        for previous,current in zip(policy_records,policy_records[1:]):
+            polls=current['policy_polls']-previous['policy_polls']
+            ticks=current['sampled_ticks']-previous['sampled_ticks']
+            o.require(polls>0 and ticks>=polls*24000000,
+                'Shared-policy polling stopped or ran faster than the one-second sample cadence')
     sense_records=[]
     if require_sense:
         for index in range(len(timed)-3,len(timed)):
@@ -170,7 +187,7 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
                 (panel_recovery[0] or not panel_recovery[1]) and not panel_recovery[2] and
                 panel_recovery[3]==panel_values[1],'Panel recovery budget/result disagrees with its sleep state')
     elif require_recovery:raise ValueError('Recovery qualification requires panel-sleep observations')
-    return dict(summary=summary,ui=values,fimd=registers,artwork=art,panel_sleep=panel_values,panel_identity=panel_identity,panel_recovery=panel_recovery,charge_sense=sense_records,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
+    return dict(summary=summary,ui=values,fimd=registers,artwork=art,panel_sleep=panel_values,panel_identity=panel_identity,panel_recovery=panel_recovery,charge_sense=sense_records,charge_policy=policy_records,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
         limit='Draw/register/timed-log qualification; no physical image or keypress acceptance inferred')
 
 def wait_resumed(directory,seconds,record,clock=time.monotonic,sleep=time.sleep):
@@ -285,7 +302,8 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         '--seconds','180' if require_art else '120','--wait','180'],out/'charger-process',480 if require_art else 420,record)
     evidence=qualify_charger(out/'charger-evidence',tag+' '+charger_tag,manifest.get('panel_sleep') is True,
         manifest.get('standalone_panel_recovery') is True,require_art,manifest.get('standalone_charge_transport') is True,
-        manifest.get('standalone_charge_sense') is True,manifest.get('standalone_charge_dirty_regions') is True)
+        manifest.get('standalone_charge_sense') is True,manifest.get('standalone_charge_dirty_regions') is True,
+        manifest.get('standalone_charge_single_owner') is True)
     o.save(out/'charger-qualified.json',evidence);record('CHARGER_QUALIFIED',measured_interval_ms=evidence['measured_interval_ms'])
     if manifest.get('standalone_charge_shutdown_epoch') is True:
         epoch=shutdown_epoch_logs((out/'charger-evidence/received.bin').read_bytes())
@@ -335,6 +353,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         shutdown_charge_epoch_verified=require_epoch,
         stop_confirmation_verified=require_stop,
         native_charge_sense_verified=manifest.get('standalone_charge_sense') is True,
+        shared_charge_policy_verified=manifest.get('standalone_charge_single_owner') is True,
         writes_to_flash=0,physical_power_key_verified=False,energy_balance_verified=False)
 
 def main():

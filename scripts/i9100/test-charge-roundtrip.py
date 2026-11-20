@@ -82,6 +82,12 @@ def charger(path,scenario):
     for seq in range(1,5):
         ms=(seq-1)*30000
         lines.append(f'I9CHG2 seq={seq:08x} ms={ms:016x} valid=1 soc=75 mv=4000 temp=250 charging=1 reason=0 full=0 timeout=0 recharging=0 elapsed={ms//1000}\n')
+        if scenario.startswith('policy-') and scenario!='policy-missing':
+            sampled=ms*24000 if ms else 24
+            scheduled=sampled+24000000
+            polls=1+(seq-1)*30
+            lines.append('I9PS1 '+' '.join(f'{value:08x}' for value in (seq,polls,sampled&0xffffffff,sampled>>32,
+                scheduled&0xffffffff,scheduled>>32,11,1))+'\n')
         if scenario.startswith('sense-') and scenario!='sense-missing':
             sense_time=max(1,ms-3)
             lines.append(f'I9CS1 {seq:08x} {sense_time:08x} 00000000 000007d0 000003ff 000003ce 00000001 00000000\n')
@@ -161,6 +167,19 @@ def charger(path,scenario):
     if scenario=='art-dirty-no-progress':text=text.replace('000000a0 00000001 00000001 00000001','00000000 00000001 00000001 00000001')
     if scenario=='art-dirty-redrew':
         at=text.rfind('I9DR1 ');text=text[:at]+text[at:].replace('00000a80','00000a81',1)
+    if scenario.startswith('policy-'):
+        lines=text.splitlines(keepends=True);indices=[n for n,line in enumerate(lines) if line.startswith('I9PS1 ')]
+        if indices and scenario not in ('policy-success','policy-missing'):
+            at=indices[-1];fields=lines[at].split();values=[int(value,16) for value in fields[1:]]
+            if scenario=='policy-wrong-sequence':values[0]+=1
+            if scenario=='policy-too-fast':values[1]+=30
+            if scenario=='policy-stale':values[2]-=48000000;values[4]-=48000000
+            if scenario=='policy-bad-cadence':values[4]+=1
+            if scenario=='policy-samples':values[6]=12
+            if scenario=='policy-duplicate':lines.insert(at,lines[at])
+            elif scenario=='policy-partial':lines[at]='I9PS1 00000004\n'
+            else:lines[at]='I9PS1 '+' '.join(f'{value:08x}' for value in values)+'\n'
+        text=''.join(lines)
     raw=text.encode();(path/'received.bin').write_bytes(raw)
     write_events(path/'events.jsonl',[dict(phase='CHARGER_IDENTITY',device=dict(device,instance=m.o.CDC.replace('OS6','CHG'))),
         dict(phase='DTR_OK',time='2026-11-19T01:00:00+00:00'),
@@ -176,7 +195,9 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
                  'stop-success','stop-uncertain','stop-invalid','stop-missing','stop-monitor-dead',
                  'sense-success','sense-missing','sense-uncertain','sense-no-adc','sense-stale',
                  'sense-wrong-sequence','sense-partial','sense-duplicate','sense-readback','sense-newline',
-                 'art-dirty-success','art-dirty-missing','art-dirty-unhidden','art-dirty-too-wide','art-dirty-no-progress','art-dirty-redrew'):
+                 'art-dirty-success','art-dirty-missing','art-dirty-unhidden','art-dirty-too-wide','art-dirty-no-progress','art-dirty-redrew',
+                 'policy-success','policy-missing','policy-wrong-sequence','policy-too-fast','policy-stale',
+                 'policy-bad-cadence','policy-samples','policy-duplicate','policy-partial'):
     directory=out/scenario;directory.mkdir();calls=[];records=[]
     class Host:
         def inventory(self):return [device]
@@ -203,7 +224,8 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
     if scenario.startswith('epoch-'):actual_manifest=dict(manifest,standalone_charge_handoff=True,standalone_charge_deadline_adoption=True,standalone_charge_shutdown_epoch=True)
     if scenario.startswith('stop-'):actual_manifest=dict(manifest,standalone_charge_handoff=True,charge_stop_confirmation=True)
     if scenario.startswith('sense-'):actual_manifest=dict(manifest,standalone_charge_sense=True)
-    expected_success=scenario in ('success','art-success','art-transport-success','art-dirty-success','handoff-success','deadline-success','epoch-success','epoch-full','stop-success','sense-success')
+    if scenario.startswith('policy-'):actual_manifest=dict(manifest,standalone_charge_single_owner=True)
+    expected_success=scenario in ('success','art-success','art-transport-success','art-dirty-success','handoff-success','deadline-success','epoch-success','epoch-full','stop-success','sense-success','policy-success')
     try:m.run_roundtrip(package,actual_manifest,directory,lambda phase,**row:records.append(dict(phase=phase,**row)),child,Host())
     except (ValueError,RuntimeError):assert not expected_success
     else:
@@ -214,12 +236,14 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
         assert records[-1]['shutdown_charge_epoch_verified']==scenario.startswith('epoch-')
         assert records[-1]['stop_confirmation_verified']==scenario.startswith('stop-')
         assert records[-1]['native_charge_sense_verified']==scenario.startswith('sense-')
+        assert records[-1]['shared_charge_policy_verified']==scenario.startswith('policy-')
     assert all('odin-loop.py' not in call and 'flash' not in call for call in calls)
     if scenario in ('no-draw','no-blank','wrong-tag','gap','wrong-format','wrong-end'):assert len(calls)==2
     if scenario=='shutdown-failure':assert len(calls)==1
     if scenario=='boot-timeout':assert len(calls)==3
     if scenario=='success':assert len(calls)==4
     if scenario.startswith('sense-'):assert len(calls)==(4 if expected_success else 2)
+    if scenario.startswith('policy-'):assert len(calls)==(4 if expected_success else 2)
     if scenario.startswith('bootstrap-fault'):assert len(calls)==2
     if scenario.startswith(('handoff-','deadline-','epoch-','stop-')):
         assert len(calls)==(2 if scenario in ('epoch-missing-log','epoch-extended') else 4)

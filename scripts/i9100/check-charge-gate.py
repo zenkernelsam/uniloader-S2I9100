@@ -67,6 +67,9 @@ static struct I9100ChargeEpoch i9100_lpm_prior_epoch;
 static unsigned i9100_lpm_epoch_marked,i9100_lpm_epoch_match,i9100_lpm_epoch_result;
 static uint64_t i9100_lpm_epoch_rtc;
 static unsigned power_init_calls,failed_stop,sense_sequence,slow_render;
+static unsigned gate_duplicate_polls,policy_polls,report_delayed;
+static struct i9100_charge_report group_report;
+static uint64_t last_policy_ticks;
 static unsigned stop_sequence,last_boot_stage,fault_reports,boot_admission,slow_sample;
 static uint64_t first_key_seen,last_key_seen,unblank_ticks,last_blank_ticks;
 struct I9100BootSource i9100_boot_source;
@@ -77,6 +80,7 @@ static unsigned i9100_lpm_timer_rearms,i9100_lpm_timer_faults;
 static uint8_t device_tree[4096] __attribute__((aligned(4)));
 static unsigned device_tree_bytes;
 void i9100_boot_charge_failure(unsigned);
+void i9100_boot_charge_service(void);
 static int lpm_boot_requested(const struct I9100BootSource*p){return p->flags==1;}
 static int lpm_timer_init(void){return 1;}
 static int lpm_mct_write(unsigned offset,uint32_t value,uint32_t mask){assert(offset==0x240 && value==256 && mask==65536);return 1;}
@@ -137,6 +141,9 @@ static void lpm_restore_charge_epoch(void){}
 static void lpm_charge_epoch_report(void){}
 int i9100_power_init(struct i9100_power_state*s,const struct i9100_power_io*io,unsigned r){power_init_calls++;assert(r==14);memset(s,0,sizeof(*s));s->io=*io;s->revision=14;s->use_sub=1;s->ready=s->enabled=s->valid=s->present=s->connected=s->charging=1;s->millivolts=scenario==4?3400:4000;s->percent=50;s->temperature_deci_c=250;s->charge_start=12345;return 0;}
 int i9100_power_poll(struct i9100_power_state*s){assert(s->io.cookie==&i9100_lpm_hw);
+ if(policy_polls && i9100_lpm_boot_phase==0 && ticks>=last_policy_ticks && ticks-last_policy_ticks<24000000ULL)
+  gate_duplicate_polls++;
+ policy_polls++;last_policy_ticks=ticks;
  if(scenario>=11)ticks+=2400U; /* Each real bus sample advances the MCT. */
  if((scenario==17 || scenario==18) && seconds()>=35 && !slow_sample){ticks+=9600000U;slow_sample=1;}
  if((scenario==5 && seconds()>=35) || (scenario==16 && seconds()>=62) ||
@@ -144,6 +151,8 @@ int i9100_power_poll(struct i9100_power_state*s){assert(s->io.cookie==&i9100_lpm
  if(scenario==11){s->millivolts=seconds()>=40 && seconds()<44?3400:4000;}
  if(scenario==13 && seconds()>=40){s->timeout=1;s->reason=-5;s->enabled=s->charging=0;}
  else if(s->connected && !s->timeout)s->enabled=s->charging=1;
+ if(scenario==21 && report_delayed){s->percent=51;s->millivolts=3990;}
+ if(scenario==22 && report_delayed){s->percent=0;s->millivolts=3199;}
  return 0;}
 int i9100_power_stop(struct i9100_power_state*s){s->enabled=s->charging=0;stops++;stop_sequence++;
  if(scenario==12 && !failed_stop){failed_stop=1;return 0;}return 1;}
@@ -157,14 +166,27 @@ int i9100_power_muic_read(void*c,unsigned r,uint8_t*v){(void)c;(void)r;(void)v;r
 int i9100_power_muic_write(void*c,unsigned r,uint8_t v){(void)c;(void)r;(void)v;return 0;}
 int usbcdc4210_init(void){return 0;}void usbcdc4210_charge_identity(int n){assert(n==0 || n==1);}
 void usbcdc4210_charge_timed_report(const struct i9100_charge_report *r){
- assert(r->milliseconds==ticks/24000 && r->percent==50);reports++;sense_sequence=r->sequence;
+ assert(r->milliseconds==ticks/24000 && r->percent==(scenario==21 && report_delayed?51U:
+   scenario==22 && report_delayed?0U:50U));
+ reports++;sense_sequence=r->sequence;group_report=*r;
+ if(scenario==21 && !report_delayed){
+  ticks+=24000000ULL;report_delayed=1;i9100_boot_charge_service();
+ }
+ if(scenario==22 && r->sequence==2 && !report_delayed){
+  assert(boot_admission);ticks+=24000000ULL;report_delayed=1;i9100_boot_charge_service();
+  assert(!boot_admission); /* The callback revoked ready before any later RX. */
+ }
 }
 int i9100_power_charge_adc_read(void*c,unsigned*v){assert(c==&i9100_lpm_hw);*v=974;return 1;}
 void usbcdc4210_charge_sense_report(const unsigned timing[8],const unsigned registers[8]){
  assert(timing[0]==sense_sequence && registers[0]==timing[0]);
  assert(timing[4]==(ticks?0x381U:0U) && timing[5]==(ticks?974U:0xffffffffU));
- assert(timing[6]==i9100_lpm_battery.enabled && timing[7]==i9100_lpm_battery.stop_uncertain);
- assert(((uint64_t)timing[2]<<32|timing[1])==ticks/24000);
+ assert(timing[6]<=1 && timing[7]<=1);
+ assert(((uint64_t)timing[2]<<32|timing[1])==group_report.milliseconds);
+}
+void usbcdc4210_charge_policy_report(const unsigned p[8]){
+ assert(p[0]==group_report.sequence && p[1]>0 && p[6]<=11 && p[7]<=1);
+ assert((((uint64_t)p[5]<<32)|p[4])-(((uint64_t)p[3]<<32)|p[2])==24000000ULL);
 }
 void usbcdc4210_charge_screen_report(unsigned d,unsigned b,unsigned s,unsigned p){(void)d;(void)b;assert(s==1920 && p==32);}
 void usbcdc4210_charge_fimd_report(const unsigned p[8]){assert(p[1]==0x8035 && p[6]==(blanked?0x1000000:0));}
@@ -173,7 +195,10 @@ void usbcdc4210_charge_dirty_report(const unsigned p[8]){
  assert(p[2]<=396U*258U+96U*28U && p[5]<=1 && p[6]<=1 && p[7]<=1);
  if(p[6])assert(p[5] && p[7]);
 }
-void usbcdc4210_charge_start_report(const unsigned p[8]){assert(p[0]<=1 && p[1]<=11 && p[3]==1);}
+void usbcdc4210_charge_start_report(const unsigned p[8]){
+ assert(p[0]<=1 && p[1]<=11 && p[3]==1);
+ assert(p[4]==group_report.millivolts && p[5]==group_report.percent && p[7]==(unsigned)group_report.reason);
+}
 void usbcdc4210_charge_transport_report(void){}
 void usbcdc4210_charge_fault_report(const unsigned p[8]){
  assert(i9100_lpm_boot_fault && p[0]==i9100_lpm_boot_fault && p[1]==i9100_lpm_fault_phase);
@@ -196,12 +221,7 @@ void usbcdc_poll(void){usb_calls++;
 void usbcdc4210_charge_set_boot_ready(unsigned available){
  boot_admission=available;
  if(i9100_lpm_boot_fault)assert(!available);
-#ifdef I9100_PANEL_SLEEP_BUILD
- if(scenario<=10)assert(available==(seconds()>=11 && scenario!=4 && !(scenario==6 && seconds()>=31 && seconds()<36) &&
-  !((scenario==8 || scenario==9) && seconds()>=31)));
-#else
- if(scenario<=10)assert(available==(seconds()>=11 && scenario!=4));
-#endif
+ if(available)assert(i9100_charge_start_ready(&i9100_lpm_boot_gate,lpm_now(0)) && !i9100_lpm_boot_fault);
 }
 unsigned usbcdc4210_charge_take_action(void){
  if(scenario==15 && seconds()>=65 && !remote_issued){remote_issued=1;action_taken_ticks=ticks;return 2;}
@@ -257,9 +277,9 @@ int main(int argc,char **argv){
  alarm(20); /* A stuck offline model cannot hold a CPU indefinitely. */
  for(scenario=1;scenario<=
 #ifdef I9100_PANEL_SLEEP_BUILD
- 20
+ 22
 #else
- 20
+ 22
 #endif
  ;scenario++){
   fprintf(stderr,"SCENARIO %u begin\n",scenario);fflush(stderr);
@@ -272,6 +292,7 @@ int main(int argc,char **argv){
   i9100_lpm_boot_fault=i9100_lpm_fault_phase=0;
   i9100_lpm_boot_next=0;
   power_init_calls=failed_stop=stop_sequence=last_boot_stage=fault_reports=boot_admission=slow_sample=slow_render=0;
+  gate_duplicate_polls=policy_polls=report_delayed=0;last_policy_ticks=0;
   first_key_seen=last_key_seen=unblank_ticks=last_blank_ticks=0;
   i9100_boot_charge_failure(99);assert(!i9100_lpm_boot_fault && !power_init_calls); /* ordinary boot */
   unsigned result=setjmp(escaped);if(!result){
@@ -282,7 +303,8 @@ int main(int argc,char **argv){
     else i9100_boot_charge_finish(device_tree,device_tree_bytes);
    }
   }
-  assert((scenario==20 || late_draws==0) && draws>=30 && usb_calls>1000 && reports>=2);
+  assert((scenario>=20 || late_draws==0) && draws>=30 && usb_calls>1000 && reports>=2);
+  assert(!gate_duplicate_polls); /* One actual policy owner and one-second cadence. */
   if(scenario!=6 && scenario!=8 && scenario!=10 && scenario<18)assert(panel_scan==0x1003 || scenario>=3 && scenario<=5);
   if(scenario==1 || scenario==2 || scenario==6 || scenario==7){
    assert(i9100_lpm_boot_active && stops==0 && i9100_lpm_battery.enabled);
@@ -354,6 +376,8 @@ int main(int argc,char **argv){
    assert(i9100_charge_render.initial_hidden==1 && i9100_charge_render.initial_committed==1);
    assert(i9100_charge_render.progress_calls>100 && !pmu2 && !pmu3);
   }
+  if(scenario==21){assert(result==3 && report_delayed && stops==1 && !pmu2 && !pmu3);}
+  if(scenario==22){assert(result==3 && report_delayed && !boot_admission && stops==1 && !pmu2 && !pmu3);}
   fprintf(stderr,"SCENARIO %u done\n",scenario);fflush(stderr);
  }
  puts("PASS production charger startup/failure and Power timing: persistent IO, fresh two-second hold, thirty-second short wake, final checked stop, low/failed-stop hold, fault logs/download/unplug and ACK grace");

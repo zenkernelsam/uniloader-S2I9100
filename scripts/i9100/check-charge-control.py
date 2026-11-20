@@ -85,6 +85,9 @@ int main(void){
  diagnostic_at=tx_head;diagnostic_before=tx_written_total;
  unsigned dirty[8]={2,2688,2688,1,140,1,1,1};usbcdc4210_charge_dirty_report(dirty);
  assert(tx_written_total==diagnostic_before+80U && !memcmp(txring+diagnostic_at,"I9DR1 ",6));
+ diagnostic_at=tx_head;diagnostic_before=tx_written_total;
+ unsigned policy[8]={1,31,0x2c58c00,0,0x433bc00,0,11,1};usbcdc4210_charge_policy_report(policy);
+ assert(tx_written_total==diagnostic_before+80U && !memcmp(txring+diagnostic_at,"I9PS1 ",6));
  /* A real late opener can find hours of buffered charger messages. Logs
   * must be dropped whole and leave room for the exact READY handshake. */
  reset();host_open=0;GINTSTS=0;charge_log_dropped=0;

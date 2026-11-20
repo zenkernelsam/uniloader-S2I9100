@@ -94,3 +94,31 @@ def grouped(raw, timed):
         else:
             groups.append(dict(result, available=True))
     return groups
+
+
+def decode_policy(block, sample, startup=None):
+    records=re.findall(rb'^I9PS1 ((?:[0-9a-f]{8} ){7}[0-9a-f]{8})\r?\n',block,re.MULTILINE)
+    if len(records)!=1:raise ValueError('One complete shared-policy record required per timed group')
+    words=[int(value,16) for value in records[0].split()]
+    sequence,polls=words[:2]
+    sampled=(words[3]<<32)|words[2];scheduled=(words[5]<<32)|words[4]
+    if sequence!=sample['sequence'] or not polls or not sampled or scheduled-sampled!=24000000 or words[6]>11 or words[7]>1:
+        raise ValueError('Shared-policy sample identity, cadence or admission differs')
+    if not 0<=sample['measured_ms']-sampled//24000<=1502:
+        raise ValueError('Shared-policy measurement is stale or from a future clock')
+    if startup is not None and (words[6],words[7])!=(startup[1],startup[0]):
+        raise ValueError('Shared-policy and reported startup gate belong to different samples')
+    return dict(sequence=sequence,policy_polls=polls,sampled_ticks=sampled,next_ticks=scheduled,
+        sampled_ms=sampled//24000,qualified_samples=words[6],boot_ready=bool(words[7]),
+        limit='Publisher cadence and frozen same-group admission; not an independent hardware timer trace')
+
+
+def grouped_policy(raw,timed):
+    results=[]
+    for index,sample in enumerate(timed):
+        end=timed[index+1]['end_offset'] if index+1<len(timed) else len(raw)
+        block=raw[sample['end_offset']:end]
+        try:observed=decode_policy(block,sample)
+        except ValueError as error:results.append(dict(sequence=sample['sequence'],available=False,error=str(error)))
+        else:results.append(dict(observed,available=True))
+    return results

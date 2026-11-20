@@ -141,6 +141,7 @@ def summarize(path, allow_partial=False):
         'observed_millivolts_delta': valid[-1]['millivolts'] - valid[0]['millivolts'] if valid else None,
         'ranges': ranges, 'samples': samples,
         'charge_sense': _sense.grouped(raw,[row for row in samples if row['version']==2]),
+        'charge_policy': _sense.grouped_policy(raw,[row for row in samples if row['version']==2]),
         'source_measurement_times_available': any(row['version']==2 for row in samples),
         'charge_rate_verified': False,
         'timing_limit': 'I9CHG2 device clock/sequence qualifies only uninterrupted measurement segments; gaps/reboots/legacy data are split. Host receipts can include buffered states. SOC and voltage changes do not measure milliamps or prove a charge rate.',
