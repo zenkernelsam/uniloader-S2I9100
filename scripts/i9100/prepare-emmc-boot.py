@@ -29,6 +29,19 @@ def prepare(a):
     if not a.source_note.strip():raise ValueError('Document the independent clock/pin/card evidence source')
     if a.mark_reviewed and (inventory['model_fixture'] or not inventory['clock_and_pins_reviewed']):
         raise ValueError('Models/unverified inherited clocks cannot become hardware reviewed')
+    backup_path=getattr(a,'backup_acquisition',None);backup_receipt=None
+    if a.mark_reviewed and not backup_path:raise ValueError('Reviewed internal-root profile requires verified original whole-user backup')
+    if backup_path:
+        spec=importlib.util.spec_from_file_location('emmc_read_evidence',Path(__file__).with_name('emmc-read-evidence.py'))
+        backup_check=importlib.util.module_from_spec(spec);spec.loader.exec_module(backup_check)
+        captured=backup_check.verify_acquisition(backup_path,require_backup=True,require_device=a.mark_reviewed)
+        card=inventory['profile']['card'];observed=captured['card']
+        if captured['model_fixture']!=inventory['model_fixture'] or any(observed[name]!=card[name]for name in
+            ('cid','sectors','disk_guid','system_guid','data_guid','primary_crc','backup_crc','entries_crc')):
+            raise ValueError('Full backup is from another card/table or model source')
+        backup_receipt=dict(path=str(Path(backup_path).resolve().relative_to(c.ROOT)),
+            manifest_sha256=sha(Path(backup_path)/'manifest.json'),whole_user_area=captured['whole_user_area'],
+            model_fixture=captured['model_fixture'],verifier_sha256=sha(Path(__file__).with_name('emmc-read-evidence.py')))
     evidence={};originals={}
     for name,item in inventory['evidence'].items():
         if not isinstance(name,str) or set(item)!= {'path','bytes','sha256'}:raise ValueError('Invalid original evidence item')
@@ -56,7 +69,7 @@ def prepare(a):
         deployment_authorized=False,boot_ready=False,source_note=a.source_note,record=c.decode(record),record_sha256=hashlib.sha256(record).hexdigest(),
         inventory=dict(path=str(a.inventory.resolve().relative_to(c.ROOT)),sha256=hashlib.sha256(inventory_raw).hexdigest()),
         pair=dict(path=str(a.pair.resolve().relative_to(c.ROOT)),sha256=hashlib.sha256(pair_raw).hexdigest()),evidence=evidence,
-        parsed_current_evidence=validated,
+        parsed_current_evidence=validated,verified_backup=backup_receipt,
         evidence_checker_sha256=hashlib.sha256(Path(__file__).with_name('emmc-inventory-evidence.py').read_bytes()).hexdigest(),
         contract_tool_sha256=hashlib.sha256(Path(__file__).with_name('emmc-boot-contract.py').read_bytes()).hexdigest(),
         preparer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -70,6 +83,6 @@ def main():
     if os.environ.get('I9100_CPU_CAPPED')!='1':
         os.execvpe('taskset',['taskset','-c','0-13','nice','-n10','ionice','-c2','-n7',sys.executable,'-B',*sys.argv],dict(os.environ,I9100_CPU_CAPPED='1'))
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--inventory',type=Path,required=True);p.add_argument('--pair',type=Path,required=True)
-    p.add_argument('--source-note',required=True);p.add_argument('--mark-reviewed',action='store_true');p.add_argument('--output',type=Path)
+    p.add_argument('--source-note',required=True);p.add_argument('--mark-reviewed',action='store_true');p.add_argument('--backup-acquisition',type=Path);p.add_argument('--output',type=Path)
     folder,manifest=prepare(p.parse_args());print(json.dumps(dict(output=str(folder),sha256=manifest['record_sha256'],reviewed=manifest['record']['flags']==1,boot_ready=False,device_contacted=False),indent=2))
 if __name__=='__main__':main()

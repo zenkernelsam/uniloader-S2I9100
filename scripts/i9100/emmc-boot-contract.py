@@ -101,6 +101,16 @@ def read_prepared(folder,require_reviewed=False):
             if len(evidence)!=item['bytes'] or hashlib.sha256(evidence).hexdigest()!=item['sha256']:raise ValueError('Original eMMC identity/controller capture changed')
             raws[name]=evidence
         validator.check(contract['profile'],raws,False,True)
+        receipt=manifest.get('verified_backup')
+        if not receipt or receipt.get('model_fixture')is not False or receipt.get('verifier_sha256')!=hashlib.sha256(Path(__file__).with_name('emmc-read-evidence.py').read_bytes()).hexdigest():
+            raise ValueError('Reviewed boot profile has no current original full-user backup proof')
+        spec=importlib.util.spec_from_file_location('emmc_read_evidence',Path(__file__).with_name('emmc-read-evidence.py'))
+        backup_checker=importlib.util.module_from_spec(spec);spec.loader.exec_module(backup_checker)
+        backup_folder=(ROOT/receipt['path']).resolve();backup=backup_checker.verify_acquisition(backup_folder,True,True)
+        if hashlib.sha256((backup_folder/'manifest.json').read_bytes()).hexdigest()!=receipt['manifest_sha256'] or backup['whole_user_area']!=receipt['whole_user_area']:
+            raise ValueError('Original backup proof changed after internal-root review')
+        if any(backup['card'][key]!=contract['profile']['card'][key]for key in ('cid','sectors','disk_guid','system_guid','data_guid','primary_crc','backup_crc','entries_crc')):
+            raise ValueError('Original backup card/table differs from boot contract')
         pair_raw=bounded(ROOT/manifest['pair']['path'],256*1024)
         if hashlib.sha256(pair_raw).hexdigest()!=contract['pair_manifest_sha256']:raise ValueError('Paired volume preparation changed')
     return raw,manifest
