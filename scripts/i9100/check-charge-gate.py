@@ -81,6 +81,7 @@ static uint64_t ticks,last_draw_ticks,reset_ticks,action_taken_ticks;static uint
 static unsigned pmu2,pmu3,wait_ticks,panel_mode=0x9c,panel_scan=0x1003,panel_commands;
 static unsigned i9100_lpm_timer_rearms,i9100_lpm_timer_faults;
 static unsigned i9100_lpm_timer_probe=1,i9100_lpm_timer_waits,i9100_lpm_timer_acks=1;
+static const unsigned i9100_lpm_wfi_enabled=0;
 static uint8_t device_tree[4096] __attribute__((aligned(4)));
 static unsigned device_tree_bytes;
 void i9100_boot_charge_failure(unsigned);
@@ -213,7 +214,7 @@ void usbcdc4210_charge_start_report(const unsigned p[8]){
 }
 void usbcdc4210_charge_transport_report(void){}
 void usbcdc4210_charge_liveness_report(const unsigned fields[6]){
- assert(fields[0]==1 && fields[3]>0 && fields[4]<=4);
+ assert(fields[0]==0x101 && fields[1]==0 && fields[2]==1 && fields[3]>0 && fields[4]<=4);
 }
 void usbcdc4210_charge_fault_report(const unsigned p[8]){
  assert(i9100_lpm_boot_fault && p[0]==i9100_lpm_boot_fault && p[1]==i9100_lpm_fault_phase);

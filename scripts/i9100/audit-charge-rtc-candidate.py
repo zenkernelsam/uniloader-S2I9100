@@ -24,6 +24,7 @@ def main():
     p.add_argument('--kernel-source',type=Path,required=True);p.add_argument('--plan',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--expect-kernel-sha256',required=True,help='Exact reviewed isolated kernel, never inferred from the newest file')
     p.add_argument('--power-model',type=Path,required=True,help='Completed RTC/policy model built from these same sources')
+    p.add_argument('--timer-model',type=Path,required=True,help='Completed wait policy model built from this loader')
     a=p.parse_args();package,kernel_source,plan,out=map(confined,(a.package,a.kernel_source,a.plan,a.output))
     if not package.is_relative_to(REPO/'out') or not kernel_source.is_relative_to(ROOT/'xnu-S2I9100/out') or not out.is_relative_to(REPO/'out') or out.exists():raise ValueError('Use exact candidate and fresh output')
     manifest=json.loads((package/'manifest.json').read_text());snapshot=json.loads((kernel_source/'snapshot.json').read_text());identity=json.loads((package/'charger-identity.json').read_text());planned=json.loads(plan.read_text())
@@ -47,6 +48,10 @@ def main():
     if not power_model.is_relative_to(ROOT/'xnu-S2I9100/out') or power_record.get('result')!='PASS' or power_record.get('hardware') is not False:raise ValueError('Completed offline Power model required')
     for name,value in power_record['source_sha256'].items():
         if sha(confined(ROOT/'xnu-S2I9100'/name))!=value:raise ValueError('Power model used a different source: '+name)
+    timer_model=confined(a.timer_model);timer_record=json.loads(timer_model.read_text())
+    if not timer_model.is_relative_to(REPO/'out') or timer_record.get('result')!='PASS' or timer_record.get('hardware') is not False:raise ValueError('Completed wait model required')
+    for name,value in timer_record['source_sha256'].items():
+        if sha(confined(REPO/name))!=value:raise ValueError('Wait model used a different source: '+name)
     if planned['partition']!='KERNEL' or planned['files']['zImage']!=manifest['artifacts']['zImage']['sha256'] or (plan.parent/'started.json').exists():raise ValueError('Plan consumed or wrong')
     if manifest['internal_emmc_root'] or manifest['panel_sleep'] or manifest['charge_probe']:raise ValueError('Candidate scope differs')
     elf=package/'loader/uniLoader.o';z=(package/'zImage').read_bytes()
@@ -54,7 +59,7 @@ def main():
     for line in (package/'loader-symbols.txt').read_text().splitlines():
         row=line.split()
         if len(row)==3 and re.fullmatch('[0-9a-fA-F]+',row[0]):symbols[row[2]]=int(row[0],16)
-    for name,value in (('i9100_lpm_wake_route_version',2),('i9100_charge_usb_poll_version',1)):
+    for name,value in (('i9100_lpm_wake_route_version',2),('i9100_charge_usb_poll_version',1),('i9100_lpm_wait_policy_version',1),('i9100_lpm_wfi_enabled',0)):
         if struct.unpack_from('<I',z,symbols[name]-0x48000000)[0]!=value:raise ValueError('Actual ARM version missing')
     for tag in (b'I9LV1 ',b'I9RT1 ',b'I9CHC2 READY '):
         if tag not in z:raise ValueError('Actual first-packet record missing')
@@ -71,7 +76,7 @@ def main():
     if '1048' not in gate or not re.search(r'#24\b|#0x18\b',gate):raise ValueError('HPPIR register read not visible in actual gate')
     models=[]
     for name in (
-        'uniloader-S2I9100/out/lpm-timer-check-20261121-064310/result.json',
+        str(timer_model.relative_to(ROOT)),
         'uniloader-S2I9100/out/charge-control-check-20261121-082840/result.json',
         str(power_model.relative_to(ROOT)),
         'uniloader-S2I9100/out/charge-command-check-20261121-085024/result.json',

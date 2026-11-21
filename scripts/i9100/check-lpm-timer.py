@@ -97,6 +97,7 @@ int main(void){
  assert(((dist[(0x800+88)/4]>>8)&255)==1);
  assert(!(dist[0xc14/4]&(2U<<18))); /* The real MCT output is level high. */
  assert(!waits && acks==1 && i9100_lpm_timer_delivery && i9100_lpm_timer_probe==1);
+#if I9100_LPM_WFI_MODEL
  lpm_sleep_tick();assert(waits==1&&acks==2);
  /* Real rendering/USB work can exceed 10ms. The old helper WFI waited
   * against an expired compare. Verify a future match before each wait. */
@@ -133,13 +134,25 @@ int main(void){
  reset();active=1;cpu[5]=0x80;assert(lpm_timer_init());
  assert(!i9100_lpm_timer_delivery && active && cpu[5]==0x80 && !acks);
  lpm_sleep_tick();assert(!waits && active && !acks);
- puts("PASS production MCT/GIC: IRQ89/10ms, wait/ACK, expired-draw compare rebased, failed rearm stays awake, handshake/counter/controller refusal");
+#else
+ uint64_t began=ticks;
+ for(unsigned n=0;n<100;n++)lpm_sleep_tick();
+ assert(!waits && acks==1 && !i9100_lpm_timer_faults && ticks>=began+2400000ULL);
+ reset();no_delivery=1;assert(lpm_timer_init());
+ for(unsigned n=0;n<20;n++)lpm_sleep_tick();assert(!waits && !acks);
+ reset();active=1;cpu[5]=0x80;assert(lpm_timer_init());
+ lpm_sleep_tick();assert(!waits && active && !acks && cpu[5]==0x80);
+ reset();assert(lpm_timer_init());stuck=1;
+ lpm_sleep_tick();assert(!waits && i9100_lpm_timer_faults==1);
+#endif
+ puts("PASS bounded production polling and opt-in modeled WFI route; no physical wait-return or net current inferred");
 }
 '''
 (out/'check.c').write_text(source)
-for cmd,name in [(['clang','-O1','-g','-fno-pie','-no-pie','-fsanitize=address,undefined','-Wno-int-to-void-pointer-cast','-Wno-pointer-to-int-cast','-I'+str(repo/'board/samsung'),'-I'+str(repo/'include'),str(out/'check.c'),'-o',str(out/'check')],'compile'),([str(out/'check')],'result')]:
- r=subprocess.run(cmd,text=True,capture_output=True);(out/(name+'.log')).write_text(r.stdout+r.stderr);r.check_returncode()
- if name=='result':print(r.stdout.strip())
+for mode in (0,1):
+ for cmd,name in [(['clang','-O1','-g','-fno-pie','-no-pie','-fsanitize=address,undefined','-Wno-int-to-void-pointer-cast','-Wno-pointer-to-int-cast','-DI9100_LPM_WFI_MODEL='+str(mode),'-I'+str(repo/'board/samsung'),'-I'+str(repo/'include'),str(out/'check.c'),'-o',str(out/('check-'+str(mode)))],'compile'),([str(out/('check-'+str(mode)))],'result')]:
+  r=subprocess.run(cmd,text=True,capture_output=True);(out/(name+'-'+str(mode)+'.log')).write_text(r.stdout+r.stderr);r.check_returncode()
+  if name=='result':print(r.stdout.strip())
 print('EVIDENCE',out)
 (out/'result.json').write_text(json.dumps(dict(result='PASS',hardware=False,
     source_sha256={'board/samsung/i9100-lpm.h':hashlib.sha256((repo/'board/samsung/i9100-lpm.h').read_bytes()).hexdigest(),

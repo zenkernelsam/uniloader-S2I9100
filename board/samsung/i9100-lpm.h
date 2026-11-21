@@ -48,6 +48,14 @@ static unsigned i9100_lpm_timer_rearms,i9100_lpm_timer_faults;
 static unsigned i9100_lpm_timer_delivery,i9100_lpm_timer_probe;
 static unsigned i9100_lpm_timer_waits,i9100_lpm_timer_acks;
 const uint32_t i9100_lpm_wake_route_version=2;
+/* An awake IRQ probe cannot prove that this firmware context returns from
+ * WFI. Keep production charging supervised by bounded polling until a real
+ * wait/return contrast succeeds. The opt-in path below is for host models. */
+#ifndef I9100_LPM_WFI_MODEL
+#define I9100_LPM_WFI_MODEL 0
+#endif
+const uint32_t i9100_lpm_wait_policy_version=1;
+const uint32_t i9100_lpm_wfi_enabled=I9100_LPM_WFI_MODEL;
 static uint32_t lpm_read(unsigned base,unsigned off)
 {return readl((void*)(base+off));}
 static void lpm_write(unsigned base,unsigned off,uint32_t value)
@@ -179,6 +187,16 @@ static int lpm_timer_init(void)
 }
 static void lpm_sleep_tick(void)
 {
+ if(!i9100_lpm_wfi_enabled){
+  /* At most 1ms between USB/key/supervisor service, with an iteration cap
+   * if the counter stops. No IRQ or charging deadline is rewritten. */
+  uint64_t began=lpm_ticks();unsigned n;
+  for(n=0;n<65536U;n++){
+   uint64_t now=lpm_ticks();if(now<began || now-began>=24000U)break;
+  }
+  if(n==65536U)i9100_lpm_timer_faults++;
+  return;
+ }
  /* A failed awake probe keeps USB, keys and charging supervision alive.
   * Rewriting the same route is not a new proof and cannot re-enable WFI. */
  if(!i9100_lpm_timer_delivery)goto no_wait;
@@ -505,7 +523,7 @@ void i9100_standalone_charge_gate(void)
     /* Fits in the FIRST 64-byte packet. A stalled bulk stream still leaves
      * the actual wake/epoch result instead of half a long battery line. */
     extern void usbcdc4210_charge_liveness_report(const unsigned[6]);
-    const unsigned liveness[6]={i9100_lpm_timer_probe,i9100_lpm_timer_waits,
+    const unsigned liveness[6]={i9100_lpm_timer_probe|(i9100_lpm_wfi_enabled?0U:0x100U),i9100_lpm_timer_waits,
       i9100_lpm_timer_acks,observed_polls,i9100_lpm_epoch_result,(unsigned)observed.reason};
     usbcdc4210_charge_liveness_report(liveness);
     lpm_charge_epoch_report();

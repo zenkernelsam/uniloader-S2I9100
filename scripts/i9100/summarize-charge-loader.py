@@ -30,10 +30,12 @@ def decode_liveness(raw):
     result=[]
     for match in re.finditer(pattern,raw,re.MULTILINE):
         values=[int(field,16) for field in match.groups()]
-        if values[0]>3 or values[4]>4:
+        if values[0]&~0x103 or values[4]>4:
             raise ValueError('Unknown wake probe or epoch result in first-packet record')
+        wire_probe=values[0];values[0]&=3
         if values[5]>=1<<31:values[5]-=1<<32
         result.append(dict(zip(('wake_probe','completed_wfi','irq89_acks','policy_polls','epoch_result','reason'),values),
+                           wake_probe_wire=wire_probe,wfi_inhibited=bool(wire_probe&0x100),
                            end_offset=match.end(),measurement_time_available=False))
     return result
 

@@ -126,6 +126,8 @@ def qualify_liveness_records(raw,timed):
         if live['wake_probe']==1:
             o.require(live['irq89_acks']==live['completed_wfi']+1,
                 'A completed wait lost the verified timer acknowledgement')
+            if live.get('wfi_inhibited'):
+                o.require(live['completed_wfi']==0,'Polling-only policy must not claim completed WFI')
         else:
             o.require(live['completed_wfi']==live['irq89_acks']==0,
                 'Undeliverable timer must remain on its explicit awake path')
@@ -140,15 +142,16 @@ def qualify_liveness_records(raw,timed):
                            wake=live,rtc=clock))
     for before,after in zip(groups,groups[1:]):
         a,b=before['wake'],after['wake']
-        o.require(a['wake_probe']==b['wake_probe'] and a['policy_polls']<b['policy_polls'] and
+        o.require(a['wake_probe']==b['wake_probe'] and a.get('wfi_inhibited',False)==b.get('wfi_inhibited',False) and a['policy_polls']<b['policy_polls'] and
             a['completed_wfi']<=b['completed_wfi'] and a['irq89_acks']<=b['irq89_acks'],
             'Charging supervision or wait counters stopped within the measured interval')
-        if a['wake_probe']==1:
+        if a['wake_probe']==1 and not a.get('wfi_inhibited'):
             o.require(a['completed_wfi']<b['completed_wfi'],'No completed timer waits advanced in the stable interval')
         fixed=('read_mask','controls','first_low','first_high','status','sequence')
         o.require(all(before['rtc'][key]==after['rtc'][key] for key in fixed),
             'Initial RTC restore record changed during the charging interval')
-    return dict(groups=groups,wake_mode='verified-timer' if groups[-1]['wake']['wake_probe']==1 else 'explicit-awake',
+    return dict(groups=groups,wake_mode='verified-timer' if groups[-1]['wake']['wake_probe']==1 and not groups[-1]['wake'].get('wfi_inhibited') else 'explicit-awake',
+                wfi_inhibited=groups[-1]['wake'].get('wfi_inhibited',False),
                 rtc_restore_consistent=True,policy_advanced=True,physical_current_verified=False)
 
 def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False,require_dirty=False,require_policy=False,require_download=False,require_route=False,require_liveness=False,completed_observation=False):

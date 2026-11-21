@@ -369,7 +369,7 @@ def main():
         if len(row.split()) == 3 and row.split()[0][0] in '0123456789abcdef'}
     if args.standalone_charge:
         assert all(name in sym for name in ('i9100_boot_charge_service','i9100_boot_charge_stage','i9100_boot_charge_finish','i9100_boot_charge_failure'))
-        for name,version in (('i9100_lpm_wake_route_version',2),('i9100_charge_usb_poll_version',1)):
+        for name,version in (('i9100_lpm_wake_route_version',2),('i9100_charge_usb_poll_version',1),('i9100_lpm_wait_policy_version',1),('i9100_lpm_wfi_enabled',0)):
             assert name in sym,'Missing charger liveness version in actual image'
             at=sym[name]-0x48000000
             assert struct.unpack_from('<I',data,at)[0]==version,'Charger liveness version differs'
@@ -446,6 +446,8 @@ def main():
         'standalone_charge_deadline_adoption': args.standalone_charge and b'_i9100_charge_adopt_diag\0' in raw_data,
         'standalone_charge_shutdown_epoch': args.standalone_charge and b'I9CE1 ' in data and b'_i9100_charge_epoch_live\0' in raw_data,
         'standalone_charge_wake_route_version': 2 if args.standalone_charge else 0,
+        'standalone_charge_wait_policy_version': 1 if args.standalone_charge else 0,
+        'standalone_charge_wfi_enabled': False,
         'standalone_charge_endpoint_poll_version': 1 if args.standalone_charge else 0,
         'standalone_charge_first_packet_liveness': args.standalone_charge,
         'display_vsync_power': b'_i9100_display_vsync_power_diag\0' in raw_data,

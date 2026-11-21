@@ -22,10 +22,10 @@ clock=Clock();m.time=clock
 def utc_now():return (datetime(2026,11,21,tzinfo=timezone.utc)+timedelta(seconds=clock.now)).isoformat()
 m.utc_now=utc_now
 rtc_seconds=m.check.preflight.rtc_time(0x02130129,0x202611,3)
-def group(number):
-    ms=number*30000;polls=1+(number-1)*30;waits=number*3000
+def group(number,polling=False):
+    ms=number*30000;polls=1+(number-1)*30;waits=0 if polling else number*3000
     t=ms*24000;next_t=t+24000000
-    lines=[f'I9LV1 00000001 {waits:08x} {waits+1:08x} {polls:08x} 00000001 00000000\n',
+    lines=[f'I9LV1 {0x101 if polling else 1:08x} {waits:08x} {waits+1:08x} {polls:08x} 00000001 00000000\n',
         'I9RT1 0000000f 00000303 02130129 00202611 00000001 00000002\n',
         f'I9CE1 00000001 00000001 00000001 00001234 00000190 000001a6 {rtc_seconds:08x} 00000000\n',
         f'I9CHG2 seq={number:08x} ms={ms:016x} valid=1 soc=75 mv=4000 temp=250 charging=1 reason=0 full=0 timeout=0 recharging=0 elapsed={400+ms//1000}\n',
@@ -41,11 +41,12 @@ def group(number):
         'I9UT1 00040000 80488200 20080040 00000000 00000180 000000a0 00000001 00000000\n']
     return ''.join(lines).encode()
 cases=[]
-for scenario in ('healthy','fragmented','buffered-only','missing-ready','wrong-ready','missing-wake',
+for scenario in ('healthy','fragmented','polling-only','polling-fake-wfi','buffered-only','missing-ready','wrong-ready','missing-wake',
                  'wrong-rtc','missing-epoch','short-packet-only','read-disconnect','write-failed',
                  'wrong-ack','refused-boot'):
     clock.now=0;instances=[];directory=out/scenario
-    frames=[group(n) for n in (1,2,3)]
+    frames=[group(n,scenario.startswith('polling-')) for n in (1,2,3)]
+    if scenario=='polling-fake-wfi':frames[-1]=frames[-1].replace(b'I9LV1 00000101 00000000 00000001',b'I9LV1 00000101 00000001 00000002')
     if scenario=='missing-wake':frames=[re.sub(rb'^I9LV1.*\n',b'',x,flags=re.M) for x in frames]
     if scenario=='wrong-rtc':frames[-1]=frames[-1].replace(b'02130129',b'02130119')
     if scenario=='missing-epoch':frames=[re.sub(rb'^I9CE1.*\n',b'',x,flags=re.M) for x in frames]
@@ -82,13 +83,13 @@ for scenario in ('healthy','fragmented','buffered-only','missing-ready','wrong-r
             if scenario=='refused-boot':answer=b'I9CHC2 0000007b ERR boot-unavailable\n'
             self.ack_pending=[answer[:9],answer[9:]] if scenario=='fragmented' else [answer]
         def close(self):self.closed=True
-    expected=scenario in ('healthy','fragmented');failed=False
+    expected=scenario in ('healthy','fragmented','polling-only');failed=False
     try:m.run(package,directory,90,0,Transport)
     except (ValueError,RuntimeError,OSError):failed=True
     assert failed!=expected and len(instances)==1 and instances[0].closed
     events=[json.loads(line) for line in (directory/'events.jsonl').read_text().splitlines()]
     assert events[-1]['phase']=='CLOSED'
-    sent=scenario in ('healthy','fragmented','write-failed','wrong-ack','refused-boot')
+    sent=scenario in ('healthy','fragmented','polling-only','write-failed','wrong-ack','refused-boot')
     assert len(instances[0].writes)==int(sent)
     if expected:
         observation=directory/'observation'
