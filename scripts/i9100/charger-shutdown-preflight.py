@@ -37,8 +37,10 @@ def rtc_time(low,high,control):
     require(raw[3] in (1,2,4,8,16,32,64),'RTC weekday is not one-hot')
     second,minute,hour,month,year,day=(number(raw[0]),number(raw[1]),
         number(raw[2]&hour_mask),number(raw[4]),number(raw[5]),number(raw[6]))
-    require(hour<(24 if mode24 else 12),'RTC hour range')
-    if not mode24 and raw[2]&0x40:hour+=12
+    require(0<=hour<24 if mode24 else 1<=hour<=12,'RTC hour range')
+    if not mode24:
+        if hour==12:hour=0
+        if raw[2]&0x40:hour+=12
     require(year<=(99 if control&1 else 127),'RTC year range')
     current=datetime(2000+year,month,day,hour,minute,second,tzinfo=timezone.utc)
     return int((current-datetime(2000,1,1,tzinfo=timezone.utc)).total_seconds())
