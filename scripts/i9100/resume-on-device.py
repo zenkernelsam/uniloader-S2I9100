@@ -113,6 +113,7 @@ def main():
             run_child([sys.executable,'-B',here/'ui-session.py','serve','--kernel',package/'mach_kernel',
                 '--output',output/'boot-evidence','--seconds',str(a.capture_seconds),'--charge-on-ready',
                 '--on-ready','diagnostics','--on-ready','frame','--on-ready','charge',
+                *(['--on-ready','charge-usb'] if manifest.get('standalone_charge_session_version')==1 else []),
                 '--allow-reboot-download','--allow-poweroff-charge'],
                 output/'capture-process',a.capture_seconds+180,record)
             record('DONE',meaning='One KERNEL plan and one bounded post-boot owner completed; final UI/charger tests remain')

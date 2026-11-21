@@ -82,10 +82,15 @@ def main():
     result,asm=wiring.inspect(package/'mach_kernel','_i9100_power_rtc_seconds',['_i9100_power_rtc_snapshot'])
     if not result['callees']['_i9100_power_rtc_snapshot']['direct_calls']:raise ValueError('RTC actual wrapper not wired')
     (out/'kernel-rtc-calls.json').write_text(json.dumps(result,indent=2)+'\n');(out/'kernel-rtc.s.txt').write_text(asm)
-    for caller in ('i9100_standalone_charge_gate','usbcdc_poll','charge_ep1_complete','usbcdc4210_charge_rtc_report','i9100_power_rtc_snapshot'):
+    for caller in ('i9100_standalone_charge_gate','usbcdc_poll','charge_ep1_complete','usbcdc4210_charge_rtc_report','i9100_power_rtc_snapshot',
+                   'charge_ep0_packet','charge_ep0_indone','charge_open_ready','charge_trace_publish',
+                   'usbcdc4210_charge_take_recovery','usbcdc4210_charge_stop_proof'):
         text=subprocess.check_output(['arm-none-eabi-objdump','-d','--disassemble='+caller,str(elf)],text=True)
         if '<'+caller+'>:' not in text:raise ValueError('Actual ARM function missing '+caller)
         (out/(caller+'.s.txt')).write_text(text)
+    proof=(out/'usbcdc4210_charge_stop_proof.s.txt').read_text()
+    if any('<'+name+'>' in proof for name in ('usbcdc_poll','i9100_boot_charge_ticks','i9100_boot_charge_service','i9100_power_poll')):
+        raise ValueError('Post-stop proof calls hardware or USB service')
     gate=(out/'i9100_standalone_charge_gate.s.txt').read_text()
     if '1048' not in gate or not re.search(r'#24\b|#0x18\b',gate):raise ValueError('HPPIR register read not visible in actual gate')
     models=[]
