@@ -47,7 +47,7 @@ def changed(raw,slot,value):
     words=list(struct.unpack('<32I',raw));words[slot]=value
     words[-1]=p.epoch.checksum(struct.pack('<32I',*words));return struct.pack('<32I',*words)
 cases=[]
-for scenario in ('healthy-bcd','healthy-binary','healthy-binary12','healthy-native-binary12','healthy-noon-binary12','full','old-invalid-rtc','invalid-rtc','moving-rtc',
+for scenario in ('healthy-bcd','healthy-binary','healthy-binary12','healthy-native-binary12','healthy-noon-binary12','sealed-noon','sealed-moving','sealed-odd','sealed-bad-crc','sealed-frozen','full','old-invalid-rtc','invalid-rtc','moving-rtc',
                  'frozen-epoch','frozen-rtc','timeout','unknown-clock-format','changed-cycle',
                  'lost-charger','read-error','slow-read','invalid-raw-calendar','unready-worker'):
     directory=out/scenario;clock.now=1.0;commands=[];openers=[];reads=[]
@@ -63,7 +63,7 @@ for scenario in ('healthy-bcd','healthy-binary','healthy-binary12','healthy-nati
         before=epoch(10,100000000000,native_seconds)
         after=epoch(12,102200000000,native_seconds+2)
         rtc_words=[1,2,15,0,0x01092b36,0x010001,0x01092b36,0x010001,1,native_seconds,0,0]
-    if scenario=='healthy-noon-binary12':
+    if scenario=='healthy-noon-binary12' or scenario.startswith('sealed-'):
         noon_seconds=43780
         before=epoch(10,100000000000,noon_seconds)
         after=epoch(12,102200000000,noon_seconds+2)
@@ -73,12 +73,19 @@ for scenario in ('healthy-bcd','healthy-binary','healthy-binary12','healthy-nati
     if scenario=='invalid-rtc':rtc_words[8]=7
     if scenario=='frozen-epoch':after=before
     if scenario=='frozen-rtc':after=epoch(12,102200000000,rtc_seconds)
+    if scenario=='sealed-frozen':after=epoch(12,102200000000,noon_seconds)
     if scenario=='timeout':before=changed(before,10,1)
     if scenario=='unknown-clock-format':rtc_words[3]=0x101
     if scenario=='changed-cycle':after=epoch(12,102200000000,rtc_seconds+2,True)
     if scenario=='lost-charger':after=changed(after,7,0)
     if scenario=='invalid-raw-calendar':rtc_words[5]=0x312613
     rtc_raw=struct.pack('<12I',*rtc_words)
+    if scenario.startswith('sealed-'):
+        rtc_words[0]=2
+        if scenario=='sealed-odd':rtc_words[1]=3
+        rtc_words[11]=p.rtc_checksum(struct.pack('<12I',*rtc_words))
+        if scenario=='sealed-bad-crc':rtc_words[11]^=1
+        rtc_raw=struct.pack('<12I',*rtc_words)
     class Transport:
         def __init__(self,port,record):
             assert port=='COM12';self.closed=False;openers.append(self)
@@ -100,12 +107,12 @@ for scenario in ('healthy-bcd','healthy-binary','healthy-binary12','healthy-nati
                 return before if sum(a==address for a,n in reads)==1 else after
             assert address==symbols.values['_i9100_rtc_read_diag']
             if size==48:return rtc_raw
-            assert size==8;return struct.pack('<2I',1,4 if scenario=='moving-rtc' else 2)
+            assert size==8;return struct.pack('<2I',rtc_words[0],4 if scenario in ('moving-rtc','sealed-moving') else rtc_words[1])
     ui.b.f.WinTransport=Transport;ui.OwnerSession=Session;ui.b.m.Kernel=Kernel
     args=SimpleNamespace(kernel=kernel_file,output=directory,seconds=240,
         allow_poweroff_charge=True,allow_reboot_download=False,require_charge_epoch=True,
         poweroff_on_ready=True,charge_on_ready=False,on_ready=[])
-    expected=scenario in ('healthy-bcd','healthy-binary','healthy-binary12','healthy-native-binary12','healthy-noon-binary12','full')
+    expected=scenario in ('healthy-bcd','healthy-binary','healthy-binary12','healthy-native-binary12','healthy-noon-binary12','sealed-noon','sealed-moving','full')
     failed=False
     try:ui.serve(args)
     except (ValueError,TimeoutError):failed=True
@@ -124,5 +131,5 @@ for scenario in ('healthy-bcd','healthy-binary','healthy-binary12','healthy-nati
 (out/'result.json').write_text(json.dumps(dict(result='PASS',hardware=False,cases=cases,
     actual_path='Production ui-session.serve invokes production preflight before halt',
     limitation='COM transport and live memory are stand-ins. No physical charge or shutdown tested.'),indent=2)+'\n')
-print('PASS production owner: valid RTC precedes halt, 13 bad/frozen/uncertain cases issue no halt, one normal close')
+print('PASS production owner: valid RTC precedes halt, '+str(sum(row['halt_commands']==0 for row in cases))+' bad/frozen/uncertain cases issue no halt, one normal close')
 print('EVIDENCE',out)

@@ -22,6 +22,26 @@ def require(ok,message):
 
 def sha(raw):return hashlib.sha256(raw).hexdigest()
 
+def rtc_checksum(raw):
+    require(len(raw)==48,'Exact sealed RTC size required')
+    value=2166136261
+    for byte in raw[:-4]:value=((value^byte)*16777619)&0xffffffff
+    return value
+
+def rtc_publication(raw,header_after):
+    require(len(raw)==48 and len(header_after)==8,'Exact RTC publication evidence required')
+    words=struct.unpack('<12I',raw);version,sequence=words[:2]
+    after_version,after_sequence=struct.unpack('<2I',header_after)
+    require(version in (1,2) and sequence>0 and not sequence&1 and after_version==version,
+            'RTC publisher is incomplete or changed format')
+    if version==1:
+        require(words[11]==0 and after_sequence==sequence,'Legacy RTC publisher changed or is incomplete')
+    else:
+        require(words[11]==rtc_checksum(raw),'RTC sealed publication checksum differs')
+        require(sequence<=after_sequence<=sequence+2,'RTC publication reset or advanced beyond the single read window')
+    return dict(version=version,sequence=sequence,producer_sequence_after=after_sequence,
+                sealed=version==2,publication_advanced=after_sequence!=sequence)
+
 def rtc_time(low,high,control):
     require(not high>>24,'RTC time has reserved bytes')
     raw=struct.pack('<II',low,high)[:7]
@@ -68,9 +88,8 @@ def qualify(before,rtc_raw,rtc_after,after,tag,duration_seconds):
         first['full']==last['full'] and first['recharging']==last['recharging'] and
         first['elapsed_ns']<=last['elapsed_ns'],'Charging cycle changed during the single observation')
     words=struct.unpack('<12I',rtc_raw)
-    require(words[0]==1 and words[1]>0 and not words[1]&1 and
-        struct.unpack('<2I',rtc_after)==words[:2],'RTC publisher changed or is incomplete')
-    require(words[2]==15 and words[8]==1 and words[11]==0 and
+    publication=rtc_publication(rtc_raw,rtc_after)
+    require(words[2]==15 and words[8]==1 and
         words[3]<=0xffff and words[3]&255==words[3]>>8,'RTC transaction is not a completed stable read')
     control=words[3]&255
     start,end=rtc_time(words[4],words[5],control),rtc_time(words[6],words[7],control)
@@ -80,7 +99,7 @@ def qualify(before,rtc_raw,rtc_after,after,tag,duration_seconds):
         1<=last['rtc_seconds']-first['rtc_seconds']<=6,
         'Battery-backed RTC did not advance with the live charging publication')
     return dict(qualified=True,kernel_tag=tag,epoch_before=first,epoch_after=last,
-        rtc=dict(sequence=words[1],controls=words[3],seconds=seconds,
+        rtc=dict(**publication,controls=words[3],seconds=seconds,
                  mode=('BCD24' if control&1 else 'binary24') if control&2 else 'binary12'),
         duration_seconds=duration_seconds,
         raw_sha256={name:sha(raw) for name,raw in (

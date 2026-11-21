@@ -323,9 +323,12 @@ def capture(kernel,symbols,out):
         words=struct.unpack('<12I',rtc)
         value=dict(zip(('version','sequence','read_mask','controls','first_low','first_high',
                         'last_low','last_high','status','seconds_low','seconds_high','reserved'),words))
-        if value['version']!=1 or value['status']>9 or value['read_mask']>15 or value['reserved']:
+        if value['version'] not in (1,2) or value['status']>9 or value['read_mask']>15 or (value['version']==1 and value['reserved']):
             raise ValueError('Unknown RTC raw observation')
-        value['consistent']=not value['sequence']&1 and struct.unpack('<2I',rtc_after)==words[:2]
+        rtc_spec=importlib.util.spec_from_file_location('charge_rtc_publication',Path(__file__).with_name('charger-shutdown-preflight.py'))
+        rtc_checker=importlib.util.module_from_spec(rtc_spec);rtc_spec.loader.exec_module(rtc_checker)
+        try:value.update(rtc_checker.rtc_publication(rtc,rtc_after));value['consistent']=True
+        except ValueError as error:value.update(consistent=False,publication_error=str(error))
         value['seconds']=(value['seconds_high']<<32)|value['seconds_low']
         value['raw_format']=('BCD24' if value['controls']&3==3 else 'binary24' if value['controls']&3==2 else 'binary12' if value['controls']&3==0 else 'unsupported')
         value['limit']='Raw read transaction only; zero/failed RTC is not a proven clock or a fresh charging deadline'

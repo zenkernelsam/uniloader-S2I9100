@@ -160,6 +160,26 @@ for unstable in (False,True):
     assert result['rtc_read']['consistent']==(not unstable)
     assert result['rtc_read']['raw_format']=='BCD24' and result['rtc_read']['seconds']==1234
     assert (target/'rtc-read.bin').is_file() and (target/'rtc-read-after.bin').is_file()
-(out/'result.json').write_text(json.dumps(dict(result='PASS',cases=2,fixture=str(fixture),
+rtc_spec=importlib.util.spec_from_file_location('capture_rtc_seal',here/'charger-shutdown-preflight.py')
+rtc_checker=importlib.util.module_from_spec(rtc_spec);rtc_spec.loader.exec_module(rtc_checker)
+class KernelRTCSealed(KernelPC):
+    def __init__(self,case):super().__init__(1);self.case=case
+    def read(self,address,size):
+        if address==0x9000:
+            self.calls.append((address,size));assert size in (8,48)
+            words=[2,2,15,0,0x014c0928,0x010001,0x014c0928,0x010001,1,43780,0,0]
+            if self.case=='odd':words[1]=3
+            words[11]=rtc_checker.rtc_checksum(struct.pack('<12I',*words))
+            if self.case=='bad-crc':words[11]^=1
+            if size==8 and self.case=='advanced':words[1]=4
+            return struct.pack('<12I',*words)[:size]
+        return super().read(address,size)
+for case in ('stable','advanced','bad-crc','odd'):
+    target=out/('rtc-sealed-'+case);target.mkdir();kernel=KernelRTCSealed(case)
+    result=m.capture(kernel,SymbolsRTC(),target)
+    assert result['rtc_read']['consistent']==(case in ('stable','advanced'))
+    assert result['rtc_read']['raw_format']=='binary12' and result['rtc_read']['seconds']==43780
+    assert kernel.calls[-1]==(0x1000,16)
+(out/'result.json').write_text(json.dumps(dict(result='PASS',cases=2,rtc_cases=6,fixture=str(fixture),
     evidence='Real charger snapshot, separate optional addresses, v1/v2 decoding, inherited deadline publication and later producer advancement'),indent=2)+'\n')
 print('PASS real charger fixture; v1/v2 setup address isolation; final charger header and producer advancement')
