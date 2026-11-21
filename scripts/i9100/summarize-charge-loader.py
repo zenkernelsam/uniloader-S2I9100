@@ -102,7 +102,7 @@ def read_bounded(path):
     return data
 
 
-def summarize(path, allow_partial=False):
+def summarize(path, allow_partial=False, completed_observation=False):
     path = confined(path)
     raw = read_bounded(path / 'received.bin')
     events_raw = read_bounded(path / 'events.jsonl')
@@ -117,7 +117,19 @@ def summarize(path, allow_partial=False):
     closed = bool(events and events[-1].get('phase') == 'CLOSED')
     complete = not partial_event and len(done) == 1 and closed and not any(
         e.get('phase') == 'STOP' for e in events)
-    if not complete and not allow_partial:
+    observed=[e for e in events if e.get('phase')=='OBSERVATION_COMPLETE']
+    interval_complete=False
+    if completed_observation:
+        if (allow_partial or partial_event or len(observed)!=1 or not events or
+            events[-1].get('phase')!='OBSERVATION_COMPLETE' or
+            any(e.get('phase') in ('SEND','ACK','DONE','STOP','CLOSED') for e in events) or
+            observed[0].get('writes')!=0 or observed[0].get('bytes')!=len(raw)):
+            raise ValueError('Frozen observation is not a completed, pre-command interval')
+        begins=[e for e in events if e.get('phase')=='BEGIN']
+        if len(begins)!=1 or not isinstance(begins[0].get('pid'),int) or begins[0]['pid']<=0:
+            raise ValueError('Frozen observation lacks its original process owner')
+        interval_complete=True
+    if not complete and not interval_complete and not allow_partial:
         raise ValueError(f'Capture has not completed normally; keep its owner: {path}')
     if complete and done[0].get('bytes') != len(raw):
         raise ValueError('DONE byte count and retained capture differ')
@@ -133,13 +145,13 @@ def summarize(path, allow_partial=False):
         if not isinstance(total, int) or not isinstance(count, int) or count <= 0 or total != previous + count:
             raise ValueError('Receipt byte offsets are discontinuous')
         previous = total
-    if complete and receipts and previous != len(raw):
+    if (complete or interval_complete) and receipts and previous != len(raw):
         raise ValueError('Receipt offsets and completed capture differ')
 
     samples=decode_status(raw,receipts)
     valid = [row for row in samples if row['valid']]
     begin = next((e['time'] for e in events if e.get('phase') == 'DTR_OK'), None)
-    end = done[0]['time'] if complete else None
+    end = done[0]['time'] if complete else observed[0]['time'] if interval_complete else None
     seconds = ((datetime.fromisoformat(end) - datetime.fromisoformat(begin)).total_seconds()
                if begin and end else None)
     ranges = {key: {'minimum': min(row[key] for row in valid),
@@ -151,6 +163,7 @@ def summarize(path, allow_partial=False):
             transitions.append(dict(index=n,before=valid[n-1],after=row))
     return {
         'capture': str(path), 'complete': complete, 'closed': closed,
+        'interval_complete': interval_complete,
         'partial_event_record': partial_event,
         'device': identities[0], 'bytes': len(raw),
         'received_sha256': hashlib.sha256(raw).hexdigest(),

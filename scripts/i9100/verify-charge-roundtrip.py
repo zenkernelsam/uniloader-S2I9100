@@ -151,8 +151,8 @@ def qualify_liveness_records(raw,timed):
     return dict(groups=groups,wake_mode='verified-timer' if groups[-1]['wake']['wake_probe']==1 else 'explicit-awake',
                 rtc_restore_consistent=True,policy_advanced=True,physical_current_verified=False)
 
-def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False,require_dirty=False,require_policy=False,require_download=False,require_route=False,require_liveness=False):
-    summary=s.summarize(path)
+def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False,require_dirty=False,require_policy=False,require_download=False,require_route=False,require_liveness=False,completed_observation=False):
+    summary=s.summarize(path,completed_observation=completed_observation)
     raw=(path/'received.bin').read_bytes()
     # Failed bootstrap or charger-stop transitions can stay supervised, but
     # do not make this session eligible for another automatic boot attempt.
@@ -366,20 +366,40 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
             'Pre-halt RTC/deadline evidence was not retained by this owner')
     record('SHUTDOWN_COMPLETE')
     require_art=manifest.get('standalone_charge_art') is not None
-    child([sys.executable,'-B',HERE/'capture-charge-loader.py','--output',out/'charger-evidence',
-        '--seconds','180' if require_art else '120','--wait','180'],out/'charger-process',480 if require_art else 420,record)
-    evidence=qualify_charger(out/'charger-evidence',tag+' '+charger_tag,manifest.get('panel_sleep') is True,
+    if require_preflight:
+        child([sys.executable,'-B',HERE/'charge-verified-session.py','--package',package,
+            '--output',out/'verified-charger-session','--seconds','180','--wait','180'],
+            out/'verified-charger-process',480,record)
+        command=rows(out/'verified-charger-session/events.jsonl')
+        command_capture=out/'verified-charger-session/observation'
+        command_raw=(out/'verified-charger-session/received.bin').read_bytes()
+        expected_done=[row for row in command if row.get('phase')=='DONE']
+        o.require(len(expected_done)==1 and expected_done[0].get('bytes')==len(command_raw),
+            'Combined charger owner did not retain its complete bytes')
+        o.require(sum(row.get('phase')=='OBSERVATION_COMPLETE' for row in command)==1 and
+            sum(row.get('phase')=='CHARGER_QUALIFIED' for row in command)==1,
+            'One original owner must qualify the observation before boot')
+        phases=[row['phase'] for row in command]
+        o.require(phases.index('CHARGER_QUALIFIED')<phases.index('SEND')<phases.index('ACK'),
+            'Boot command preceded the qualified original observation')
+        command_evidence=out/'verified-charger-session'
+    else:
+        child([sys.executable,'-B',HERE/'capture-charge-loader.py','--output',out/'charger-evidence',
+            '--seconds','180' if require_art else '120','--wait','180'],out/'charger-process',480 if require_art else 420,record)
+        command_capture=out/'charger-evidence'
+    evidence=qualify_charger(command_capture,tag+' '+charger_tag,manifest.get('panel_sleep') is True,
         manifest.get('standalone_panel_recovery') is True,require_art,manifest.get('standalone_charge_transport') is True,
         manifest.get('standalone_charge_sense') is True,manifest.get('standalone_charge_dirty_regions') is True,
         manifest.get('standalone_charge_single_owner') is True,manifest.get('standalone_charge_download_stop') is True,
-        manifest.get('charge_route_control_version')==1,require_preflight)
+        manifest.get('charge_route_control_version')==1,require_preflight,require_preflight)
     o.save(out/'charger-qualified.json',evidence);record('CHARGER_QUALIFIED',measured_interval_ms=evidence['measured_interval_ms'])
     if manifest.get('standalone_charge_shutdown_epoch') is True:
-        epoch=shutdown_epoch_logs((out/'charger-evidence/received.bin').read_bytes())
+        epoch=shutdown_epoch_logs((command_capture/'received.bin').read_bytes())
         o.save(out/'shutdown-epoch-loader.json',dict(fields=epoch,limit='One actual restore result before any remote boot'))
-    child([sys.executable,'-B',HERE/'charge-command.py','--package',package,'--action','boot',
-        '--output',out/'boot-command-evidence'],out/'boot-command-process',120,record)
-    command=rows(out/'boot-command-evidence/events.jsonl')
+    if not require_preflight:
+        child([sys.executable,'-B',HERE/'charge-command.py','--package',package,'--action','boot',
+            '--output',out/'boot-command-evidence'],out/'boot-command-process',120,record)
+        command=rows(out/'boot-command-evidence/events.jsonl')
     o.require(command[-1]['phase']=='CLOSED' and sum(row['phase']=='SEND' for row in command)==1 and
         sum(row['phase']=='ACK' for row in command)==1 and sum(row['phase']=='DONE' for row in command)==1 and
         not any(row['phase']=='STOP' for row in command),'Exact boot acknowledgement not proved')
@@ -409,7 +429,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
             observed.get('raw_sha256')==hashlib.sha256(raw).hexdigest(),
             'Returned XNU did not prove a complete same-BUILD charger stop record')
         deadline=qualify_inherited_deadline(decoded,charge.get('charger_deadline_adoption')) if require_deadline else None
-        shutdown_epoch=qualify_shutdown_epoch((out/'charger-evidence/received.bin').read_bytes(),
+        shutdown_epoch=qualify_shutdown_epoch((command_capture/'received.bin').read_bytes(),
             observed.get('shutdown_charge_epoch')) if require_epoch else None
         stop_confirmed=qualify_stop_confirmation(charge) if require_stop else None
         o.save(out/'boot-handoff-verified.json',dict(record=decoded,

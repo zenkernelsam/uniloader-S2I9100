@@ -291,6 +291,18 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
                 owner(target,True,preflight=scenario=='preflight-success')
             else:owner(target,handoff=scenario if scenario.startswith(('handoff-','deadline-','epoch-','stop-')) else None)
         elif tool=='capture-charge-loader.py':charger(target,scenario)
+        elif tool=='charge-verified-session.py':
+            assert scenario=='preflight-success'
+            target.mkdir();frozen=target/'observation';charger(frozen,scenario)
+            events=[json.loads(line) for line in (frozen/'events.jsonl').read_text().splitlines()]
+            events=[dict(time='2026-11-19T01:00:00+00:00',phase='BEGIN',pid=123,writes=0)]+[e for e in events if e['phase'] not in ('DONE','CLOSED')]
+            count=len((frozen/'received.bin').read_bytes())
+            events.append(dict(time='2026-11-19T01:02:00+00:00',phase='OBSERVATION_COMPLETE',bytes=count,writes=0))
+            write_events(frozen/'events.jsonl',events)
+            (target/'received.bin').write_bytes((frozen/'received.bin').read_bytes())
+            write_events(target/'events.jsonl',events+[
+                dict(phase='CHARGER_QUALIFIED'),dict(phase='SEND'),dict(phase='ACK'),
+                dict(phase='DONE',bytes=count,writes=1),dict(phase='CLOSED')])
         elif tool=='charge-command.py':
             assert argv[argv.index('--action')+1]=='boot'
             if scenario=='boot-timeout':raise RuntimeError('modeled boot child uncertain; retained')
@@ -327,7 +339,7 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
     if scenario=='shutdown-failure':assert len(calls)==1
     if scenario=='boot-timeout':assert len(calls)==3
     if scenario=='success':assert len(calls)==4
-    if scenario.startswith('preflight-'):assert len(calls)==(4 if expected_success else 1)
+    if scenario.startswith('preflight-'):assert len(calls)==(3 if expected_success else 1)
     if scenario.startswith('sense-'):assert len(calls)==(4 if expected_success else 2)
     if scenario.startswith('route-'):assert len(calls)==(4 if expected_success else 2)
     if scenario.startswith('policy-'):assert len(calls)==(4 if expected_success else 2)
