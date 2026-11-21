@@ -19,6 +19,7 @@ o=r.o
 s=module('charge_roundtrip_summary','summarize-charge-loader.py')
 h=module('charge_roundtrip_handoff','charge-handoff.py')
 sense=module('charge_roundtrip_sense','charge-sense.py')
+preflight=module('charge_roundtrip_preflight','charger-shutdown-preflight.py')
 
 def rows(path):
     return r.read_events(path)
@@ -34,7 +35,7 @@ def owner_complete(path,tag):
         not any(row['phase']=='STOP' for row in events),'Owner did not complete normally; no next opener')
     return events
 
-def qualify_art_records(raw,timed,require_transport=False,require_dirty=False):
+def qualify_art_records(raw,timed,require_transport=False,require_dirty=False,awake_fallback=False):
     """Match complete native render/start records to measured charger groups.
 
     The image remains static while blanked, so its sprite level must NOT be
@@ -83,8 +84,12 @@ def qualify_art_records(raw,timed,require_transport=False,require_dirty=False):
     first=recent[0]['I9CR1']
     o.require(all(group['I9CR1'][:4]==first[:4] and group['I9CR1'][4]==first[4] for group in recent[1:]),
         'Artwork frame/store counters advanced while the display was blanked')
-    o.require(all(group['I9CR1'][7]==first[7] for group in recent[1:]),
-        'Timer fault count advanced during the blank observation interval')
+    if not awake_fallback:
+        o.require(all(group['I9CR1'][7]==first[7] for group in recent[1:]),
+            'Timer fault count advanced during the blank observation interval')
+    else:
+        o.require(all(recent[n]['I9CR1'][7]>=recent[n-1]['I9CR1'][7] for n in (1,2)),
+            'Explicit awake fallback diagnostics reset within the blank interval')
     if require_transport:
         drops=[group['I9UT1'][7] for group in recent]
         o.require(all(drops[n]>=drops[n-1] for n in (1,2)),
@@ -101,9 +106,52 @@ def qualify_art_records(raw,timed,require_transport=False,require_dirty=False):
         artwork_level_during_sleep=first[1],startup_ready=True,
         transport_snapshots=[group['I9UT1'] for group in recent] if require_transport else None,
         dirty_region_snapshots=[group['I9DR1'] for group in recent] if require_dirty else None,
+        awake_fallback=awake_fallback,
         limit='Production render/start counters and matched device measurements; no physical keypress or pixel capture inferred')
 
-def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False,require_dirty=False,require_policy=False,require_download=False,require_route=False):
+def qualify_liveness_records(raw,timed):
+    # New firmware emits the compact records BEFORE each timed battery line.
+    # Bind them to that exact group rather than to a late host receipt time.
+    epoch=shutdown_epoch_logs(raw);groups=[]
+    for index in range(len(timed)-3,len(timed)):
+        sample=timed[index]
+        left=timed[index-1]['end_offset'] if index else 0
+        block=raw[left:sample['start_offset']]
+        observed=s.decode_liveness(block);rtc=s.decode_rtc_reads(block)
+        o.require(len(observed)==len(rtc)==1,'Exactly one complete wake/RTC record must precede its measured group')
+        live,clock=observed[0],rtc[0]
+        o.require(live['wake_probe'] in (1,2) and live['policy_polls']>0 and
+            live['epoch_result']==1 and live['reason']==sample['reason'],
+            'Actual wake/epoch/policy state does not qualify this charger group')
+        if live['wake_probe']==1:
+            o.require(live['irq89_acks']==live['completed_wfi']+1,
+                'A completed wait lost the verified timer acknowledgement')
+        else:
+            o.require(live['completed_wfi']==live['irq89_acks']==0,
+                'Undeliverable timer must remain on its explicit awake path')
+        o.require(clock['read_mask']==15 and clock['status']==1 and clock['sequence']>0 and
+            clock['controls']<=0xffff and clock['controls']&255==clock['controls']>>8,
+            'Raw RTC read is incomplete or changed mode')
+        seconds=preflight.rtc_time(clock['first_low'],clock['first_high'],clock['controls']&255)
+        epoch_seconds=(epoch[7]<<32)|epoch[6]
+        o.require(seconds<=epoch_seconds<=seconds+1,
+            'Raw RTC first bytes disagree with the actual inherited epoch')
+        groups.append(dict(sequence=sample['sequence'],measured_ms=sample['measured_ms'],
+                           wake=live,rtc=clock))
+    for before,after in zip(groups,groups[1:]):
+        a,b=before['wake'],after['wake']
+        o.require(a['wake_probe']==b['wake_probe'] and a['policy_polls']<b['policy_polls'] and
+            a['completed_wfi']<=b['completed_wfi'] and a['irq89_acks']<=b['irq89_acks'],
+            'Charging supervision or wait counters stopped within the measured interval')
+        if a['wake_probe']==1:
+            o.require(a['completed_wfi']<b['completed_wfi'],'No completed timer waits advanced in the stable interval')
+        fixed=('read_mask','controls','first_low','first_high','status','sequence')
+        o.require(all(before['rtc'][key]==after['rtc'][key] for key in fixed),
+            'Initial RTC restore record changed during the charging interval')
+    return dict(groups=groups,wake_mode='verified-timer' if groups[-1]['wake']['wake_probe']==1 else 'explicit-awake',
+                rtc_restore_consistent=True,policy_advanced=True,physical_current_verified=False)
+
+def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=False,require_art=False,require_transport=False,require_sense=False,require_dirty=False,require_policy=False,require_download=False,require_route=False,require_liveness=False):
     summary=s.summarize(path)
     raw=(path/'received.bin').read_bytes()
     # Failed bootstrap or charger-stop transitions can stay supervised, but
@@ -122,6 +170,7 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
     o.require(all(sample.get('interval_available') for sample in timed[-2:]) and
         timed[-1]['measured_ms']-timed[-3]['measured_ms']>=50000,
         'Continuous device measurement interval did not span 50 seconds')
+    liveness=qualify_liveness_records(raw,timed) if require_liveness else None
     download_records=[]
     if require_download:
         for index in range(len(timed)-3,len(timed)):
@@ -174,7 +223,8 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
         not timed[-1]['timeout'],'Latest battery state does not qualify a boot contrast')
     o.require(not require_transport or require_art,'Transport groups require native artwork reports')
     o.require(not require_dirty or require_art,'Dirty-region records require native artwork')
-    art=qualify_art_records(raw,timed,require_transport,require_dirty) if require_art else None
+    art=qualify_art_records(raw,timed,require_transport,require_dirty,
+        bool(liveness and liveness['wake_mode']=='explicit-awake')) if require_art else None
     panel_values=None
     panel_identity=None;panel_recovery=None
     if require_panel_sleep:
@@ -198,7 +248,7 @@ def qualify_charger(path,expected,require_panel_sleep=False,require_recovery=Fal
                 (panel_recovery[0] or not panel_recovery[1]) and not panel_recovery[2] and
                 panel_recovery[3]==panel_values[1],'Panel recovery budget/result disagrees with its sleep state')
     elif require_recovery:raise ValueError('Recovery qualification requires panel-sleep observations')
-    return dict(summary=summary,ui=values,fimd=registers,artwork=art,panel_sleep=panel_values,panel_identity=panel_identity,panel_recovery=panel_recovery,charge_sense=sense_records,charge_policy=policy_records,download_stop=download_records,charge_route=route_records,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
+    return dict(summary=summary,ui=values,fimd=registers,artwork=art,panel_sleep=panel_values,panel_identity=panel_identity,panel_recovery=panel_recovery,charge_sense=sense_records,charge_policy=policy_records,download_stop=download_records,charge_route=route_records,charger_liveness=liveness,measured_interval_ms=timed[-1]['measured_ms']-timed[-3]['measured_ms'],
         limit='Draw/register/timed-log qualification; no physical image or keypress acceptance inferred')
 
 def wait_resumed(directory,seconds,record,clock=time.monotonic,sleep=time.sleep):
@@ -295,18 +345,25 @@ def verify_deployment(directory,package,manifest,completed_capture=None):
 
 def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
     tag=manifest['control_tag'];charger_tag=manifest['standalone_charge_control_tag']
+    require_preflight=manifest.get('standalone_charge_first_packet_liveness') is True
     host=host or o.Host();profile=json.loads((o.OUT/'inventory-20261106-211114-download-profile.json').read_text(encoding='utf-8'))
     mode,_=r.device_mode(host.inventory(),profile)
     o.require(mode=='cycle','Expected running reviewed XNU, no shutdown attempted')
     record('SHUTDOWN_BEGIN',writes_to_flash=0)
     child([sys.executable,'-B',HERE/'ui-session.py','serve','--kernel',package/'mach_kernel',
-        '--output',out/'shutdown-evidence','--seconds','240','--allow-poweroff-charge','--poweroff-on-ready'],
+        '--output',out/'shutdown-evidence','--seconds','240','--allow-poweroff-charge','--poweroff-on-ready',
+        *(['--require-charge-epoch'] if require_preflight else [])],
         out/'shutdown-process',420,record)
     events=owner_complete(out/'shutdown-evidence',tag)
     result=json.loads((out/'shutdown-evidence/task-0001/result.json').read_text(encoding='utf-8'))
     o.require(result.get('reply')=='OK poweroff-charge' and result.get('shutdown_disconnect_observed') is True and
         any(row.get('phase')=='TASK_DONE' and row.get('action')=='poweroff-charge' for row in events),
         'Normal shutdown ACK/disconnect missing; no subsequent opener')
+    if require_preflight:
+        observed=preflight.verify_retained(out/'shutdown-evidence/task-0001/poweroff-preflight',tag)
+        o.require(result.get('poweroff_preflight')==observed and
+            sum(row.get('phase')=='POWEROFF_PREFLIGHT_OK' for row in events)==1,
+            'Pre-halt RTC/deadline evidence was not retained by this owner')
     record('SHUTDOWN_COMPLETE')
     require_art=manifest.get('standalone_charge_art') is not None
     child([sys.executable,'-B',HERE/'capture-charge-loader.py','--output',out/'charger-evidence',
@@ -315,7 +372,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         manifest.get('standalone_panel_recovery') is True,require_art,manifest.get('standalone_charge_transport') is True,
         manifest.get('standalone_charge_sense') is True,manifest.get('standalone_charge_dirty_regions') is True,
         manifest.get('standalone_charge_single_owner') is True,manifest.get('standalone_charge_download_stop') is True,
-        manifest.get('charge_route_control_version')==1)
+        manifest.get('charge_route_control_version')==1,require_preflight)
     o.save(out/'charger-qualified.json',evidence);record('CHARGER_QUALIFIED',measured_interval_ms=evidence['measured_interval_ms'])
     if manifest.get('standalone_charge_shutdown_epoch') is True:
         epoch=shutdown_epoch_logs((out/'charger-evidence/received.bin').read_bytes())
@@ -367,6 +424,8 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         native_charge_sense_verified=manifest.get('standalone_charge_sense') is True,
         shared_charge_policy_verified=manifest.get('standalone_charge_single_owner') is True,
         charger_download_stop_verified=manifest.get('standalone_charge_download_stop') is True,
+        pre_halt_rtc_verified=require_preflight,
+        charger_liveness_verified=require_preflight,
         charger_route_readback_verified=manifest.get('charge_route_control_version')==1,
         writes_to_flash=0,physical_power_key_verified=False,energy_balance_verified=False)
 

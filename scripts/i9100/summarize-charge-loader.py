@@ -64,6 +64,7 @@ def decode_status(raw,receipts):
             if value>=1<<31:row[key]=value-(1<<32)
         if row['soc']>100 or row['millivolts']>10000:raise ValueError('Charger measurement outside its protocol range')
         row['end_offset']=match.end()+1
+        row['start_offset']=match.start()
         while cursor<len(receipts) and receipts[cursor]['total']<row['end_offset']:cursor+=1
         row['host_received_at']=receipts[cursor]['time'] if cursor<len(receipts) else None
         if version==2:

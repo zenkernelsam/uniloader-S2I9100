@@ -27,12 +27,31 @@ def epoch_fixture(full=False):
     raw=struct.pack('<32I',*words);words[31]=m.h.checksum(raw)
     return struct.pack('<32I',*words)
 
-def owner(path,shutdown=False,handoff=None):
+def owner(path,shutdown=False,handoff=None,preflight=False):
     path.mkdir();(path/'owner.json').write_text(json.dumps(dict(pid=123,tag=tag,process_created_100ns=456))+'\n')
     events=[dict(phase='READY',pid=123,tag=tag)]
     if shutdown:
         target=path/'task-0001';target.mkdir()
-        (target/'result.json').write_text(json.dumps(dict(reply='OK poweroff-charge',shutdown_disconnect_observed=True))+'\n')
+        result=dict(reply='OK poweroff-charge',shutdown_disconnect_observed=True)
+        if preflight:
+            checker=target/'poweroff-preflight';checker.mkdir()
+            seconds=m.preflight.rtc_time(0x02130129,0x202611,3)
+            before=list(struct.unpack('<32I',epoch_fixture()))
+            before[21:23]=[1215752192,23] # 100,000,000,000 ns, same live clock.
+            before[27:31]=[seconds,0,0,10];before[31]=m.h.checksum(struct.pack('<32I',*before))
+            after=list(before);after[21:23]=[3415752192,23]
+            after[23]+=2200000000;after[27]+=2;after[30]=12
+            after[31]=m.h.checksum(struct.pack('<32I',*after))
+            raw_before=struct.pack('<32I',*before);raw_after=struct.pack('<32I',*after)
+            rtc=struct.pack('<12I',1,2,15,0x303,0x02130129,0x202611,0x02130129,0x202611,1,seconds,0,0)
+            observed=m.preflight.qualify(raw_before,rtc,rtc[:8],raw_after,tag,2.2)
+            for name,raw in (('epoch-before.bin',raw_before),('rtc-read.bin',rtc),
+                             ('rtc-read-after.bin',rtc[:8]),('epoch-after.bin',raw_after)):
+                (checker/name).write_bytes(raw)
+            (checker/'result.json').write_text(json.dumps(observed,indent=2)+'\n')
+            result['poweroff_preflight']=observed
+            events.append(dict(phase='POWEROFF_PREFLIGHT_OK',tag=tag,rtc=observed['rtc']))
+        (target/'result.json').write_text(json.dumps(result)+'\n')
         events.append(dict(phase='TASK_DONE',id='0001',action='poweroff-charge'))
     elif handoff:
         task=path/'task-0000';task.mkdir()
@@ -81,6 +100,18 @@ def charger(path,scenario):
     path.mkdir();lines=[f'I9CHC2 READY {tag} {source}\n']
     for seq in range(1,5):
         ms=(seq-1)*30000
+        if scenario.startswith('preflight-') or scenario.startswith('wake-'):
+            # Actual new firmware emits these complete records BEFORE the
+            # measured battery line. They are fixed-width except counters.
+            polls=1+(seq-1)*30;waits=(seq-1)*3000
+            probe=2 if scenario=='wake-awake' else 1
+            ack=0 if probe==2 else waits+1
+            if scenario=='wake-awake':waits=0
+            seconds=m.preflight.rtc_time(0x02130129,0x202611,3)
+            live=f'I9LV1 {probe:08x} {waits:08x} {ack:08x} {polls:08x} 00000001 00000000\n'
+            rtc='I9RT1 0000000f 00000303 02130129 00202611 00000001 00000002\n'
+            lines.append(live);lines.append(rtc)
+            lines.append(f'I9CE1 00000001 00000001 00000001 00001234 00000190 000001a6 {seconds:08x} 00000000\n')
         lines.append(f'I9CHG2 seq={seq:08x} ms={ms:016x} valid=1 soc=75 mv=4000 temp=250 charging=1 reason=0 full=0 timeout=0 recharging=0 elapsed={ms//1000}\n')
         if scenario.startswith('policy-') and scenario!='policy-missing':
             sampled=ms*24000 if ms else 24
@@ -96,11 +127,14 @@ def charger(path,scenario):
             lines.append(f'I9RG1 {seq:08x} 0000c800 00004b00 00000032 010e0104 00000100 00000004 00000000\n')
         lines.append('I9UI1 00000001 5ec00000 00000780 00000020\n')
         lines.append('I9FB1 00000000 00008035 5ec00000 00000780 000efb1f 5ed77000 01000000 00000001\n')
-        if scenario.startswith('art-') and scenario!='art-missing':
+        if (scenario.startswith('art-') or scenario.startswith('wake-')) and scenario!='art-missing':
             # Native frame 12 is the measured 75% level. Repeated blank
             # reports keep frames/stores fixed while device time advances.
             lines.append('I9CR1 00000001 0000000c 00000002 0004e200 00000000 0000001c 00000001 00000000\n')
             lines.append('I9BT1 00000001 0000000b 00000000 00000001 00000fa0 0000004b 00000000 00000000\n')
+            if scenario in ('wake-awake','wake-success'):
+                if scenario=='wake-awake':
+                    lines[-2]=lines[-2].rstrip('\n')[:-8]+f'{seq*100:08x}\n'
             if 'dirty-' in scenario and scenario!='art-dirty-missing':
                 lines.append('I9DR1 00000002 00000a80 00000a80 00000001 000000a0 00000001 00000001 00000001\n')
             if 'transport-' in scenario and scenario!='art-transport-missing':
@@ -193,6 +227,31 @@ def charger(path,scenario):
     if scenario=='route-pull':text=text.replace('00000100 00000004 00000000','00000100 00000004 00000010')
     if scenario=='route-missing-muic':text=text.replace('000003ff','000003df')
     if scenario=='route-accessory':text=text.replace('010e0104','010e0124')
+    if scenario.startswith('wake-'):
+        lines=text.splitlines(keepends=True)
+        live_indices=[n for n,line in enumerate(lines) if line.startswith('I9LV1 ')]
+        rtc_indices=[n for n,line in enumerate(lines) if line.startswith('I9RT1 ')]
+        if scenario=='wake-missing':lines=[line for line in lines if not line.startswith('I9LV1 ')]
+        elif scenario=='wake-duplicate':lines.insert(live_indices[-1],lines[live_indices[-1]])
+        elif scenario=='wake-partial':lines[live_indices[-1]]='I9LV1 00000001 00002328\n'
+        elif scenario in ('wake-bad-probe','wake-no-ack','wake-poll-frozen','wake-wfi-frozen','wake-epoch-failed'):
+            at=live_indices[-1];words=lines[at].split()[1:]
+            if scenario=='wake-bad-probe':words[0]='00000003'
+            if scenario=='wake-no-ack':words[2]='00000000'
+            if scenario=='wake-poll-frozen':words[3]='0000003d'
+            if scenario=='wake-wfi-frozen':words[1]='00001770';words[2]='00001771'
+            if scenario=='wake-epoch-failed':words[4]='00000003'
+            lines[at]='I9LV1 '+' '.join(words)+'\n'
+        elif scenario in ('wake-rtc-missing','wake-rtc-failed','wake-rtc-odd','wake-rtc-mode','wake-rtc-wrong-clock'):
+            if scenario=='wake-rtc-missing':lines=[line for line in lines if not line.startswith('I9RT1 ')]
+            else:
+                at=rtc_indices[-1];words=lines[at].split()[1:]
+                if scenario=='wake-rtc-failed':words[4]='00000007'
+                if scenario=='wake-rtc-odd':words[5]='00000003'
+                if scenario=='wake-rtc-mode':words[1]='00000101'
+                if scenario=='wake-rtc-wrong-clock':words[2]='02130119'
+                lines[at]='I9RT1 '+' '.join(words)+'\n'
+        text=''.join(lines)
     raw=text.encode();(path/'received.bin').write_bytes(raw)
     write_events(path/'events.jsonl',[dict(phase='CHARGER_IDENTITY',device=dict(device,instance=m.o.CDC.replace('OS6','CHG'))),
         dict(phase='DTR_OK',time='2026-11-19T01:00:00+00:00'),
@@ -200,6 +259,7 @@ def charger(path,scenario):
         dict(phase='DONE',bytes=len(raw),time='2026-11-19T01:02:00+00:00'),dict(phase='CLOSED')])
 
 for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format','wrong-end','shutdown-failure','boot-timeout',
+                 'preflight-success','preflight-failed','preflight-missing',
                  'art-success','art-missing','art-redrew-asleep','art-start-not-ready','art-transport-success','art-transport-missing',
                  'bootstrap-fault','bootstrap-fault-partial','art-bootstrap-fault',
                  'handoff-success','handoff-missing','handoff-corrupt',
@@ -225,7 +285,10 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
         if tool=='ui-session.py':
             if '--poweroff-on-ready' in argv:
                 if scenario=='shutdown-failure':raise RuntimeError('modeled shutdown child STOP')
-                owner(target,True)
+                if scenario.startswith('preflight-'):
+                    assert '--require-charge-epoch' in argv
+                    if scenario=='preflight-failed':raise ValueError('Modeled production preflight refusal before halt')
+                owner(target,True,preflight=scenario=='preflight-success')
             else:owner(target,handoff=scenario if scenario.startswith(('handoff-','deadline-','epoch-','stop-')) else None)
         elif tool=='capture-charge-loader.py':charger(target,scenario)
         elif tool=='charge-command.py':
@@ -243,9 +306,10 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
     if scenario.startswith('route-'):actual_manifest=dict(manifest,standalone_charge_sense=True,charge_route_control_version=1)
     if scenario.startswith('policy-'):actual_manifest=dict(manifest,standalone_charge_single_owner=True)
     if scenario.startswith('download-stop-'):actual_manifest=dict(manifest,standalone_charge_download_stop=True)
-    expected_success=scenario in ('success','art-success','art-transport-success','art-dirty-success','handoff-success','deadline-success','epoch-success','epoch-full','stop-success','sense-success','policy-success','download-stop-success','route-success','route-accessory')
+    if scenario.startswith('preflight-'):actual_manifest=dict(manifest,standalone_charge_first_packet_liveness=True)
+    expected_success=scenario in ('success','preflight-success','art-success','art-transport-success','art-dirty-success','handoff-success','deadline-success','epoch-success','epoch-full','stop-success','sense-success','policy-success','download-stop-success','route-success','route-accessory')
     try:m.run_roundtrip(package,actual_manifest,directory,lambda phase,**row:records.append(dict(phase=phase,**row)),child,Host())
-    except (ValueError,RuntimeError):assert not expected_success
+    except (ValueError,RuntimeError,FileNotFoundError):assert not expected_success
     else:
         assert expected_success and records[-1]['phase']=='DONE' and records[-1]['writes_to_flash']==0
         assert records[-1]['native_artwork_verified']==scenario.startswith('art-')
@@ -257,11 +321,13 @@ for scenario in ('success','no-draw','no-blank','wrong-tag','gap','wrong-format'
         assert records[-1]['charger_route_readback_verified']==scenario.startswith('route-')
         assert records[-1]['shared_charge_policy_verified']==scenario.startswith('policy-')
         assert records[-1]['charger_download_stop_verified']==scenario.startswith('download-stop-')
+        assert records[-1]['pre_halt_rtc_verified']==(scenario=='preflight-success')
     assert all('odin-loop.py' not in call and 'flash' not in call for call in calls)
     if scenario in ('no-draw','no-blank','wrong-tag','gap','wrong-format','wrong-end'):assert len(calls)==2
     if scenario=='shutdown-failure':assert len(calls)==1
     if scenario=='boot-timeout':assert len(calls)==3
     if scenario=='success':assert len(calls)==4
+    if scenario.startswith('preflight-'):assert len(calls)==(4 if expected_success else 1)
     if scenario.startswith('sense-'):assert len(calls)==(4 if expected_success else 2)
     if scenario.startswith('route-'):assert len(calls)==(4 if expected_success else 2)
     if scenario.startswith('policy-'):assert len(calls)==(4 if expected_success else 2)
@@ -283,6 +349,20 @@ for scenario in ('recovery-success','recovery-unlimited','recovery-error','recov
     try:m.qualify_charger(directory,tag+' '+source,True,True)
     except ValueError:assert scenario!='recovery-success'
     else:assert scenario=='recovery-success'
+for scenario in ('wake-success','wake-awake','wake-missing','wake-duplicate','wake-partial',
+                 'wake-bad-probe','wake-no-ack','wake-poll-frozen','wake-wfi-frozen','wake-epoch-failed',
+                 'wake-rtc-missing','wake-rtc-failed','wake-rtc-odd','wake-rtc-mode','wake-rtc-wrong-clock'):
+    directory=out/scenario;charger(directory,scenario)
+    expected=scenario in ('wake-success','wake-awake')
+    try:result=m.qualify_charger(directory,tag+' '+source,require_liveness=True,
+        require_art=scenario in ('wake-success','wake-awake'))
+    except ValueError:assert not expected
+    else:
+        assert expected and result['charger_liveness']['policy_advanced']
+        assert result['charger_liveness']['wake_mode']==('explicit-awake' if scenario=='wake-awake' else 'verified-timer')
+        assert not result['charger_liveness']['physical_current_verified']
+        if scenario=='wake-awake':assert result['artwork']['awake_fallback']
+    (directory/'liveness-test.json').write_text(json.dumps(dict(scenario=scenario,accepted=expected,hardware=False))+'\n')
 for scenario in ('art-success','art-soc-advanced','art-old-partial','art-missing','art-invalid-level','art-undecoded','art-start-not-ready',
                  'art-stale-voltage','art-redrew-asleep','art-fault-asleep','art-partial-final',
                  'art-transport-success','art-transport-missing','art-transport-invalid','art-bootstrap-fault'):
