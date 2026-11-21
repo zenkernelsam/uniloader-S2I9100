@@ -143,6 +143,23 @@ target=out/'v3-with-pc-histogram';target.mkdir();kernel=KernelPC(1)
 actual=m.capture(kernel,SymbolsPC(),target)
 assert actual['version']==3 and actual['irq_pc_sample']['version']==2
 assert actual['producer_count_after']==count+1 and kernel.calls[-1]==(0x1000,16)
+class SymbolsRTC(SymbolsPC):
+    values=dict(SymbolsPC.values,_i9100_rtc_read_diag=0x9000)
+class KernelRTC(KernelPC):
+    def __init__(self,unstable=False):super().__init__(1);self.unstable=unstable
+    def read(self,address,size):
+        if address==0x9000:
+            self.calls.append((address,size));assert size in (8,48)
+            words=[1,2,15,0x303,0x02130129,0x202611,0x02130129,0x202611,1,1234,0,0]
+            if size==8 and self.unstable:words[1]=4
+            return struct.pack('<12I',*words)[:size]
+        return super().read(address,size)
+for unstable in (False,True):
+    target=out/('rtc-moving' if unstable else 'rtc-stable');target.mkdir();kernel=KernelRTC(unstable)
+    result=m.capture(kernel,SymbolsRTC(),target)
+    assert result['rtc_read']['consistent']==(not unstable)
+    assert result['rtc_read']['raw_format']=='BCD24' and result['rtc_read']['seconds']==1234
+    assert (target/'rtc-read.bin').is_file() and (target/'rtc-read-after.bin').is_file()
 (out/'result.json').write_text(json.dumps(dict(result='PASS',cases=2,fixture=str(fixture),
     evidence='Real charger snapshot, separate optional addresses, v1/v2 decoding, inherited deadline publication and later producer advancement'),indent=2)+'\n')
 print('PASS real charger fixture; v1/v2 setup address isolation; final charger header and producer advancement')

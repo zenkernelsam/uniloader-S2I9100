@@ -317,8 +317,8 @@ def capture(kernel,symbols,out):
             result['shutdown_epoch_source']=dict(valid=True,source=source,after=latest,
                 stable=epoch==epoch_after,limit='Two retained complete publications, no retry; only sealed next-boot evidence proves shutdown inheritance')
     if '_i9100_rtc_read_diag' in symbols.values:
-        address=symbols['_i9100_rtc_read_diag'];rtc=kernel.read(address,48)
-        rtc_after=kernel.read(address,8)
+        rtc_address=symbols['_i9100_rtc_read_diag'];rtc=kernel.read(rtc_address,48)
+        rtc_after=kernel.read(rtc_address,8)
         (out/'rtc-read.bin').write_bytes(rtc);(out/'rtc-read-after.bin').write_bytes(rtc_after)
         words=struct.unpack('<12I',rtc)
         value=dict(zip(('version','sequence','read_mask','controls','first_low','first_high',
