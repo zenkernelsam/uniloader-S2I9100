@@ -316,6 +316,20 @@ def capture(kernel,symbols,out):
         else:
             result['shutdown_epoch_source']=dict(valid=True,source=source,after=latest,
                 stable=epoch==epoch_after,limit='Two retained complete publications, no retry; only sealed next-boot evidence proves shutdown inheritance')
+    if '_i9100_rtc_read_diag' in symbols.values:
+        address=symbols['_i9100_rtc_read_diag'];rtc=kernel.read(address,48)
+        rtc_after=kernel.read(address,8)
+        (out/'rtc-read.bin').write_bytes(rtc);(out/'rtc-read-after.bin').write_bytes(rtc_after)
+        words=struct.unpack('<12I',rtc)
+        value=dict(zip(('version','sequence','read_mask','controls','first_low','first_high',
+                        'last_low','last_high','status','seconds_low','seconds_high','reserved'),words))
+        if value['version']!=1 or value['status']>9 or value['read_mask']>15 or value['reserved']:
+            raise ValueError('Unknown RTC raw observation')
+        value['consistent']=not value['sequence']&1 and struct.unpack('<2I',rtc_after)==words[:2]
+        value['seconds']=(value['seconds_high']<<32)|value['seconds_low']
+        value['raw_format']=('BCD24' if value['controls']&3==3 else 'binary24' if value['controls']&3==2 else 'unsupported')
+        value['limit']='Raw read transaction only; zero/failed RTC is not a proven clock or a fresh charging deadline'
+        result['rtc_read']=value
     if '_i9100_charge_adopt_diag' in symbols.values:
         adopt_address=symbols['_i9100_charge_adopt_diag']
         adopt_version=kernel.u32(adopt_address)

@@ -374,6 +374,7 @@ def main():
             at=sym[name]-0x48000000
             assert struct.unpack_from('<I',data,at)[0]==version,'Charger liveness version differs'
         assert b'I9LV1 ' in data,'Actual image lacks the bounded first-packet record'
+        assert b'I9RT1 ' in data,'Actual image lacks the raw RTC read record'
         assert b'I9BS1 ' in data and b'I9BF1 ' in data,'Startup supervision/fault reporting missing from the actual loader'
     if art_record:
         embedded=data[sym['i9100_charge_art_start']-0x48000000:sym['i9100_charge_art_end']-0x48000000]

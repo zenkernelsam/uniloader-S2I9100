@@ -60,6 +60,14 @@ int i9100_power_muic_read(void *,unsigned,uint8_t *);
 int i9100_power_muic_write(void *,unsigned,uint8_t);
 int i9100_power_fuel_read(void *,unsigned,uint16_t *);
 int i9100_power_rtc_seconds(void *,uint64_t *);
+/* One raw observation of each RTC transaction, published with an odd/even
+ * sequence. A failure remains a failure; no mode writes, fallback or retry. */
+struct i9100_rtc_read {
+ uint32_t version,sequence,read_mask,controls,first_low,first_high,last_low,last_high;
+ uint32_t status,seconds_low,seconds_high,reserved;
+};
+extern volatile uint32_t i9100_rtc_read_diag[12];
+int i9100_power_rtc_snapshot(void *,uint64_t *,struct i9100_rtc_read *);
 int i9100_power_adc_read(void *,unsigned,unsigned *);
 /* EUR U1 charge-current sense, fixed ADC1; thermistor API remains ADC6/7. */
 int i9100_power_charge_adc_read(void *,unsigned *);

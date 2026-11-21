@@ -37,6 +37,17 @@ def decode_liveness(raw):
                            end_offset=match.end(),measurement_time_available=False))
     return result
 
+def decode_rtc_reads(raw):
+    pattern=rb'^I9RT1 ([0-9a-f]{8}) ([0-9a-f]{8}) ([0-9a-f]{8}) ([0-9a-f]{8}) ([0-9a-f]{8}) ([0-9a-f]{8})\r*\n'
+    result=[]
+    for match in re.finditer(pattern,raw,re.MULTILINE):
+        values=[int(x,16) for x in match.groups()]
+        if values[0]>15 or values[4]>9 or values[5]&1:
+            raise ValueError('Unknown RTC raw record')
+        result.append(dict(zip(('read_mask','controls','first_low','first_high','status','sequence'),values),
+                           end_offset=match.end(),measurement_time_available=False))
+    return result
+
 def decode_status(raw,receipts):
     matches=sorted([(match,1) for match in STATUS.finditer(raw)]+
                    [(match,2) for match in TIMED_STATUS.finditer(raw)],key=lambda item:item[0].start())
@@ -154,6 +165,7 @@ def summarize(path, allow_partial=False):
         'observed_millivolts_delta': valid[-1]['millivolts'] - valid[0]['millivolts'] if valid else None,
         'ranges': ranges, 'samples': samples,
         'charger_liveness': decode_liveness(raw),
+        'charger_rtc_reads': decode_rtc_reads(raw),
         'charge_sense': _sense.grouped(raw,[row for row in samples if row['version']==2]),
         'charge_policy': _sense.grouped_policy(raw,[row for row in samples if row['version']==2]),
         'charge_download_stop': _sense.grouped_download(raw,[row for row in samples if row['version']==2]),

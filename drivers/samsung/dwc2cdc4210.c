@@ -955,6 +955,15 @@ void usbcdc4210_charge_liveness_report(const unsigned values[6])
  }
  line[at]=0;usbcon_write(KERN_INFO,"",line);
 }
+void usbcdc4210_charge_rtc_report(const unsigned values[6])
+{
+ char line[64];unsigned at=6;memcpy(line,"I9RT1 ",6);
+ for(unsigned n=0;n<6;n++){
+  for(unsigned digit=0;digit<8;digit++)line[at++]="0123456789abcdef"[(values[n]>>((7U-digit)*4))&15U];
+  line[at++]=n==5?'\n':' ';
+ }
+ line[at]=0;usbcon_write(KERN_INFO,"",line);
+}
 void usbcdc4210_charge_screen_report(unsigned drawn,unsigned base,unsigned stride,unsigned bpp)
 {
  unsigned values[4]={drawn,base,stride,bpp};char line[64];unsigned at=0;

@@ -108,6 +108,10 @@ static void lpm_charge_epoch_report(void)
   (unsigned)(i9100_lpm_epoch_base/1000000000ULL),
   (unsigned)i9100_lpm_epoch_rtc,(unsigned)(i9100_lpm_epoch_rtc>>32)};
  usbcdc4210_charge_epoch_report(fields);
+ extern void usbcdc4210_charge_rtc_report(const unsigned[6]);
+ const unsigned rtc_fields[6]={i9100_rtc_read_diag[2],i9100_rtc_read_diag[3],
+  i9100_rtc_read_diag[4],i9100_rtc_read_diag[5],i9100_rtc_read_diag[8],i9100_rtc_read_diag[1]};
+ usbcdc4210_charge_rtc_report(rtc_fields);
 #endif
 }
 static void lpm_timer_prove_delivery(void)
@@ -504,6 +508,7 @@ void i9100_standalone_charge_gate(void)
     const unsigned liveness[6]={i9100_lpm_timer_probe,i9100_lpm_timer_waits,
       i9100_lpm_timer_acks,observed_polls,i9100_lpm_epoch_result,(unsigned)observed.reason};
     usbcdc4210_charge_liveness_report(liveness);
+    lpm_charge_epoch_report();
     usbcdc4210_charge_timed_report(&report);
     usbcdc4210_charge_sense_report(sense_timing,sense_registers);
     usbcdc4210_charge_policy_report(policy);
@@ -511,7 +516,7 @@ void i9100_standalone_charge_gate(void)
     usbcdc4210_charge_screen_report(drawn,(unsigned)screen.pixels,screen.stride,screen.bpp);
     usbcdc4210_charge_fimd_report(fb);usbcdc4210_charge_render_report(render);
     usbcdc4210_charge_dirty_report(dirty);usbcdc4210_charge_start_report(startup);
-    usbcdc4210_charge_transport_report();lpm_charge_epoch_report();
+    usbcdc4210_charge_transport_report();
     if(fault[0])usbcdc4210_charge_fault_report(fault);
 #ifdef I9100_PANEL_SLEEP_BUILD
     usbcdc4210_charge_panel_report(panel_fields);

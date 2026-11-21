@@ -74,6 +74,9 @@ int main(void){
  reset();unsigned shortfields[6]={2,0,0,1,3,0xfffffffbU};
  usbcdc4210_charge_liveness_report(shortfields);assert(tx_written_total==62 && ep1_busy);
  assert(!memcmp(txring,"I9LV1 ",6) && txring[59]=='\n');
+ reset();unsigned rtcfields[6]={15,0x303,0x02130129,0x202611,1,2};
+ usbcdc4210_charge_rtc_report(rtcfields);assert(tx_written_total==62 && ep1_busy);
+ assert(!memcmp(txring,"I9RT1 ",6) && txring[59]=='\n');
  reset();console_calls=0;setup(0x21,0x22,1);assert(!console_calls);
  charge_identity=0;setup(0x21,0x22,1);assert(console_calls>0);
  supervisor_calls=charge_delay_quanta=0;
@@ -228,6 +231,9 @@ raw=b'I9LV1 00000002 00000000 00000000 00000001 00000003 fffffffb\n'
 decoded=summary.decode_liveness(raw)
 assert len(decoded)==1 and decoded[0]['reason']==-5 and decoded[0]['wake_probe']==2
 assert not summary.decode_liveness(raw[:-1]) and not decoded[0]['measurement_time_available']
+rtc_raw=b'I9RT1 0000000f 00000303 02130129 00202611 00000001 00000002\n'
+rtc_decoded=summary.decode_rtc_reads(rtc_raw);assert len(rtc_decoded)==1 and rtc_decoded[0]['controls']==0x303
+assert not summary.decode_rtc_reads(rtc_raw[:-1])
 try:summary.decode_liveness(raw.replace(b'00000002',b'00000004',1))
 except ValueError:pass
 else:raise AssertionError('Invalid wake probe accepted')

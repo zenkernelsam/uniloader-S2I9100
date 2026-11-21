@@ -2,6 +2,7 @@
  * No address/pin scanning. All waits are bounded; GPIO fields are preserved. */
 #include "i9100_power.h"
 #include "i9100_rtc_time.h"
+#include <string.h>
 struct bus {
  struct i9100_power_hw *hw;
  unsigned region,base,sda,scl;
@@ -98,17 +99,46 @@ int i9100_power_muic_write(void *hw,unsigned reg,uint8_t value)
 {return transfer(hw,0,0x25,reg,&value,1,1);}
 int i9100_power_fuel_read(void *hw,unsigned reg,uint16_t *value)
 {uint8_t data[2];if(!value || !transfer(hw,1,0x36,reg,data,2,0))return 0;*value=data[0]|((uint16_t)data[1]<<8);return 1;}
-int i9100_power_rtc_seconds(void *hw,uint64_t *value)
+volatile uint32_t i9100_rtc_read_diag[12]={1};
+static uint32_t rtc_bytes(const uint8_t *data,unsigned count)
 {
- uint8_t control=0,again=0,first[7],last[7];uint64_t a,b;
- if(!value || !transfer(hw,0,0x06,0x03,&control,1,0) ||
-    !transfer(hw,0,0x06,0x10,first,7,0) ||
-    !transfer(hw,0,0x06,0x10,last,7,0) ||
-    !transfer(hw,0,0x06,0x03,&again,1,0) || control!=again ||
-    !i9100_rtc_decode(first,control,&a) || !i9100_rtc_decode(last,control,&b) ||
-    b<a || b-a>1U)return 0;
- *value=b;return 1;
+ uint32_t result=0;for(unsigned n=0;n<count;n++)result|=(uint32_t)data[n]<<(n*8U);
+ return result;
 }
+int i9100_power_rtc_snapshot(void *hw,uint64_t *value,struct i9100_rtc_read *raw)
+{
+ struct i9100_rtc_read observation={0};uint8_t control=0,again=0,first[7]={0},last[7]={0};
+ uint64_t a=0,b=0;int ok=0;
+ uint32_t serial=(i9100_rtc_read_diag[1]+2U)&~1U;if(!serial)serial=2U;
+ observation.version=1;observation.sequence=serial;observation.status=2;
+ i9100_rtc_read_diag[1]=serial-1U;__sync_synchronize();
+ if(!hw || !value)goto done;
+ if(!transfer(hw,0,0x06,0x03,&control,1,0))goto done;
+ observation.read_mask|=1U;observation.status=3;
+ if(!transfer(hw,0,0x06,0x10,first,7,0))goto done;
+ observation.read_mask|=2U;observation.status=4;
+ if(!transfer(hw,0,0x06,0x10,last,7,0))goto done;
+ observation.read_mask|=4U;observation.status=5;
+ if(!transfer(hw,0,0x06,0x03,&again,1,0))goto done;
+ observation.read_mask|=8U;observation.status=6;
+ if(control!=again)goto done;
+ observation.status=7;if(!i9100_rtc_decode(first,control,&a))goto done;
+ observation.status=8;if(!i9100_rtc_decode(last,control,&b))goto done;
+ observation.status=9;if(b<a || b-a>1U)goto done;
+ *value=b;observation.status=1;observation.seconds_low=(uint32_t)b;
+ observation.seconds_high=(uint32_t)(b>>32);ok=1;
+done:
+ observation.controls=control|((uint32_t)again<<8);
+ observation.first_low=rtc_bytes(first,4);observation.first_high=rtc_bytes(first+4,3);
+ observation.last_low=rtc_bytes(last,4);observation.last_high=rtc_bytes(last+4,3);
+ uint32_t words[12];memcpy(words,&observation,sizeof(words));
+ for(unsigned n=0;n<12;n++)if(n!=1)i9100_rtc_read_diag[n]=words[n];
+ __sync_synchronize();i9100_rtc_read_diag[1]=serial;__sync_synchronize();
+ if(raw)memcpy(raw,&observation,sizeof(observation));
+ return ok;
+}
+int i9100_power_rtc_seconds(void *hw,uint64_t *value)
+{return i9100_power_rtc_snapshot(hw,value,0);}
 unsigned i9100_power_revision(struct i9100_power_hw *hw)
 {
  /* Bootloader leaves revision straps as GPIO inputs; never change their mux. */
