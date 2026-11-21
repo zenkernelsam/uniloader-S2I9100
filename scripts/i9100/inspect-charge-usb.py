@@ -9,7 +9,6 @@ FIELDS=('magic','version','bytes','sequence','ticks_low','ticks_high','state','r
  'gintsts','last_rx_status','in0_ctl','in0_size','in0_int','out0_ctl','out0_size','out0_int',
  'in1_ctl','in1_size','in1_int','in1_free','pcgcctl','fault','flags','source_fingerprint','ep0_state','checksum')
 MAGIC=0x55533949
-OFFSETS={'live':0x300,'fault':0x400}
 
 def require(ok,message):
     if not ok:raise ValueError(message)
@@ -43,22 +42,18 @@ def decode(raw,expected_source=None):
     return row
 
 def capture(session,target,kernel_tag,package=None):
+    """Record that this BUILD cannot export the retained traces safely."""
     require(not target.exists(),'Fresh trace output required');target.mkdir()
     expected=None
     if package is not None:
         manifest=json.loads((Path(package)/'manifest.json').read_text(encoding='utf8'))
         require(manifest['control_tag']==kernel_tag,'Trace owner BUILD differs from package')
         expected=fingerprint(manifest['control_tag'],manifest['standalone_charge_control_tag'])
-    result=dict(time=datetime.now(timezone.utc).isoformat(),kernel_tag=kernel_tag,source_fingerprint=expected,records={})
-    for name,offset in OFFSETS.items():
-        address=0x7ffe0000+offset
-        reply,raw=session.command(f'read-memory {address:08x} 80')
-        require(reply==f'OK DATA {address:08x} 00000080' and len(raw)==128,'Incomplete original USB trace; stop without retry')
-        (target/(name+'.bin')).write_bytes(raw)
-        try:row=decode(raw,expected)
-        except ValueError as error:row=dict(available=False,error=str(error),raw_sha256=hashlib.sha256(raw).hexdigest())
-        else:row.update(available=name!='fault' or row['fault']>0)
-        result['records'][name]=row
+    # The retention page is outside the XNU direct map. The loader's
+    # manifest describes its writes and does not grant XNU a read mapping.
+    result=dict(time=datetime.now(timezone.utc).isoformat(),kernel_tag=kernel_tag,
+                source_fingerprint=expected,available=False,records={},
+                reason='This kernel cannot export the retained USB trace page')
     (target/'result.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf8');return result
 
 if __name__=='__main__':

@@ -411,8 +411,7 @@ def run_roundtrip(package,manifest,out,record,child=r.run_child,host=None):
         'Boot destination identity/topology differs')
     host.settle(90)
     child([sys.executable,'-B',HERE/'ui-session.py','serve','--kernel',package/'mach_kernel',
-        '--output',out/'returned-xnu-evidence','--seconds','120','--charge-on-ready','--on-ready','diagnostics',
-        *(['--on-ready','charge-usb'] if manifest.get('standalone_charge_session_version')==1 else [])],
+        '--output',out/'returned-xnu-evidence','--seconds','120','--charge-on-ready','--on-ready','diagnostics'],
         out/'returned-xnu-process',300,record)
     owner_complete(out/'returned-xnu-evidence',tag)
     require_handoff=manifest.get('standalone_charge_handoff') is True

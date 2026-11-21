@@ -15,25 +15,26 @@ def record(fault=0,proof=0,matched=True):
     raw=struct.pack('<32I',*words);words[-1]=m.fnv(raw[:-4]);return struct.pack('<32I',*words)
 cases=[]
 for case in ('healthy','failed-stop','old-source','bad-crc','missing','partial-read'):
-    directory=out/case;commands=[];raw=record(1,0x201 if case=='failed-stop' else 0x101,case!='old-source')
+    raw=record(1,0x201 if case=='failed-stop' else 0x101,case!='old-source')
     if case=='bad-crc':raw=raw[:-1]+bytes([raw[-1]^1])
     if case=='missing':raw=bytes(128)
-    class Session:
-        def command(self,verb):
-            commands.append(verb);assert verb in ('read-memory 7ffe0300 80','read-memory 7ffe0400 80')
-            address=verb.split()[1];payload=raw[:-1] if case=='partial-read' else raw
-            return f'OK DATA {address} 00000080',payload
+    if case=='partial-read':raw=raw[:-1]
     stopped=False
-    try:result=m.capture(Session(),directory,tag,package)
+    try:parsed=m.decode(raw,source)
     except ValueError:stopped=True
-    assert stopped==(case=='partial-read') and len(commands)==(1 if stopped else 2)
+    assert stopped==(case in ('bad-crc','missing','partial-read'))
     if not stopped:
-        parsed=result['records']['fault'];assert parsed['available']==(case not in ('bad-crc','missing'))
-        assert (directory/'fault.bin').read_bytes()==raw
-        if parsed['available']:
-            assert parsed['source_matches']==(case!='old-source')
-            assert parsed['stop_result']==('failed-stop' if case=='failed-stop' else 'confirmed-off')
-    cases.append(dict(case=case,read_commands=len(commands),stop=stopped,hardware=False))
+        assert parsed['source_matches']==(case!='old-source')
+        assert parsed['stop_result']==('failed-stop' if case=='failed-stop' else 'confirmed-off')
+    cases.append(dict(case=case,rejected=stopped,hardware=False))
+
+class Session:
+    def command(self,verb):
+        raise AssertionError(f'Legacy BUILD issued an unsafe trace read: {verb}')
+
+result=m.capture(Session(),out/'unsupported-build',tag,package)
+assert result['available'] is False and result['records']=={}
+assert json.loads((out/'unsupported-build/result.json').read_text())==result
 (out/'result.json').write_text(json.dumps(dict(result='PASS',hardware=False,cases=cases),indent=2)+'\n')
-print('PASS original RAM bytes, CRC/source checks, immutable stop outcome and partial-read refusal without another command')
+print('PASS offline trace decoding and zero serial commands for a BUILD without a mapped trace export')
 print('EVIDENCE',out)
