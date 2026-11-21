@@ -1,5 +1,5 @@
 {
-  "source_sha256": "7b295c3fb1d7b9eda1d94db327daef26cd260515bf7b4fd5dadef58a8962091c",
+  "source_sha256": "d264de77efb96cafeae62f736a7a5054716d3f78a1605ab6eed2134927290507",
   "new_objects": [
     "iokit/i9100_gpio_broker.o",
     "iokit/i9100_i2c_gpio.o",
@@ -25,6 +25,7 @@
     "iokit/i9100_mfc_layout.o",
     "iokit/i9100_mfc_power.o",
     "iokit/i9100_mfc_host.o",
+    "iokit/i9100_mfc_irq.o",
     "iokit/i9100_video_layout.o",
     "iokit/i9100_camera_engine_io.o",
     "iokit/i9100_csis.o",
@@ -89,6 +90,7 @@
     "iokit/i9100_camera_mmio.cpo",
     "iokit/i9100_mfc_native.cpo",
     "iokit/i9100_mfc_board_native.cpo",
+    "iokit/i9100_mfc_worker.cpo",
     "iokit/i9100_emmc_native.cpo",
     "iokit/IOS6I9100EMMCStorage.cpo",
     "iokit/IOS6I9100EMMCRaw.cpo",
@@ -96,7 +98,7 @@
     "iokit/i9100_emmc_alias.cpo",
     "iokit/i9100_emmc_publication.cpo"
   ],
-  "patch_sha256": "0f29f2b07a7c7f2ffb8806f84fd3cfe6554de84f0f35017946ba71f659f8d0dd",
+  "patch_sha256": "b5cad1b5705e3b4cb33c51dcc7340d78889df9872c181873260e1bd6d0ed64cf",
   "applied": false,
   "hardware_enabled": false,
   "prerequisite": "Apply both XNU files.arm patches and regenerate iokit rules/full filelist first",
