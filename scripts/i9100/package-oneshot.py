@@ -58,6 +58,7 @@ def main():
     parser.add_argument('--panel-sleep',action='store_true',help='Qualify real LD9040 state before retained-gamma panel and scanout sleep')
     parser.add_argument('--charge-probe', action='store_true', help='One guarded 1-second charger-disable contrast on the Power owner')
     parser.add_argument('--standalone-charge', action='store_true', help='Keep the original charging picture and supervise U1 charging before XNU')
+    parser.add_argument('--charge-usb-timeout',type=int,default=0,help='Diagnostic: checked-stop Download recovery after 120..600s of USB stall; normal charging default0')
     parser.add_argument('--charge-art',type=Path,help='Local extracted iOS6 battery sprite pack for standalone charging')
     parser.add_argument('--reboot-download-fallback', action='store_true',
                         help='Recover normal iOS reboot requests into Download after filesystem shutdown')
@@ -78,6 +79,8 @@ def main():
                         help='Diagnostic: control loader bootargs with a baseline kernel; no command capability claim')
     parser.add_argument('--emmc-root-profile',type=Path,help='Reviewed native eMMC boot contract; selects RO SYSTEM and mandatory DATAFS, default disabled')
     args = parser.parse_args()
+    if args.charge_usb_timeout and (not args.standalone_charge or not 120<=args.charge_usb_timeout<=600):
+        parser.error('--charge-usb-timeout requires standalone charging and 120..600 seconds')
     emmc_module=None;emmc_manifest=None;emmc_contract=None
     if args.emmc_root_profile:
         if not args.control or args.control_bootargs_only:
@@ -291,6 +294,7 @@ def main():
         *(['--panel-sleep'] if args.panel_sleep else []),
         *(['--charge-probe'] if args.charge_probe else []),
         *(['--standalone-charge'] if args.standalone_charge else []),
+        *(['--charge-usb-timeout',str(args.charge_usb_timeout)] if args.charge_usb_timeout else []),
         *(['--charge-art',args.charge_art] if args.charge_art else []),
         *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
         *(['--tcc-development'] if args.tcc_development else []),
@@ -373,6 +377,8 @@ def main():
             assert name in sym,'Missing charger liveness version in actual image'
             at=sym[name]-0x48000000
             assert struct.unpack_from('<I',data,at)[0]==version,'Charger liveness version differs'
+        for name,value in (('i9100_charge_usb_session_version',1),('i9100_charge_usb_timeout_seconds',args.charge_usb_timeout)):
+            assert name in sym and struct.unpack_from('<I',data,sym[name]-0x48000000)[0]==value,'Actual charger session policy differs'
         assert b'I9LV1 ' in data,'Actual image lacks the bounded first-packet record'
         assert b'I9RT1 ' in data,'Actual image lacks the raw RTC read record'
         assert b'I9BS1 ' in data and b'I9BF1 ' in data,'Startup supervision/fault reporting missing from the actual loader'
@@ -449,6 +455,9 @@ def main():
         'standalone_charge_wait_policy_version': 1 if args.standalone_charge else 0,
         'standalone_charge_wfi_enabled': False,
         'standalone_charge_endpoint_poll_version': 1 if args.standalone_charge else 0,
+        'standalone_charge_session_version': 1 if args.standalone_charge else 0,
+        'standalone_charge_usb_timeout_seconds': args.charge_usb_timeout,
+        'standalone_charge_usb_trace_offsets': [0x300,0x400] if args.standalone_charge else None,
         'standalone_charge_first_packet_liveness': args.standalone_charge,
         'display_vsync_power': b'_i9100_display_vsync_power_diag\0' in raw_data,
         'standalone_charge_handoff_tree': {'bytes':dt_blob.stat().st_size,'sha256':sha(dt_blob)} if args.standalone_charge else None,

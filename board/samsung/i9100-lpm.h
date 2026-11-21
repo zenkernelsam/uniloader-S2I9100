@@ -309,6 +309,10 @@ static int lpm_prepare_download(void)
   i9100_lpm_download_attempts++;i9100_lpm_download_confirmed=0;
   i9100_lpm_boot_in_service=1;
   unsigned stopped=i9100_power_stop(&i9100_lpm_battery);
+#if defined(CONFIG_EXYNOS_CDCACM4210)
+  extern void usbcdc4210_charge_stop_proof(unsigned);
+  usbcdc4210_charge_stop_proof(stopped);
+#endif
   i9100_lpm_boot_in_service=in_service;
   if(!stopped){
    i9100_lpm_download_denied++;
@@ -349,6 +353,7 @@ static int lpm_screen_bind(struct i9100_charge_screen *screen,unsigned *window)
  *window=selected;return 1;
 }
 #ifdef I9100_STANDALONE_CHARGE_BUILD
+uint64_t i9100_boot_charge_ticks(void){return lpm_ticks();}
 void i9100_boot_charge_service(void)
 {
  if(!i9100_lpm_boot_active || i9100_lpm_boot_in_service)return;
@@ -463,6 +468,17 @@ void i9100_standalone_charge_gate(void)
    * schedule. Only the service owns power_poll and startup admission. */
   i9100_boot_charge_service();uint64_t now=lpm_ticks();
 #if defined(CONFIG_EXYNOS_CDCACM4210)
+   extern unsigned usbcdc4210_charge_take_recovery(void);
+   extern unsigned usbcdc4210_charge_report_requested(void);
+   unsigned usb_fault=usbcdc4210_charge_take_recovery();
+   if(usb_fault){
+    /* USB never resets directly. Lease one existing, checked-stop route;
+     * a failed stop remains supervised and does not retry this recovery. */
+    if(!lpm_download()){
+     if(!i9100_lpm_boot_fault){i9100_lpm_boot_fault=13;i9100_lpm_fault_phase=i9100_lpm_boot_phase;}
+    }
+   }
+   if(usbcdc4210_charge_report_requested())next_report=0;
    unsigned boot_ready=!i9100_lpm_boot_fault && i9100_charge_start_ready(start_gate,lpm_now(0));
 #ifdef I9100_PANEL_SLEEP_BUILD
    if(panel.qualified && panel.stage==I9P_FAULT)boot_ready=0;

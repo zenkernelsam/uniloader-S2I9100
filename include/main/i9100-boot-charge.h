@@ -1,5 +1,6 @@
 #ifndef I9100_BOOT_CHARGE_H
 #define I9100_BOOT_CHARGE_H
+#include <stdint.h>
 /* Only a qualified standalone-charge-to-XNU transition owns this service.
  * Ordinary boots and other boards keep their existing paths. */
 /* I9BS1 stages: 1 charger return, 2 board ready, 3 late init, 4 staging,
@@ -7,11 +8,13 @@
  * 9 failed bootstrap parked in supervised charger maintenance. */
 #if defined(CONFIG_SAMSUNG_I9100) && defined(I9100_STANDALONE_CHARGE_BUILD)
 void i9100_boot_charge_service(void);
+uint64_t i9100_boot_charge_ticks(void);
 void i9100_boot_charge_stage(unsigned stage);
 void i9100_boot_charge_finish(void *tree,unsigned bytes);
 void i9100_boot_charge_failure(unsigned reason);
 #else
 static inline void i9100_boot_charge_service(void){}
+static inline uint64_t i9100_boot_charge_ticks(void){return 0;}
 static inline void i9100_boot_charge_stage(unsigned stage){(void)stage;}
 static inline void i9100_boot_charge_finish(void *tree,unsigned bytes){(void)tree;(void)bytes;}
 static inline void i9100_boot_charge_failure(unsigned reason){(void)reason;}

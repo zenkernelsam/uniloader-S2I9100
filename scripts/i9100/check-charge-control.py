@@ -33,6 +33,12 @@ static uint32_t rxpop(unsigned ep){assert(ep==0 && fifo_index<32);return receive
 #define CONFIG_SAMSUNG_I9100 1
 #define I9100_STANDALONE_CHARGE_BUILD 1
 static unsigned supervisor_calls,console_calls;
+static uint64_t model_ticks;
+static uint32_t live_trace[32],fault_trace[32];
+#define I9100_CHARGE_USB_TRACE_LIVE live_trace
+#define I9100_CHARGE_USB_TRACE_FAULT fault_trace
+#define USB_GINT_ACK(bits) do { GINTSTS&=~(bits); } while(0)
+uint64_t i9100_boot_charge_ticks(void){return model_ticks;}
 void i9100_boot_charge_service(void){supervisor_calls++;}
 void i9100_boot_charge_stage(unsigned stage){(void)stage;}
 void i9100_boot_charge_finish(void *tree,unsigned bytes){(void)tree;(void)bytes;}
@@ -44,16 +50,50 @@ static void reset(void){memset(registers,0,sizeof(registers));memset(&charge_con
  charge_identity=1;usb_ok=1;configured=host_open=1;in_poll=ep1_busy=0;
  charge_action_ready=tx_written_total=tx_drained_total=tx_completed_total=ep1_transfer_total=0;
  charge_boot_available=1;
- tx_head=tx_tail=0;bulk_mps=512;DTXFSTS(1)=512;DIEPCTL(1)=DXEPCTL_USBACTEP|DXEPCTL_MPS(512);}
+ i9u_init(&charge_session,0);charge_session.configured=charge_session.opened=charge_session.had_open=1;charge_session.state=I9U_OPEN;
+ charge_ep0_state=CE0_WAIT;charge_ep0_inflight=charge_ep0_remaining=charge_ep0_need_zlp=0;
+ charge_recovery_used=charge_fault_saved=charge_trace_sequence=0;charge_trace_at=model_ticks=0;
+ tx_head=tx_tail=0;bulk_mps=512;DTXFSTS(0)=256;DTXFSTS(1)=512;DIEPCTL(1)=DXEPCTL_USBACTEP|DXEPCTL_MPS(512);}
 static void received(const char*line){unsigned n=strlen(line);assert(n<=64);memset(receive_fifo,0,sizeof(receive_fifo));
  memcpy(receive_fifo,line,n);fifo_index=0;GINTSTS=GINTSTS_RXFLVL;GRXSTSP=1U|(n<<4)|(PKTSTS_OUTRX<<17);usbcdc_poll();GINTSTS=0;}
 static void complete(void){GINTSTS=GINTSTS_IEPINT;DAINT=2;DIEPINT(1)=DXEPINT_XFERCOMPL;usbcdc_poll();GINTSTS=0;DIEPINT(1)=0;}
-static void setup(unsigned rt,unsigned rq,unsigned value){memset(setup_pkt,0,8);setup_pkt[0]=rt;setup_pkt[1]=rq;setup_pkt[2]=value;ep0_setup();}
+static void setup_pending(unsigned rt,unsigned rq,unsigned value){
+ charge_ep0_new_setup();memset(setup_pkt,0,8);setup_pkt[0]=rt;setup_pkt[1]=rq;setup_pkt[2]=value;ep0_setup();}
+static void setup(unsigned rt,unsigned rq,unsigned value){setup_pending(rt,rq,value);
+ if(charge_identity && charge_ep0_state==CE0_SIN)charge_ep0_indone(DXEPINT_XFERCOMPL);
+ if(charge_identity)charge_open_ready();}
 int main(void){
+ /* Bulk stays unarmed until the real DTR status completes. Reset/RX
+  * combinations must not pop an old FIFO after endpoint reinitialization. */
+ reset();host_open=charge_session.opened=0;ring_push("closed log\n");ep1_kick();assert(!ep1_busy);
+ setup_pending(0x21,0x22,1);ep1_kick();assert(!ep1_busy&&!host_open);
+ assert(DIEPTSIZ(0)==(1U<<19));
+ charge_ep0_indone(DXEPINT_XFERCOMPL);charge_open_ready();ep1_kick();
+ assert(host_open&&ep1_busy&&ep1_transfer_total==47U);
+ reset();memset(setup_pkt,0,8);charge_ep0_new_setup();setup_pkt[0]=0x80;setup_pkt[1]=6;
+ setup_pkt[3]=2;setup_pkt[6]=67;ep0_setup();
+ assert(charge_ep0_state==CE0_DIN && charge_ep0_remaining==3 && DIEPTSIZ(0)==((1U<<19)|64U));
+ charge_ep0_indone(DXEPINT_XFERCOMPL);
+ assert(charge_ep0_remaining==0 && DIEPTSIZ(0)==((1U<<19)|3U));
+ charge_ep0_indone(DXEPINT_XFERCOMPL);assert(charge_ep0_state==CE0_SOUT);
+ reset();fifo_index=0;GINTSTS=GINTSTS_USBRST|GINTSTS_RXFLVL;
+ GRXSTSP=(8U<<4)|(PKTSTS_SETUPRX<<17);usbcdc_poll();assert(!fifo_index&&!configured&&!host_open);
+ reset();host_open=charge_session.opened=0;setup_pending(0x21,0x22,1);
+ charge_ep0_indone(DXEPINT_XFERCOMPL|DXEPINT_TIMEOUT);assert(!host_open&&charge_session.fault==I9U_IO);
+ reset();model_ticks=24000000ULL;GINTSTS=0;charge_trace_publish(1);
+ assert(live_trace[0]==I9U_TRACE_MAGIC && live_trace[31]==i9u_trace_checksum(live_trace));
+ i9u_init(&charge_session,180);i9u_configure(&charge_session,1,model_ticks);model_ticks+=180ULL*24000000ULL;
+ usbcdc_poll();assert(usbcdc4210_charge_take_recovery()==I9U_NO_OPEN && !usbcdc4210_charge_take_recovery());
+ assert(fault_trace[0]==I9U_TRACE_MAGIC);usbcdc4210_charge_stop_proof(0);
+ assert(fault_trace[7]==0x201U && fault_trace[31]==i9u_trace_checksum(fault_trace));
+ usbcdc4210_charge_stop_proof(1);assert(fault_trace[7]==0x201U);
+ reset();model_ticks=24000000ULL;i9u_init(&charge_session,180);i9u_configure(&charge_session,1,model_ticks);
+ model_ticks+=180ULL*24000000ULL;usbcdc_poll();assert(usbcdc4210_charge_take_recovery());
+ usbcdc4210_charge_stop_proof(1);assert(fault_trace[7]==0x101U);
  /* A completion can be authoritative without appearing in the global
   * summary snapshot. Test true W1C behavior so a FIFO-write ACK cannot be
   * mistaken for XFRC and release an uncompleted reboot command. */
- reset();ring_push("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\n");
+ reset();char large_backlog[701];memset(large_backlog,'x',700);large_backlog[700]=0;ring_push(large_backlog);
  ep1_kick();assert(ep1_busy && tx_completed_total==0 && !(DIEPINT(1)&DXEPINT_XFERCOMPL));
  unsigned first=ep1_transfer_total;
  GINTSTS=DAINT=0;DIEPINT(1)=DXEPINT_XFERCOMPL;usbcdc_poll();
@@ -90,16 +130,18 @@ int main(void){
  assert(!ep1_busy && tx_written_total==80 && !memcmp(txring,"I9BS1 ",6));
  /* A late opener must drain the queued status and READY over multiple
   * short packets, not lose its second packet after the initial 64 bytes. */
- reset();host_open=0;
+ reset();host_open=charge_session.opened=0;
  struct i9100_charge_report report={.sequence=1,.milliseconds=7900,.valid=1,
   .percent=2,.millivolts=3508,.charging=1,.temperature_deci_c=250,.elapsed_seconds=5};
  usbcdc4210_charge_timed_report(&report);
- unsigned initial_written=tx_written_total;assert(initial_written>64 && ep1_busy);
- unsigned first_completed=ep1_transfer_total;assert(first_completed==64);
- setup(0x21,0x22,1);assert(host_open && tx_written_total==initial_written+47);
+ unsigned initial_written=tx_written_total;assert(initial_written>64 && !ep1_busy);
+ setup_pending(0x21,0x22,1);assert(!host_open && !ep1_busy && !charge_session.ready_pending);
+ ep1_kick();assert(!ep1_busy);
+ charge_ep0_indone(DXEPINT_XFERCOMPL);charge_open_ready();ep1_kick();
+ assert(host_open && tx_written_total==47 && charge_session.discarded_bytes==initial_written);
  unsigned packet_count=0;
  while(tx_completed_total<tx_written_total && packet_count++<10){complete();}
- assert(packet_count>=3 && tx_completed_total==tx_written_total && tx_head==tx_tail && !ep1_busy);
+ assert(packet_count>=1 && tx_completed_total==tx_written_total && tx_head==tx_tail && !ep1_busy);
  assert(!charge_action_ready && !usbcdc4210_charge_take_action());
  unsigned diagnostic_at=tx_head,diagnostic_before=tx_written_total;
  usbcdc4210_charge_transport_report();assert(tx_written_total==diagnostic_before+80U);
@@ -122,7 +164,7 @@ int main(void){
  assert(tx_written_total==diagnostic_before+80U && !memcmp(txring+diagnostic_at,"I9DS1 ",6));
  /* A real late opener can find hours of buffered charger messages. Logs
   * must be dropped whole and leave room for the exact READY handshake. */
- reset();host_open=0;GINTSTS=0;charge_log_dropped=0;
+ reset();host_open=charge_session.opened=0;GINTSTS=0;charge_log_dropped=0;
  char status_line[256];unsigned status_bytes=i9100_charge_format(status_line,sizeof(status_line),&report)+2U;
  unsigned accepted=0,dropped=0;
  for(unsigned n=0;n<512;n++){
@@ -133,7 +175,7 @@ int main(void){
  unsigned backlog=tx_written_total;
  assert(accepted && dropped && charge_log_dropped==dropped);
  assert(((tx_tail-tx_head-1U)&(TXRING-1U))>=128U);
- setup(0x21,0x22,1);assert(tx_written_total==backlog+47U);
+ setup(0x21,0x22,1);assert(tx_written_total==47U && charge_session.discarded_bytes==backlog);
  char ready_line[64];unsigned ready_bytes=i9100_chg_ready(ready_line,I9100_CONTROL_TAG,I9100_CHARGER_TAG);
  assert(ready_bytes==47);
  for(unsigned n=0;n<ready_bytes;n++)assert(txring[(tx_head-ready_bytes+n)&(TXRING-1U)]==ready_line[n]);
@@ -159,9 +201,9 @@ int main(void){
  for(unsigned n=0;n<161;n++)i9100_chg_parse(&charge_control,text[n],I9100_CONTROL_TAG,I9100_CHARGER_TAG);
  received("I9CHC2 00000005 1234567890abcdef fedcba0987654321 boot\n");assert(charge_control.action==1);
  GINTSTS=GINTSTS_IEPINT;DAINT=2;DIEPINT(1)=DXEPINT_AHBERR;usbcdc_poll();assert(!usbcdc4210_charge_take_action() && !charge_control.action);
- reset();ring_push("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\n");ep1_kick();
+ reset();ring_push(large_backlog);ep1_kick();
  received("I9CHC2 00000006 1234567890abcdef fedcba0987654321 download\n");assert(charge_control.action==2 && !charge_action_ready);
- complete();assert(!charge_action_ready);complete();assert(!charge_action_ready);complete();assert(usbcdc4210_charge_take_action()==2);
+ complete();assert(!charge_action_ready);complete();assert(usbcdc4210_charge_take_action()==2);
  reset();DOEPCTL(1)=DXEPCTL_USBACTEP|DXEPCTL_MPS(512);DOEPTSIZ(1)=0;GINTSTS=GINTSTS_OEPINT;DAINT=2U<<16;DOEPINT(1)=1;
  usbcdc_poll();assert(DOEPTSIZ(1)==((1U<<19)|512) && (DOEPCTL(1)&DXEPCTL_EPENA));
  /* DTR0 and config0 cancel half-lines and untransmitted actions. DTR2
@@ -218,6 +260,7 @@ int main(void){
 '''
 (out/'driver.c').write_text((repo/'drivers/samsung/dwc2cdc4210.c').read_text().replace('#include "../../board/samsung/i9100-charge-control.h"','#include "i9100-charge-control.h"'))
 (out/'driver.c').write_text((out/'driver.c').read_text().replace('#include "../../board/samsung/i9100-charge-report.h"','#include "i9100-charge-report.h"'))
+(out/'driver.c').write_text((out/'driver.c').read_text().replace('#include "../../board/samsung/i9100-charge-usb-session.h"','#include "i9100-charge-usb-session.h"'))
 (out/'check.c').write_text(code)
 for n,cmd in enumerate((['clang','-O1','-g','-fno-pie','-no-pie','-Wno-int-to-void-pointer-cast','-Wno-pointer-to-int-cast','-fsanitize=address,undefined','-fno-sanitize-recover=all',
     '-I'+str(repo/'include'),'-I'+str(repo/'board/samsung'),str(out/'check.c'),'-o',str(out/'check')],[str(out/'check')])):
@@ -239,5 +282,5 @@ except ValueError:pass
 else:raise AssertionError('Invalid wake probe accepted')
 (out/'result.json').write_text(json.dumps(dict(result='PASS',hardware=False,
  source_sha256={name:hashlib.sha256((repo/name).read_bytes()).hexdigest() for name in
- ('drivers/samsung/dwc2cdc4210.c','scripts/i9100/check-charge-control.py','scripts/i9100/summarize-charge-loader.py')},
+ ('drivers/samsung/dwc2cdc4210.c','board/samsung/i9100-charge-usb-session.h','include/main/i9100-boot-charge.h','scripts/i9100/check-charge-control.py','scripts/i9100/summarize-charge-loader.py')},
  first_packet=decoded,limit='Production USB logic; hardware FIFO/W1C effects modeled, no physical transfer or charging proof'),indent=2)+'\n')

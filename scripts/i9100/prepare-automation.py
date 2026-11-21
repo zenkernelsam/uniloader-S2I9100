@@ -34,6 +34,7 @@ parser.add_argument('--charge-diag', action='store_true')
 parser.add_argument('--panel-sleep',action='store_true')
 parser.add_argument('--charge-probe', action='store_true')
 parser.add_argument('--standalone-charge', action='store_true')
+parser.add_argument('--charge-usb-timeout',type=int,default=0,help='Opt-in diagnostic USB stall recovery, 120..600 seconds')
 parser.add_argument('--charge-art',type=Path,help='Local iOS6 sprite pack for the standalone charger')
 parser.add_argument('--reboot-download-fallback', action='store_true')
 parser.add_argument('--tcc-development', action='store_true')
@@ -90,6 +91,8 @@ if args.panel_sleep and not args.charge_diag:
     parser.error('--panel-sleep requires --charge-diag')
 if args.charge_art and not args.standalone_charge:
     parser.error('--charge-art requires --standalone-charge')
+if args.charge_usb_timeout and (not args.standalone_charge or not 120<=args.charge_usb_timeout<=600):
+    parser.error('--charge-usb-timeout requires standalone charge and 120..600 seconds')
 xnu = repo.parent / 'xnu-S2I9100'
 label = 'control-' + datetime.now().strftime('%Y%m%d-%H%M%S')
 kernel = xnu / 'out/automation' / label
@@ -146,6 +149,7 @@ subprocess.run([sys.executable, repo / 'scripts/i9100/package-oneshot.py', '--ke
                 *(['--panel-sleep'] if args.panel_sleep else []),
                 *(['--charge-probe'] if args.charge_probe else []),
                 *(['--standalone-charge'] if args.standalone_charge else []),
+                *(['--charge-usb-timeout',str(args.charge_usb_timeout)] if args.charge_usb_timeout else []),
                 *(['--charge-art',args.charge_art] if args.charge_art else []),
                 *(['--reboot-download-fallback'] if args.reboot_download_fallback else []),
                 *(['--tcc-development'] if args.tcc_development else []),

@@ -57,7 +57,7 @@ def validate(task):
     if not isinstance(task,dict) or set(task)-{'id','action','xy','ms','frame','process','thread_limit'}:raise ValueError('Unknown task fields')
     if not re.fullmatch(r'[0-9]{4}',str(task.get('id',''))):raise ValueError('Four-digit task id required')
     action=task.get('action')
-    if action not in ('status','charge','density','diagnostics','frame','tap','swipe','home','power','setup','app','stacks','close','reboot-download','poweroff-charge'):raise ValueError('Unknown task action')
+    if action not in ('status','charge','charge-usb','density','diagnostics','frame','tap','swipe','home','power','setup','app','stacks','close','reboot-download','poweroff-charge'):raise ValueError('Unknown task action')
     if 'frame' in task and type(task['frame']) is not bool:raise ValueError('frame must be boolean')
     if action in ('tap','swipe','home','power'):
         xy=task.get('xy',[]);size=2 if action=='tap' else 4 if action=='swipe' else 0
@@ -174,6 +174,9 @@ def serve(a):
                         kernel=b.m.Kernel(session,symbols)
                         if action in ('tap','swipe','home','power'):result['input']=input_task(session,kernel,symbols,task)
                         elif action=='charge':result['charge']=b.module('owner_charge','inspect-charge-health.py').capture(kernel,symbols,target)
+                        elif action=='charge-usb':
+                            package=a.kernel.resolve().parent if (a.kernel.resolve().parent/'manifest.json').is_file() else None
+                            result['charge_usb']=b.module('owner_charge_usb','inspect-charge-usb.py').capture(session,target/'usb-traces',symbols.tag,package)
                         elif action=='density':result['density']=b.module('owner_density','inspect-ui-density.py').capture(session,kernel,symbols,layout,target,record)
                         elif action=='diagnostics':
                             names=b.observations.ABORT_SYMBOLS|{key for key in symbols.values if key.endswith('leo_graphics_state')}
@@ -204,7 +207,7 @@ def serve(a):
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='mode',required=True)
     s=sub.add_parser('serve');s.add_argument('--kernel',type=Path,required=True);s.add_argument('--output',type=Path,required=True);s.add_argument('--seconds',type=int,choices=range(60,1801),default=1200);s.add_argument('--allow-reboot-download',action='store_true');s.add_argument('--allow-poweroff-charge',action='store_true');s.add_argument('--charge-on-ready',action='store_true',help='Save native charge evidence immediately after the verified handshake');s.add_argument('--poweroff-on-ready',action='store_true',help='Queue one authorized charging shutdown on this verified owner')
-    s.add_argument('--on-ready',action='append',choices=('status','charge','density','diagnostics','frame','setup','app'),default=[],help='Queue these read-only tasks immediately after the verified handshake')
+    s.add_argument('--on-ready',action='append',choices=('status','charge','charge-usb','density','diagnostics','frame','setup','app'),default=[],help='Queue these read-only tasks immediately after the verified handshake')
     s.add_argument('--require-charge-epoch',action='store_true',help='Before an authorized halt, save and qualify the current RTC/deadline on this same owner; no retry')
     q=sub.add_parser('request');q.add_argument('--owner',type=Path,required=True);q.add_argument('--id',required=True);q.add_argument('--action',required=True);q.add_argument('--xy',type=int,nargs='+');q.add_argument('--ms',type=int);q.add_argument('--process');q.add_argument('--thread-limit',type=int);q.add_argument('--no-frame',action='store_true')
     a=p.parse_args()

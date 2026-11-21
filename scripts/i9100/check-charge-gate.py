@@ -9,7 +9,7 @@ if os.environ.get('I9100_CPU_CAPPED')!='1':
     os.execvpe('taskset',['taskset','-c','0-13','nice','-n10','ionice','-c2','-n7',sys.executable,'-B',__file__],dict(os.environ,I9100_CPU_CAPPED='1'))
 from pathlib import Path
 from datetime import datetime
-import subprocess,importlib.util
+import subprocess,importlib.util,hashlib,json
 repo=Path(__file__).resolve().parents[2];out=repo/'out'/('charge-gate-check-'+datetime.now().strftime('%Y%m%d-%H%M%S'));out.mkdir()
 text=(repo/'board/samsung/i9100-lpm.h').read_text();start=text.index('void i9100_standalone_charge_gate(void)');begin=text.index('{',start);depth=1;end=begin+1
 while depth:
@@ -70,6 +70,7 @@ static unsigned i9100_lpm_epoch_marked,i9100_lpm_epoch_match,i9100_lpm_epoch_res
 static uint64_t i9100_lpm_epoch_rtc;
 static unsigned i9100_lpm_download_attempts,i9100_lpm_download_denied,i9100_lpm_download_confirmed;
 static unsigned power_init_calls,failed_stop,sense_sequence,slow_render;
+static unsigned usb_recovery_taken,usb_stop_proofs,usb_stop_result;
 static unsigned gate_duplicate_polls,policy_polls,report_delayed;
 static struct i9100_charge_report group_report;
 static uint64_t last_policy_ticks;
@@ -163,7 +164,7 @@ int i9100_power_poll(struct i9100_power_state*s){assert(s->io.cookie==&i9100_lpm
  if(scenario==22 && report_delayed){s->percent=0;s->millivolts=3199;}
  return 0;}
 int i9100_power_stop(struct i9100_power_state*s){s->enabled=s->charging=0;stops++;stop_sequence++;
- if((scenario==12 || scenario==23 || scenario==24) && !failed_stop){failed_stop=1;s->stop_uncertain=1;return 0;}
+ if((scenario==12 || scenario==23 || scenario==24 || scenario==26) && !failed_stop){failed_stop=1;s->stop_uncertain=1;return 0;}
  s->stop_uncertain=0;return 1;}
 int i9100_power_pmic_read(void*c,unsigned r,uint8_t*v){(void)c;(void)r;(void)v;return 0;}
 int i9100_power_pmic_write(void*c,unsigned r,uint8_t v){(void)c;(void)r;(void)v;return 0;}
@@ -234,6 +235,14 @@ void usbcdc4210_charge_boot_report_passive(const unsigned p[8]){
 void usbcdc_poll(void){usb_calls++;
  if(scenario==10 && seconds()>=35 && !remote_issued)ticks+=7200000ULL;
 }
+unsigned usbcdc4210_charge_take_recovery(void){
+ if((scenario==25 || scenario==26) && seconds()>=35 && !usb_recovery_taken){usb_recovery_taken=1;return 1;}
+ return 0;
+}
+unsigned usbcdc4210_charge_report_requested(void){return 0;}
+void usbcdc4210_charge_stop_proof(unsigned stopped){
+ if(usb_recovery_taken && !usb_stop_proofs){usb_stop_proofs=1;usb_stop_result=stopped;}
+}
 void usbcdc4210_charge_set_boot_ready(unsigned available){
  boot_admission=available;
  if(i9100_lpm_boot_fault)assert(!available);
@@ -258,7 +267,7 @@ static int wrapped_draw(const struct i9100_charge_screen*s,unsigned valid,unsign
 }
 #define i9100_charge_draw wrapped_draw
 static void lpm_sleep_tick(void){ticks+=240000;wait_ticks++;
- if((seconds()>40 && scenario==4) || (seconds()>70 && (scenario==13 || scenario==14)))longjmp(escaped,4);}
+ if((seconds()>40 && (scenario==4 || scenario==26)) || (seconds()>70 && (scenario==13 || scenario==14)))longjmp(escaped,4);}
 void i9100_boot_charge_service(void);
 static uint32_t lpm_panel_gpio_read(void*c,unsigned o){(void)c;(void)o;return 0;}
 static void lpm_panel_gpio_write(void*c,unsigned o,uint32_t v){(void)c;(void)o;(void)v;}
@@ -295,9 +304,9 @@ int main(int argc,char **argv){
  alarm(20); /* A stuck offline model cannot hold a CPU indefinitely. */
  for(scenario=1;scenario<=
 #ifdef I9100_PANEL_SLEEP_BUILD
- 24
+ 26
 #else
- 24
+ 26
 #endif
  ;scenario++){
   fprintf(stderr,"SCENARIO %u begin\n",scenario);fflush(stderr);
@@ -311,6 +320,7 @@ int main(int argc,char **argv){
   i9100_lpm_download_attempts=i9100_lpm_download_denied=i9100_lpm_download_confirmed=0;
   i9100_lpm_boot_next=0;
   power_init_calls=failed_stop=stop_sequence=last_boot_stage=fault_reports=boot_admission=slow_sample=slow_render=0;
+  usb_recovery_taken=usb_stop_proofs=usb_stop_result=0;
   gate_duplicate_polls=policy_polls=report_delayed=0;last_policy_ticks=0;
   first_key_seen=last_key_seen=unblank_ticks=last_blank_ticks=0;
   i9100_boot_charge_failure(99);assert(!i9100_lpm_boot_fault && !power_init_calls); /* ordinary boot */
@@ -402,6 +412,15 @@ int main(int argc,char **argv){
    assert(i9100_lpm_download_attempts==1 && i9100_lpm_download_denied==1 && !i9100_lpm_download_confirmed);
    assert(i9100_lpm_boot_active && i9100_lpm_boot_fault==12 && !boot_admission && fault_reports);
   }
+  if(scenario==25){
+   assert(result==2 && usb_recovery_taken && usb_stop_proofs==1 && usb_stop_result==1);
+   assert(i9100_lpm_download_attempts==1 && i9100_lpm_battery.charge_start==12345);
+  }
+  if(scenario==26){
+   assert(result==4 && usb_recovery_taken && usb_stop_proofs==1 && !usb_stop_result);
+   assert(!pmu2 && !pmu3 && i9100_lpm_download_attempts==1 && i9100_lpm_download_denied==1);
+   assert(i9100_lpm_boot_active && i9100_lpm_battery.charge_start==12345 && i9100_lpm_boot_polls>35);
+  }
   if(result==2)assert(stops==1 && i9100_lpm_download_confirmed==1 && !i9100_lpm_boot_active);
   fprintf(stderr,"SCENARIO %u done\n",scenario);fflush(stderr);
  }
@@ -420,3 +439,7 @@ for variant in ('legacy','panel'):
     decoded=decoder.decode((out/(variant+'-handoff.bin')).read_bytes())
     assert decoded['valid'] and decoded['enabled_before']==1 and decoded['enabled_after']==0
 print('EVIDENCE',out,flush=True)
+(out/'result.json').write_text(json.dumps(dict(result='PASS',hardware=False,
+ source_sha256={name:hashlib.sha256((repo/name).read_bytes()).hexdigest() for name in
+ ('board/samsung/i9100-lpm.h','scripts/i9100/check-charge-gate.py')},
+ scope='Actual production gate and checked-stop recovery; USB/keys/power/clock are models, no physical reset or current'),indent=2)+'\n')

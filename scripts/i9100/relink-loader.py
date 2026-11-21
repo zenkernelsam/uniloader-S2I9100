@@ -52,6 +52,7 @@ def main():
     parser.add_argument('--panel-sleep',action='store_true')
     parser.add_argument('--charge-probe', action='store_true')
     parser.add_argument('--standalone-charge', action='store_true')
+    parser.add_argument('--charge-usb-timeout',type=int,default=0,help='Default-off diagnostic USB stall recovery, 120..600 seconds')
     parser.add_argument('--charge-art',type=Path,help='Qualified local iOS6 battery sprite pack in project assets')
     parser.add_argument('--reboot-download-fallback', action='store_true')
     parser.add_argument('--tcc-development', action='store_true')
@@ -131,6 +132,8 @@ def main():
         parser.error('--charge-probe requires --charge-diag')
     if args.standalone_charge and not args.control:
         parser.error('--standalone-charge requires --control')
+    if args.charge_usb_timeout and (not args.standalone_charge or not 120<=args.charge_usb_timeout<=600):
+        parser.error('--charge-usb-timeout requires standalone charge and 120..600 seconds')
     if args.standalone_charge and not re.fullmatch('[0-9a-f]{16}',args.charger_tag or ''):
         parser.error('--standalone-charge requires its source-qualified --charger-tag')
     if args.charge_art and not args.standalone_charge:
@@ -273,6 +276,7 @@ def main():
         if source_name == 'drivers/samsung/dwc2cdc4210.c' and args.control and args.standalone_charge:
             command.append('-DI9100_CONTROL_TAG="'+args.control_tag+'"')
             command.append('-DI9100_CHARGER_TAG="'+args.charger_tag+'"')
+            command.append('-DI9100_CHARGE_USB_TIMEOUT_SECONDS='+str(args.charge_usb_timeout))
         if source_name == 'arch/arm/start.S' and args.kernel_blob:
             command.append('-DI9100_KERNEL_BLOB="' + str(blob) + '"')
         if source_name == 'arch/arm/start.S' and args.dtb_blob:

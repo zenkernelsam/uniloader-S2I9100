@@ -28,6 +28,7 @@
 #include <main/i9100-boot-charge.h>
 #include "../../board/samsung/i9100-charge-control.h"
 #include "../../board/samsung/i9100-charge-report.h"
+#include "../../board/samsung/i9100-charge-usb-session.h"
 #ifndef I9100_CONTROL_TAG
 #define I9100_CONTROL_TAG "0000000000000000"
 #endif
@@ -38,6 +39,12 @@ static struct i9100_charge_control charge_control;
 static unsigned charge_action_ready,charge_boot_available,tx_written_total,tx_drained_total,tx_completed_total,ep1_transfer_total;
 static unsigned charge_log_dropped;
 const uint32_t i9100_charge_usb_poll_version=1;
+const uint32_t i9100_charge_usb_session_version=1;
+#ifndef I9100_CHARGE_USB_TIMEOUT_SECONDS
+#define I9100_CHARGE_USB_TIMEOUT_SECONDS 0
+#endif
+const uint32_t i9100_charge_usb_timeout_seconds=I9100_CHARGE_USB_TIMEOUT_SECONDS;
+static struct i9100_charge_usb_session charge_session;
 static void ring_push(const char *s);
 
 /* Base addresses are overridable so the same logic can run under a
@@ -102,6 +109,9 @@ static void ring_push(const char *s);
 #define DOEPDMA(n)	GREG(0xB14 + (n) * 0x20)	/* INEPTFSPC per EP */
 #ifndef USB_DIEPINT_ACK
 #define USB_DIEPINT_ACK(n,bits) do { DIEPINT(n)=(bits); } while(0)
+#endif
+#ifndef USB_GINT_ACK
+#define USB_GINT_ACK(bits) do { GINTSTS=(bits); } while(0)
 #endif
 
 #define PCGCCTL		GREG(0xE00)
@@ -285,6 +295,15 @@ enum { REQ_NONE, REQ_DATA, REQ_ZLP, REQ_OUT } ep0_req;
 static const uint8_t *ep0_ptr;	/* pending TX payload */
 static unsigned int ep0_plen;	/* pending TX byte count */
 static uint8_t setup_pkt[8];
+enum {CE0_WAIT,CE0_DIN,CE0_DOUT,CE0_SIN,CE0_SOUT};
+static unsigned charge_ep0_state,charge_ep0_inflight,charge_ep0_need_zlp;
+static const uint8_t *charge_ep0_data;
+static unsigned charge_ep0_remaining;
+static unsigned charge_polls,charge_rx_count,charge_last_rx,charge_last_setup;
+static uint64_t charge_trace_at;
+static unsigned charge_trace_sequence,charge_fault_saved;
+static unsigned charge_recovery_used;
+static uint32_t charge_fault_words[32];
 static void charge_ep0_new_setup(void)
 {
  /* A new SETUP aborts the previous control-IN request. The working kernel
@@ -293,6 +312,8 @@ static void charge_ep0_new_setup(void)
  if(!charge_identity)return;
  USB_DIEPINT_ACK(0,0x3ffU);
  ep0_req=REQ_NONE;ep0_ptr=0;ep0_plen=0;
+ charge_ep0_state=CE0_WAIT;charge_ep0_inflight=charge_ep0_need_zlp=0;
+ charge_ep0_data=0;charge_ep0_remaining=0;i9u_setup(&charge_session);
 }
 
 #define TXRING 16384
@@ -384,6 +405,7 @@ static void dev_soft_init(void)
 	GNPTXFSIZ = (NPTX_WORDS << 16) | NPTX_OFF;
 	/* EP1's dedicated TX fifo; without it its slave pushes vanish. */
 	DPTXFSIZ(1) = (EP1TX_WORDS << 16) | EP1TX_OFF;
+    if(charge_identity)DPTXFSIZ(2)=(0x20U<<16)|0x480U;
 
 	for (i = 0; i < 4; i++)
         if(!charge_identity || i==0)
@@ -415,6 +437,10 @@ static void dev_soft_init(void)
 	ep1_lastint = 0;
 	configured = 0;
 	host_open = 0;
+ if(charge_identity){
+  i9u_reset_link(&charge_session);charge_ep0_state=CE0_WAIT;
+  charge_ep0_inflight=charge_ep0_need_zlp=charge_ep0_remaining=0;
+ }
 }
 
 /* S-Boot 0x4d41bd1c tail: EP0-OUT is re-armed for the next setup on
@@ -464,11 +490,53 @@ static void ep0_arm_zlp(void)
 	DIEPCTL(0) = EP0_ARM_ZLP;
 }
 
+/* Use one EP0 packet per transfer, as in the working XNU transport. An
+ * exhausted FIFO leaves a pending frame; it never blocks the supervisor. */
+static int charge_ep0_packet(void)
+{
+ unsigned len=charge_ep0_remaining>64U?64U:charge_ep0_remaining;
+ unsigned words=(len+3U)/4U;
+ if(charge_ep0_inflight || (DTXFSTS(0)&0xffffU)<words)return 0;
+ DIEPTSIZ(0)=(1U<<19)|len;DIEPCTL(0)=EP0_ARM_TX;
+ for(unsigned n=0;n<words;n++){
+  uint32_t word=0;
+  for(unsigned b=0;b<4U && n*4U+b<len;b++)word|=(uint32_t)charge_ep0_data[n*4U+b]<<(b*8U);
+  FIFO(0)=word;
+ }
+ charge_ep0_data+=len;charge_ep0_remaining-=len;charge_ep0_inflight=1;return 1;
+}
+static void charge_ep0_indone(uint32_t bits)
+{
+ if(bits&(DXEPINT_AHBERR|DXEPINT_TIMEOUT|DXEPINT_EPDISBLD)){
+  charge_ep0_inflight=0;charge_ep0_state=CE0_WAIT;i9u_fault(&charge_session,I9U_IO);host_open=0;return;
+ }
+ if(!(bits&DXEPINT_XFERCOMPL) || !charge_ep0_inflight)return;
+ charge_ep0_inflight=0;
+ if(charge_ep0_state==CE0_DIN){
+  charge_session.ep0_completions++;
+  if(charge_ep0_remaining){(void)charge_ep0_packet();return;}
+  if(charge_ep0_need_zlp){charge_ep0_need_zlp=0;(void)charge_ep0_packet();return;}
+  charge_ep0_state=CE0_SOUT;ep0_out_rearm();
+ }else if(charge_ep0_state==CE0_SIN){
+  charge_ep0_state=CE0_WAIT;i9u_status_done(&charge_session,i9100_boot_charge_ticks());
+  host_open=charge_session.opened;
+ }
+}
+
 /* Transmit whatever the setup decoder staged: real data, or a status
  * ZLP for no-data requests and zero-length replies (winusb can ask for
  * wLength=0 — arming PKTCNT=0 would be illegal). */
 static void ep0_commit(void)
 {
+ if(charge_identity){
+  if(ep0_req==REQ_DATA && ep0_plen){
+   charge_ep0_data=ep0_ptr;charge_ep0_remaining=ep0_plen;
+   charge_ep0_state=CE0_DIN;(void)charge_ep0_packet();
+  }else if(ep0_req==REQ_DATA || ep0_req==REQ_ZLP){
+   charge_ep0_state=CE0_SIN;charge_ep0_inflight=1;ep0_arm_zlp();
+  }
+  ep0_ptr=0;ep0_plen=0;ep0_req=REQ_NONE;return;
+ }
 	if (ep0_req == REQ_DATA && ep0_plen) {
 		usbcdc_printk(KERN_INFO, "ep0i: tx %uB\n", ep0_plen);
 		ep0_send(ep0_ptr, ep0_plen);
@@ -484,6 +552,10 @@ static void ep0_commit(void)
  * while a reply is staged, push it here too. */
 static void ep0_kick(void)
 {
+ if(charge_identity){
+  if(charge_ep0_state==CE0_DIN && !charge_ep0_inflight)(void)charge_ep0_packet();
+  return;
+ }
 	if (ep0_req != REQ_NONE && ep0_req != REQ_OUT)
 		ep0_commit();
 }
@@ -493,6 +565,7 @@ static void ep0_reply(const uint8_t *buf, unsigned int len, unsigned int asked)
 	ep0_ptr = buf;
 	ep0_plen = len < asked ? len : asked;
 	ep0_req = REQ_DATA;
+ if(charge_identity)charge_ep0_need_zlp=ep0_plen<asked && ep0_plen && !(ep0_plen&63U);
 }
 
 static void ep0_status_in(void)
@@ -505,6 +578,7 @@ static void ep0_stall(void)
 	DIEPCTL(0) |= DXEPCTL_STALL;
 	DOEPCTL(0) |= DXEPCTL_STALL;
 	ep0_req = REQ_NONE;
+ if(charge_identity){charge_ep0_state=CE0_WAIT;charge_ep0_inflight=0;}
 	ep0_out_rearm();
 }
 
@@ -521,6 +595,7 @@ static void ep0_setup(void)
 
 	usbcdc_printk(KERN_INFO, "ep0: rq%02x %02x wv%04x wl%u\n",
 	       rt, rq, wv, wl);
+ if(charge_identity)charge_last_setup=((uint32_t)rt<<24)|((uint32_t)rq<<16)|wv;
 	if (rt == 0x80 && rq == 6) {		/* GET_DESCRIPTOR dev->host */
 		switch (wv >> 8) {
 		case 1: ep0_reply(dev_desc, sizeof(dev_desc), wl); goto tail;
@@ -561,6 +636,7 @@ static void ep0_setup(void)
             i9100_chg_cancel_incomplete(&charge_control,charge_action_ready);
             if(!wv){
                 configured=host_open=0;
+                i9u_configure(&charge_session,0,i9100_boot_charge_ticks());
                 DOEPCTL(1)|=DXEPCTL_SNAK;DIEPCTL(1)|=DXEPCTL_SNAK;
                 ep0_status_in();goto tail;
             }
@@ -574,16 +650,18 @@ static void ep0_setup(void)
 		usbcdc_printk(KERN_INFO, "usbcdc: ep1 ctl=%08x txf=%08x dtx=%08x\n",
 		       DIEPCTL(1), DPTXFSIZ(1), DTXFSTS(1));
 		DIEPCTL(2) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(3) |
-			DXEPCTL_MPS(8) | DXEPCTL_SNAK;
+			DXEPCTL_MPS(8) | DXEPCTL_SNAK | (charge_identity?(2U<<22):0U);
 		DOEPCTL(1) = DXEPCTL_USBACTEP | DXEPCTL_EPTYPE(2) | DXEPCTL_MPS(bulk_mps);
 		if(charge_identity)DOEPTSIZ(1)=(1U<<19)|bulk_mps;
 		DOEPCTL(1)|=DXEPCTL_EPENA|DXEPCTL_CNAK;
 		configured = 1;
+        if(charge_identity)i9u_configure(&charge_session,1,i9100_boot_charge_ticks());
 		ep0_status_in();
 		goto tail;
 	}
 	if (rt == 0x21 && rq == 0x20) {		/* SET_LINE_CODING, 7B out */
 		ep0_req = REQ_OUT;		/* bytes arrive via RXFLVL */
+        if(charge_identity)charge_ep0_state=CE0_DOUT;
 		return;
 	}
 	if (rt == 0xa1 && rq == 0x21) {		/* GET_LINE_CODING */
@@ -596,8 +674,8 @@ static void ep0_setup(void)
 	if (rt == 0x21 && rq == 0x22) {		/* SET_CONTROL_LINE_STATE */
 		if(charge_identity){
             i9100_chg_cancel_incomplete(&charge_control,charge_action_ready);
-            host_open=configured && (wv&1U);
-            if(host_open){char line[64];i9100_chg_ready(line,I9100_CONTROL_TAG,I9100_CHARGER_TAG);ring_push(line);}
+            host_open=0;
+            i9u_dtr(&charge_session,configured && (wv&1U),i9100_boot_charge_ticks());
         }else host_open=1; /* Preserve the existing loader-to-kernel handoff. */
 		ep0_status_in();
 		goto tail;
@@ -634,11 +712,12 @@ static void ring_push(const char *s)
 static void ep1_kick(void)
 {
 	unsigned int n = 0, space;
-	uint8_t pkt[64] = { 0 };
+	uint8_t pkt[512] = { 0 };
 	uint32_t w, ctl_before, size_set, size_fifo, space_fifo;
 
 	if (ep1_busy || !configured || tx_head == tx_tail)
 		return;
+    if(charge_identity && (!host_open || !charge_session.opened || charge_session.fault || charge_session.ready_pending))return;
 	ctl_before = DIEPCTL(1);
 	if (DIEPINT(1) & DXEPINT_XFERCOMPL)
 		USB_DIEPINT_ACK(1,DXEPINT_XFERCOMPL);	/* stale */
@@ -648,8 +727,8 @@ static void ep1_kick(void)
 	 * before popping so a full fifo never eats ring bytes. */
 	space = DTXFSTS(1) & 0xffff;
 	n = (tx_head - tx_tail) & (TXRING - 1);
-	if (n > sizeof(pkt))
-		n = sizeof(pkt);
+    unsigned limit=charge_identity?sizeof(pkt):64U;
+	if (n > limit)n=limit;
 	if (n > space * 4)
 		n = space * 4;
 	if (!n)
@@ -664,7 +743,7 @@ static void ep1_kick(void)
  ep1_transfer_total=tx_drained_total;
 
 	/* s3c-hsotg sets MC(1) for every non-control IN endpoint. */
-	DIEPTSIZ(1) = (1 << 19) | n | 0x20000000;
+	DIEPTSIZ(1) = (((n+bulk_mps-1U)/bulk_mps) << 19) | n | 0x20000000;
 	size_set = DIEPTSIZ(1);
 
 	/* Match s3c-hsotg and the kernel: TSIZ -> EPENA -> FIFO. With
@@ -693,6 +772,7 @@ static void ep1_kick(void)
 		ep1_dbg++;
 	}
 	ep1_busy = 1;
+ if(charge_identity)i9u_in_start(&charge_session,i9100_boot_charge_ticks());
 }
 
 static void charge_ep1_complete(uint32_t ei)
@@ -705,12 +785,56 @@ static void charge_ep1_complete(uint32_t ei)
  if(!fault && !(ei&DXEPINT_XFERCOMPL))return;
  USB_DIEPINT_ACK(1,ei);
  if(fault){
-  ep1_busy=0;i9100_chg_cancel_incomplete(&charge_control,charge_action_ready);return;
+  ep1_busy=0;i9100_chg_cancel_incomplete(&charge_control,charge_action_ready);
+  i9u_fault(&charge_session,I9U_IO);host_open=0;return;
  }
  ep1_busy=0;tx_completed_total=ep1_transfer_total;
+ i9u_in_done(&charge_session);
  if(charge_control.action && !charge_control.leased &&
     tx_completed_total-charge_control.reply_target<0x80000000U)
   charge_action_ready=1;
+}
+
+#ifndef I9100_CHARGE_USB_TRACE_LIVE
+#define I9100_CHARGE_USB_TRACE_LIVE ((volatile uint32_t *)(0x7ffe0000U+I9U_TRACE_LIVE_OFFSET))
+#define I9100_CHARGE_USB_TRACE_FAULT ((volatile uint32_t *)(0x7ffe0000U+I9U_TRACE_FAULT_OFFSET))
+#endif
+static uint32_t charge_source_fingerprint(void)
+{
+ const char *tag=I9100_CONTROL_TAG I9100_CHARGER_TAG;uint32_t sum=2166136261U;
+ for(unsigned n=0;n<32U;n++)sum=(sum^(uint8_t)tag[n])*16777619U;return sum;
+}
+static void charge_trace_publish(unsigned force)
+{
+ if(!charge_identity)return;
+ uint64_t now=i9100_boot_charge_ticks();
+ if(!now || (!force && now>=charge_trace_at && now-charge_trace_at<24000000U))return;
+ charge_trace_at=now;if(++charge_trace_sequence==0)charge_trace_sequence=1;
+ uint32_t words[32]={I9U_TRACE_MAGIC,1,128,charge_trace_sequence,(uint32_t)now,(uint32_t)(now>>32),
+  charge_session.state,charge_session.recovery_taken,charge_polls,charge_rx_count,
+  charge_session.setup_sequence,charge_last_setup,charge_session.ep0_completions,
+  charge_session.ep1_completions,GINTSTS,charge_last_rx,DIEPCTL(0),DIEPTSIZ(0),DIEPINT(0),
+  DOEPCTL(0),DOEPTSIZ(0),DOEPINT(0),DIEPCTL(1),DIEPTSIZ(1),DIEPINT(1),DTXFSTS(1),PCGCCTL,
+  charge_session.fault,(unsigned)(configured|(host_open<<1)|(ep1_busy<<2)|(in_poll<<3)),
+  charge_source_fingerprint(),charge_ep0_state,0};
+ words[31]=i9u_trace_checksum(words);i9u_trace_publish(I9100_CHARGE_USB_TRACE_LIVE,words);
+ if(charge_session.fault && !charge_fault_saved){
+  charge_fault_saved=1;memcpy(charge_fault_words,words,sizeof(words));
+  i9u_trace_publish(I9100_CHARGE_USB_TRACE_FAULT,words);
+ }
+}
+static void charge_open_ready(void)
+{
+ if(!charge_session.ready_pending || ep1_busy)return;
+ /* Only closed-session log bytes can be discarded; never reset an
+  * in-flight or acknowledged action's byte-completion accounting. */
+ if(!charge_control.action && !charge_control.leased && !charge_action_ready){
+  unsigned discarded=(tx_head-tx_tail)&(TXRING-1U);
+  charge_session.discarded_bytes+=discarded;if(discarded)charge_log_dropped++;
+  tx_head=tx_tail=0;tx_written_total=tx_drained_total=tx_completed_total=ep1_transfer_total=0;
+ }
+ char line[64];i9100_chg_ready(line,I9100_CONTROL_TAG,I9100_CHARGER_TAG);ring_push(line);
+ charge_session.ready_pending=0;charge_trace_publish(1);
 }
 
 /* main service routine — S-Boot 0x4d41bf58/0x4d41bd1c dispatch model:
@@ -723,15 +847,28 @@ void usbcdc_poll(void)
 	if (!usb_ok || in_poll)
 		return;
 	in_poll = 1;
+ if(charge_identity){
+  charge_polls++;
+  (void)i9u_poll_deadline(&charge_session,i9100_boot_charge_ticks());
+  if(charge_session.fault)host_open=0;
+ }
 
 	st = GINTSTS;
 	if (!st)
 		goto drain;
-	GINTSTS = st;			/* S-Boot: clear all at once */
+ if(!charge_identity)GINTSTS=st; /* Preserve ordinary loader behavior. */
 
-	if (st & GINTSTS_USBRST)	/* 0x1000: full re-init */
+	if (st & GINTSTS_USBRST){
+        if(charge_identity)USB_GINT_ACK(GINTSTS_USBRST);
 		dev_soft_init();
+        if(charge_identity){
+         /* Other snapshot bits belong to the old session. Never read an
+          * old RX status after resetting endpoint state. */
+         in_poll=0;charge_trace_publish(1);return;
+        }
+    }
 	if (st & GINTSTS_ENUMDONE) {	/* 0x2000 */
+        if(charge_identity){USB_GINT_ACK(GINTSTS_ENUMDONE);DIEPCTL(0)=EP0_ACT;}
 		enumerated = 1;
 		bulk_mps = ((DSTS >> 1) & 3) == 0 ? 512 : 64;
 		cfg_desc[57] = cfg_desc[64] = bulk_mps & 255;
@@ -749,8 +886,9 @@ void usbcdc_poll(void)
 		ps = GRXSTS_PKTSTS(gs);
 		ep = GRXSTS_EPNUM(gs);
 		bc = GRXSTS_BYTECNT(gs);
+        if(charge_identity){charge_rx_count++;charge_last_rx=gs;}
 
-		if (ps == PKTSTS_SETUPRX) {	/* 6: setup payload in DFIFO0 */
+		if (ps == PKTSTS_SETUPRX && (!charge_identity || (ep==0 && bc==8))) {
 			uint32_t w0 = FIFO_RD(0);
 			uint32_t w1 = FIFO_RD(0);
 
@@ -781,9 +919,16 @@ void usbcdc_poll(void)
 				/* SET_LINE_CODING payload arrived;
 				 * line coding ignored, answer ZLP now. */
 				ep0_req = REQ_NONE;
-				ep0_arm_zlp();
+                if(charge_identity){
+                 if(bc!=7){i9u_fault(&charge_session,I9U_IO);ep0_stall();}
+                 else{charge_ep0_state=CE0_SIN;charge_ep0_inflight=1;ep0_arm_zlp();}
+                }else ep0_arm_zlp();
 			}
-		}
+		}else if(charge_identity){
+            if(ps==PKTSTS_SETUPRX){i9u_fault(&charge_session,I9U_IO);ep0_stall();}
+            else for(unsigned n=0;n<(bc+3U)/4U;n++)(void)FIFO_RD(0);
+            if(ep==0 && ps==PKTSTS_OUTDONE && charge_ep0_state==CE0_SOUT)charge_ep0_state=CE0_WAIT;
+        }
 		/* 1 goutnak / 3 outdone / 4 setupdone: ignored like S-Boot */
 		/* S-Boot re-arms EP0-OUT on every OUT-EP0 event.  Do it
 		 * here, *after* the entry is consumed: re-arming from the
@@ -797,11 +942,14 @@ void usbcdc_poll(void)
 		uint32_t d = DAINT & 0xffff;
 		if (d & 1) {
 			uint32_t ei = DIEPINT(0);
+            if(charge_identity){
+             USB_DIEPINT_ACK(0,ei);charge_ep0_indone(ei);
+            }
 			if (ei & DXEPINT_INTKNTXFEMP)
 				ep0_kick();	/* host knocked: send now */
 			if (ei & DXEPINT_XFERCOMPL)
 				usbcdc_printk(KERN_INFO, "ep0i: compl\n");
-			USB_DIEPINT_ACK(0,ei);
+            if(!charge_identity)USB_DIEPINT_ACK(0,ei);
 		}
 		if (d & 2) {
 			uint32_t ei = DIEPINT(1);
@@ -851,8 +999,34 @@ void usbcdc_poll(void)
 	}
 drain:
  if(charge_identity && ep1_busy)charge_ep1_complete(DIEPINT(1));
+ if(charge_identity){
+  ep0_kick();charge_open_ready();
+  USB_GINT_ACK(st&((1U<<31)|(1U<<29)|(1U<<11)));
+ }
 	ep1_kick();
 	in_poll = 0;
+ if(charge_identity)charge_trace_publish(0);
+}
+unsigned usbcdc4210_charge_take_recovery(void)
+{
+ if(!charge_identity || charge_recovery_used || charge_control.leased || charge_action_ready)return 0;
+ unsigned reason=i9u_take_recovery(&charge_session);
+ if(reason){charge_recovery_used=1;charge_trace_publish(1);}return reason;
+}
+unsigned usbcdc4210_charge_report_requested(void)
+{
+ if(!charge_identity || !charge_session.report_pending)return 0;
+ charge_session.report_pending=0;return 1;
+}
+void usbcdc4210_charge_stop_proof(unsigned stopped)
+{
+ /* Called after the board's checked stop: only retained RAM is written.
+  * No USB/MMIO read, delay, callback, or log can block the ensuing reset. */
+ if(!charge_identity || !charge_session.recovery_taken || !charge_fault_saved)return;
+ if(charge_fault_words[7]&0x300U)return; /* Keep the first checked outcome. */
+ charge_fault_words[7]=1U|((stopped?1U:2U)<<8);
+ charge_fault_words[31]=i9u_trace_checksum(charge_fault_words);
+ i9u_trace_publish(I9100_CHARGE_USB_TRACE_FAULT,charge_fault_words);
 }
 unsigned usbcdc4210_charge_take_action(void)
 {
@@ -1073,6 +1247,11 @@ void usbcdc4210_charge_identity(int enable)
  }
  if(charge_identity!=(unsigned)enable){
   memset(&charge_control,0,sizeof(charge_control));charge_action_ready=charge_boot_available=0;charge_log_dropped=0;
+  (void)i9u_init(&charge_session,enable?I9100_CHARGE_USB_TIMEOUT_SECONDS:0U);
+  charge_session.recovery_taken=charge_recovery_used;
+  charge_polls=charge_rx_count=charge_last_rx=charge_last_setup=0;
+  charge_ep0_state=CE0_WAIT;charge_ep0_inflight=charge_ep0_remaining=charge_ep0_need_zlp=0;
+  charge_trace_at=0;charge_trace_sequence=charge_fault_saved=0;
  }
  charge_identity=(unsigned)enable;
 }

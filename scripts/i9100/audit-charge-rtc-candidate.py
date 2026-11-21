@@ -25,6 +25,9 @@ def main():
     p.add_argument('--expect-kernel-sha256',required=True,help='Exact reviewed isolated kernel, never inferred from the newest file')
     p.add_argument('--power-model',type=Path,required=True,help='Completed RTC/policy model built from these same sources')
     p.add_argument('--timer-model',type=Path,required=True,help='Completed wait policy model built from this loader')
+    p.add_argument('--usb-model',type=Path,required=True)
+    p.add_argument('--session-model',type=Path,required=True)
+    p.add_argument('--gate-model',type=Path,required=True)
     a=p.parse_args();package,kernel_source,plan,out=map(confined,(a.package,a.kernel_source,a.plan,a.output))
     if not package.is_relative_to(REPO/'out') or not kernel_source.is_relative_to(ROOT/'xnu-S2I9100/out') or not out.is_relative_to(REPO/'out') or out.exists():raise ValueError('Use exact candidate and fresh output')
     manifest=json.loads((package/'manifest.json').read_text());snapshot=json.loads((kernel_source/'snapshot.json').read_text());identity=json.loads((package/'charger-identity.json').read_text());planned=json.loads(plan.read_text())
@@ -52,6 +55,13 @@ def main():
     if not timer_model.is_relative_to(REPO/'out') or timer_record.get('result')!='PASS' or timer_record.get('hardware') is not False:raise ValueError('Completed wait model required')
     for name,value in timer_record['source_sha256'].items():
         if sha(confined(REPO/name))!=value:raise ValueError('Wait model used a different source: '+name)
+    extra_models=[]
+    for model_arg in (a.usb_model,a.session_model,a.gate_model):
+        model=confined(model_arg);model_record=json.loads(model.read_text())
+        if not model.is_relative_to(REPO/'out') or model_record.get('result')!='PASS' or model_record.get('hardware') is not False:raise ValueError('Completed loader model required')
+        for name,value in model_record['source_sha256'].items():
+            if sha(confined(REPO/name))!=value:raise ValueError('Loader model source differs: '+name)
+        extra_models.append(str(model.relative_to(ROOT)))
     if planned['partition']!='KERNEL' or planned['files']['zImage']!=manifest['artifacts']['zImage']['sha256'] or (plan.parent/'started.json').exists():raise ValueError('Plan consumed or wrong')
     if manifest['internal_emmc_root'] or manifest['panel_sleep'] or manifest['charge_probe']:raise ValueError('Candidate scope differs')
     elf=package/'loader/uniLoader.o';z=(package/'zImage').read_bytes()
@@ -61,6 +71,10 @@ def main():
         if len(row)==3 and re.fullmatch('[0-9a-fA-F]+',row[0]):symbols[row[2]]=int(row[0],16)
     for name,value in (('i9100_lpm_wake_route_version',2),('i9100_charge_usb_poll_version',1),('i9100_lpm_wait_policy_version',1),('i9100_lpm_wfi_enabled',0)):
         if struct.unpack_from('<I',z,symbols[name]-0x48000000)[0]!=value:raise ValueError('Actual ARM version missing')
+    timeout=manifest.get('standalone_charge_usb_timeout_seconds')
+    if type(timeout) is not int or timeout and not 120<=timeout<=600:raise ValueError('Invalid actual diagnostic timeout')
+    for name,value in (('i9100_charge_usb_session_version',1),('i9100_charge_usb_timeout_seconds',timeout)):
+        if struct.unpack_from('<I',z,symbols[name]-0x48000000)[0]!=value:raise ValueError('Actual USB session policy differs')
     for tag in (b'I9LV1 ',b'I9RT1 ',b'I9CHC2 READY '):
         if tag not in z:raise ValueError('Actual first-packet record missing')
     out.mkdir()
@@ -77,13 +91,14 @@ def main():
     models=[]
     for name in (
         str(timer_model.relative_to(ROOT)),
-        'uniloader-S2I9100/out/charge-control-check-20261121-082840/result.json',
+        str(confined(a.usb_model).relative_to(ROOT)),
         str(power_model.relative_to(ROOT)),
         'uniloader-S2I9100/out/charge-command-check-20261121-085024/result.json',
         'uniloader-S2I9100/out/charge-capture-rtc-check-20261121-0847/result.json'):
         file=ROOT/name;record=json.loads(file.read_text())
         if record.get('result')!='PASS':raise ValueError('Model failed')
         models.append(dict(path=name,sha256=sha(file)))
+    models.extend(dict(path=name,sha256=sha(ROOT/name)) for name in extra_models if name not in {r['path'] for r in models})
     summary=dict(result='PASS',hardware=False,kernel_sha256=expected,
         zImage_sha256=sha(package/'zImage'),charger_tag=identity['tag'],plan_sha256=sha(plan),
         reused_kernel_inputs=len(snapshot['reused_link_inputs']),loader_inputs=len(identity['sources']),
