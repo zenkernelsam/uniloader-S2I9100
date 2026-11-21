@@ -22,11 +22,14 @@ def main():
             sys.executable,'-B',*sys.argv],dict(os.environ,I9100_CPU_CAPPED='1'))
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--package',type=Path,required=True)
     p.add_argument('--kernel-source',type=Path,required=True);p.add_argument('--plan',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--expect-kernel-sha256',required=True,help='Exact reviewed isolated kernel, never inferred from the newest file')
+    p.add_argument('--power-model',type=Path,required=True,help='Completed RTC/policy model built from these same sources')
     a=p.parse_args();package,kernel_source,plan,out=map(confined,(a.package,a.kernel_source,a.plan,a.output))
     if not package.is_relative_to(REPO/'out') or not kernel_source.is_relative_to(ROOT/'xnu-S2I9100/out') or not out.is_relative_to(REPO/'out') or out.exists():raise ValueError('Use exact candidate and fresh output')
     manifest=json.loads((package/'manifest.json').read_text());snapshot=json.loads((kernel_source/'snapshot.json').read_text());identity=json.loads((package/'charger-identity.json').read_text());planned=json.loads(plan.read_text())
     checks={}
-    expected='359d9589573d6f2b50da87761a776cde9c81011ece7cd4454b676e1edc1fd2e9'
+    expected=a.expect_kernel_sha256
+    if not re.fullmatch('[0-9a-f]{64}',expected):raise ValueError('Exact kernel SHA256 required')
     if snapshot.get('result')!='PASS' or snapshot['kernel_sha256']!=expected or snapshot['objects']!=['iokit/i9100_power_bus.o']:raise ValueError('Not the isolated RTC kernel')
     for name,item in manifest['artifacts'].items():
         file=package/name
@@ -40,6 +43,10 @@ def main():
         if sha(confined(REPO/name))!=value:raise ValueError('Loader source/input changed: '+name)
     for name in ('i9100_power.h','i9100_power_bus.c','i9100_rtc_time.h'):
         if (REPO/'board/samsung/charge'/name).read_bytes()!=(ROOT/'xnu-S2I9100/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform'/name).read_bytes():raise ValueError('Paired RTC source differs')
+    power_model=confined(a.power_model);power_record=json.loads(power_model.read_text())
+    if not power_model.is_relative_to(ROOT/'xnu-S2I9100/out') or power_record.get('result')!='PASS' or power_record.get('hardware') is not False:raise ValueError('Completed offline Power model required')
+    for name,value in power_record['source_sha256'].items():
+        if sha(confined(ROOT/'xnu-S2I9100'/name))!=value:raise ValueError('Power model used a different source: '+name)
     if planned['partition']!='KERNEL' or planned['files']['zImage']!=manifest['artifacts']['zImage']['sha256'] or (plan.parent/'started.json').exists():raise ValueError('Plan consumed or wrong')
     if manifest['internal_emmc_root'] or manifest['panel_sleep'] or manifest['charge_probe']:raise ValueError('Candidate scope differs')
     elf=package/'loader/uniLoader.o';z=(package/'zImage').read_bytes()
@@ -66,7 +73,7 @@ def main():
     for name in (
         'uniloader-S2I9100/out/lpm-timer-check-20261121-064310/result.json',
         'uniloader-S2I9100/out/charge-control-check-20261121-082840/result.json',
-        'xnu-S2I9100/out/power-check-20261121-075752/result.json',
+        str(power_model.relative_to(ROOT)),
         'uniloader-S2I9100/out/charge-command-check-20261121-085024/result.json',
         'uniloader-S2I9100/out/charge-capture-rtc-check-20261121-0847/result.json'):
         file=ROOT/name;record=json.loads(file.read_text())

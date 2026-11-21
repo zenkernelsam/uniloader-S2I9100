@@ -2,9 +2,10 @@
 #define I9100_RTC_TIME_H
 #include <stdint.h>
 /* MAX8997 RTC @0x06, observed CONTROL BCD_EN bit0 / MODEL24 bit1.
- * Accept documented binary or packed-BCD 24-hour data without rewriting
- * the clock, mode, alarm, UPDATE, WTSR or SMPL. Unqualified 12-hour layouts
- * remain rejected. Local epoch is RTC seconds since 2000. */
+ * Accept binary 12/24-hour and packed-BCD 24-hour data without rewriting
+ * the clock, mode, alarm, UPDATE, WTSR or SMPL. Samsung rtc-max8997.c
+ * decodes binary12 as low nibble 0..11 plus PM bit6; BCD12 is unqualified
+ * and remains rejected. Local epoch is RTC seconds since 2000. */
 static inline int i9100_rtc_number(unsigned raw,unsigned bcd,unsigned *number)
 {
  if(bcd){
@@ -15,17 +16,18 @@ static inline int i9100_rtc_number(unsigned raw,unsigned bcd,unsigned *number)
 }
 static inline int i9100_rtc_decode(const uint8_t data[7],unsigned control,uint64_t *seconds)
 {
- if(!data || !seconds || !(control&2U) ||
+ if(!data || !seconds || (control&3U)==1U ||
     !data[3] || data[3]>64U || (data[3]&(data[3]-1U)))return 0;
  unsigned bcd=control&1U,second,minute,hour,month,year,day;
- unsigned hour_mask=bcd?0x3fU:0x1fU;
+ unsigned mode24=control&2U,hour_mask=mode24?(bcd?0x3fU:0x1fU):0x0fU;
  if(data[2]&~(hour_mask|0x40U))return 0;
  if(!i9100_rtc_number(data[0],bcd,&second) || second>=60U ||
     !i9100_rtc_number(data[1],bcd,&minute) || minute>=60U ||
-    !i9100_rtc_number(data[2]&hour_mask,bcd,&hour) || hour>=24U ||
+    !i9100_rtc_number(data[2]&hour_mask,bcd,&hour) || hour>=(mode24?24U:12U) ||
     !i9100_rtc_number(data[4],bcd,&month) || !month || month>12U ||
     !i9100_rtc_number(data[5],bcd,&year) || year>(bcd?99U:127U) ||
     !i9100_rtc_number(data[6],bcd,&day) || !day)return 0;
+ if(!mode24 && (data[2]&0x40U))hour+=12U;
  year+=2000U;
  const unsigned lengths[12]={31,28,31,30,31,30,31,31,30,31,30,31};
  unsigned leap=year%4U==0U && (year%100U!=0U || year%400U==0U);

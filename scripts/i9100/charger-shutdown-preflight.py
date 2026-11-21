@@ -25,17 +25,20 @@ def sha(raw):return hashlib.sha256(raw).hexdigest()
 def rtc_time(low,high,control):
     require(not high>>24,'RTC time has reserved bytes')
     raw=struct.pack('<II',low,high)[:7]
-    require(control&2,'Unsupported RTC 12-hour format')
+    require(control&3!=1,'Unsupported RTC BCD12 format')
     def number(value):
         if control&1:
             require(value&15<=9 and value>>4<=9,'Invalid packed BCD time')
             return (value>>4)*10+(value&15)
         return value
-    hour_mask=0x3f if control&1 else 0x1f
+    mode24=bool(control&2)
+    hour_mask=(0x3f if control&1 else 0x1f) if mode24 else 0x0f
     require(not raw[2]&~(hour_mask|0x40),'RTC hour reserved bits')
     require(raw[3] in (1,2,4,8,16,32,64),'RTC weekday is not one-hot')
     second,minute,hour,month,year,day=(number(raw[0]),number(raw[1]),
         number(raw[2]&hour_mask),number(raw[4]),number(raw[5]),number(raw[6]))
+    require(hour<(24 if mode24 else 12),'RTC hour range')
+    if not mode24 and raw[2]&0x40:hour+=12
     require(year<=(99 if control&1 else 127),'RTC year range')
     current=datetime(2000+year,month,day,hour,minute,second,tzinfo=timezone.utc)
     return int((current-datetime(2000,1,1,tzinfo=timezone.utc)).total_seconds())
@@ -76,7 +79,7 @@ def qualify(before,rtc_raw,rtc_after,after,tag,duration_seconds):
         'Battery-backed RTC did not advance with the live charging publication')
     return dict(qualified=True,kernel_tag=tag,epoch_before=first,epoch_after=last,
         rtc=dict(sequence=words[1],controls=words[3],seconds=seconds,
-                 mode='BCD24' if control&1 else 'binary24'),
+                 mode=('BCD24' if control&1 else 'binary24') if control&2 else 'binary12'),
         duration_seconds=duration_seconds,
         raw_sha256={name:sha(raw) for name,raw in (
             ('epoch-before.bin',before),('rtc-read.bin',rtc_raw),

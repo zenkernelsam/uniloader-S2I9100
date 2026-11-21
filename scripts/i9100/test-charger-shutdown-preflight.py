@@ -47,7 +47,7 @@ def changed(raw,slot,value):
     words=list(struct.unpack('<32I',raw));words[slot]=value
     words[-1]=p.epoch.checksum(struct.pack('<32I',*words));return struct.pack('<32I',*words)
 cases=[]
-for scenario in ('healthy-bcd','healthy-binary','full','old-invalid-rtc','invalid-rtc','moving-rtc',
+for scenario in ('healthy-bcd','healthy-binary','healthy-binary12','healthy-native-binary12','full','old-invalid-rtc','invalid-rtc','moving-rtc',
                  'frozen-epoch','frozen-rtc','timeout','unknown-clock-format','changed-cycle',
                  'lost-charger','read-error','slow-read','invalid-raw-calendar','unready-worker'):
     directory=out/scenario;clock.now=1.0;commands=[];openers=[];reads=[]
@@ -56,6 +56,13 @@ for scenario in ('healthy-bcd','healthy-binary','full','old-invalid-rtc','invali
     rtc_words=[1,2,15,0x303,0x02130129,0x202611,0x02130129,0x202611,1,rtc_seconds&0xffffffff,rtc_seconds>>32,0]
     if scenario=='healthy-binary':
         rtc_words[3]=0x202;rtc_words[4]=rtc_words[6]=0x020d011d;rtc_words[5]=rtc_words[7]=0x141a0b
+    if scenario=='healthy-binary12':
+        rtc_words[3]=0;rtc_words[4]=rtc_words[6]=0x0241011d;rtc_words[5]=rtc_words[7]=0x141a0b
+    if scenario=='healthy-native-binary12':
+        native_seconds=35034
+        before=epoch(10,100000000000,native_seconds)
+        after=epoch(12,102200000000,native_seconds+2)
+        rtc_words=[1,2,15,0,0x01092b36,0x010001,0x01092b36,0x010001,1,native_seconds,0,0]
     if scenario=='old-invalid-rtc':
         before=(repo/'out/forensic/final-poweroff-20261121-0018/task-0000/charge-epoch-live.bin').read_bytes()
     if scenario=='invalid-rtc':rtc_words[8]=7
@@ -93,7 +100,7 @@ for scenario in ('healthy-bcd','healthy-binary','full','old-invalid-rtc','invali
     args=SimpleNamespace(kernel=kernel_file,output=directory,seconds=240,
         allow_poweroff_charge=True,allow_reboot_download=False,require_charge_epoch=True,
         poweroff_on_ready=True,charge_on_ready=False,on_ready=[])
-    expected=scenario in ('healthy-bcd','healthy-binary','full')
+    expected=scenario in ('healthy-bcd','healthy-binary','healthy-binary12','healthy-native-binary12','full')
     failed=False
     try:ui.serve(args)
     except (ValueError,TimeoutError):failed=True

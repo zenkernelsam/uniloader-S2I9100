@@ -327,7 +327,7 @@ def capture(kernel,symbols,out):
             raise ValueError('Unknown RTC raw observation')
         value['consistent']=not value['sequence']&1 and struct.unpack('<2I',rtc_after)==words[:2]
         value['seconds']=(value['seconds_high']<<32)|value['seconds_low']
-        value['raw_format']=('BCD24' if value['controls']&3==3 else 'binary24' if value['controls']&3==2 else 'unsupported')
+        value['raw_format']=('BCD24' if value['controls']&3==3 else 'binary24' if value['controls']&3==2 else 'binary12' if value['controls']&3==0 else 'unsupported')
         value['limit']='Raw read transaction only; zero/failed RTC is not a proven clock or a fresh charging deadline'
         result['rtc_read']=value
     if '_i9100_charge_adopt_diag' in symbols.values:
